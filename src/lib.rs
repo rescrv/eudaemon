@@ -1,3 +1,4 @@
+pub mod dialect;
 pub mod s;
 
 pub use s::error::{SError, SResult};

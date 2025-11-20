@@ -25,7 +25,7 @@ pub fn json_to_sexpr(s: &str) -> SResult<String> {
     Ok(sexpr.to_string())
 }
 
-fn json_value_to_sexpr(value: &Value) -> SExpr {
+pub fn json_value_to_sexpr(value: &Value) -> SExpr {
     match value {
         Value::Null => SExpr::Atom("null".to_string()),
         Value::Bool(b) => SExpr::Atom(if *b { "#t" } else { "#f" }.to_string()),
@@ -83,7 +83,7 @@ pub fn sexpr_to_json(s: &str) -> SResult<String> {
     })
 }
 
-fn sexpr_to_json_value(sexpr: &SExpr) -> SResult<Value> {
+pub fn sexpr_to_json_value(sexpr: &SExpr) -> SResult<Value> {
     match sexpr {
         SExpr::Atom(s) => {
             if s == "null" {
@@ -177,7 +177,7 @@ fn sexpr_to_json_value(sexpr: &SExpr) -> SResult<Value> {
     }
 }
 
-fn unescape_string(s: &str) -> String {
+pub fn unescape_string(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars();
     while let Some(ch) = chars.next() {

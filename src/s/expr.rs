@@ -48,6 +48,7 @@ impl<'a> Parser<'a> {
                 .with_atom_field("position", self.position));
         }
         match self.peek_char() {
+            Some(b'\'') => self.parse_quoted(),
             Some(b'(') => self.parse_list(),
             Some(b'"') => self.parse_quoted_string(),
             Some(_) => self.parse_atom(),
@@ -56,6 +57,12 @@ impl<'a> Parser<'a> {
                 .with_message("Unexpected end of input")
                 .with_atom_field("position", self.position)),
         }
+    }
+
+    fn parse_quoted(&mut self) -> SResult<SExpr> {
+        self.next_char(); // consume the '
+        let expr = self.parse()?;
+        Ok(SExpr::List(vec![SExpr::Atom("quote".to_string()), expr]))
     }
 
     fn peek_char(&self) -> Option<u8> {

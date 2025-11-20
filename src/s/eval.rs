@@ -52,6 +52,18 @@ pub fn eval(expr: &SExpr, env: &Env) -> SResult<SExpr> {
                 }
             };
 
+            // Handle special form: quote
+            if func_name == "quote" {
+                if list.len() != 2 {
+                    return Err(SError::new("eval")
+                        .with_code("wrong-argument-count")
+                        .with_message("quote requires exactly one argument")
+                        .with_atom_field("expected", 1)
+                        .with_atom_field("received", list.len() - 1));
+                }
+                return Ok(list[1].clone());
+            }
+
             let func = env.funcs.get(func_name).ok_or_else(|| {
                 SError::new("eval")
                     .with_code("function-not-found")
