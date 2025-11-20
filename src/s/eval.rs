@@ -1,4 +1,4 @@
-use crate::s_expr::SExpr;
+use crate::s::expr::SExpr;
 use std::collections::HashMap;
 
 pub type SExprFn = fn(&[SExpr]) -> Result<SExpr, String>;
@@ -57,7 +57,7 @@ pub fn eval(expr: &SExpr, env: &Env) -> Result<SExpr, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s_expr::Parser;
+    use crate::s::expr::Parser;
 
     fn add(args: &[SExpr]) -> Result<SExpr, String> {
         let mut sum = 0;
