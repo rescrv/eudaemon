@@ -1,5 +1,6 @@
 //! JSON to S-expression conversion and vice versa
 
+use crate::s::error::{SError, SResult};
 use crate::s::expr::{Parser, SExpr};
 use serde_json::Value;
 
@@ -11,8 +12,15 @@ use serde_json::Value;
 /// - Number: 123 or 12.34
 /// - Boolean: #t or #f
 /// - Null: null
-pub fn json_to_sexpr(s: &str) -> Result<String, String> {
-    let json_value: Value = serde_json::from_str(s).map_err(|e| e.to_string())?;
+pub fn json_to_sexpr(s: &str) -> SResult<String> {
+    let json_value: Value = serde_json::from_str(s).map_err(|e| {
+        SError::new("json-to-sexpr")
+            .with_code("invalid-json")
+            .with_message("Failed to parse JSON input")
+            .with_string_field("parse_error", &e.to_string())
+            .with_atom_field("error_line", e.line())
+            .with_atom_field("error_column", e.column())
+    })?;
     let sexpr = json_value_to_sexpr(&json_value);
     Ok(sexpr.to_string())
 }
@@ -63,14 +71,19 @@ fn escape_string(s: &str) -> String {
 /// Converts S-expression string to JSON string.
 /// Expects explicitly tagged S-expressions as produced by json_to_sexpr.
 /// Applies implicit null filtering: nulls in arrays are removed.
-pub fn sexpr_to_json(s: &str) -> Result<String, String> {
+pub fn sexpr_to_json(s: &str) -> SResult<String> {
     let mut parser = Parser::new(s);
     let sexpr = parser.parse()?;
     let json_value = sexpr_to_json_value(&sexpr)?;
-    serde_json::to_string(&json_value).map_err(|e| e.to_string())
+    serde_json::to_string(&json_value).map_err(|e| {
+        SError::new("sexpr-to-json")
+            .with_code("json-serialization-failed")
+            .with_message("Failed to serialize JSON value to string")
+            .with_string_field("serialization_error", &e.to_string())
+    })
 }
 
-fn sexpr_to_json_value(sexpr: &SExpr) -> Result<Value, String> {
+fn sexpr_to_json_value(sexpr: &SExpr) -> SResult<Value> {
     match sexpr {
         SExpr::Atom(s) => {
             if s == "null" {
@@ -87,23 +100,33 @@ fn sexpr_to_json_value(sexpr: &SExpr) -> Result<Value, String> {
             } else if let Ok(f) = s.parse::<f64>() {
                 Ok(serde_json::json!(f))
             } else {
-                Err(format!("Cannot convert atom '{}' to JSON", s))
+                Err(SError::new("sexpr-to-json")
+                    .with_code("unconvertible-atom")
+                    .with_message("Cannot convert atom to JSON: not a recognized literal")
+                    .with_string_field("atom_value", s))
             }
         }
         SExpr::List(list) => {
             if list.is_empty() {
-                return Err("Empty list cannot be converted to JSON".to_string());
+                return Err(SError::new("sexpr-to-json")
+                    .with_code("empty-list")
+                    .with_message("Empty list cannot be converted to JSON"));
             }
 
             let tag = match &list[0] {
                 SExpr::Atom(s) => s.as_str(),
-                _ => return Err("First element of list must be a tag atom".to_string()),
+                _ => {
+                    return Err(SError::new("sexpr-to-json")
+                        .with_code("invalid-tag")
+                        .with_message("First element of list must be a tag atom")
+                        .with_field("first_element", list[0].clone()));
+                }
             };
 
             match tag {
                 "obj" => {
                     let mut map = serde_json::Map::new();
-                    for item in list.iter().skip(1) {
+                    for (idx, item) in list.iter().skip(1).enumerate() {
                         match item {
                             SExpr::List(pair) if pair.len() == 2 => {
                                 let key = match &pair[0] {
@@ -111,23 +134,32 @@ fn sexpr_to_json_value(sexpr: &SExpr) -> Result<Value, String> {
                                         unescape_string(&k[1..k.len() - 1])
                                     }
                                     _ => {
-                                        return Err(
-                                            "Object key must be a quoted string".to_string()
-                                        );
+                                        return Err(SError::new("sexpr-to-json")
+                                            .with_code("invalid-object-key")
+                                            .with_message("Object key must be a quoted string")
+                                            .with_atom_field("entry_index", idx)
+                                            .with_field("key_element", pair[0].clone()));
                                     }
                                 };
                                 let value = sexpr_to_json_value(&pair[1])?;
                                 map.insert(key, value);
                             }
-                            _ => return Err("Object entries must be (key value) pairs".to_string()),
+                            _ => {
+                                return Err(SError::new("sexpr-to-json")
+                                    .with_code("invalid-object-entry")
+                                    .with_message("Object entries must be (key value) pairs")
+                                    .with_atom_field("entry_index", idx)
+                                    .with_field("entry", item.clone()));
+                            }
                         }
                     }
                     Ok(Value::Object(map))
                 }
                 "arr" => {
                     let mut arr = Vec::new();
-                    for item in list.iter().skip(1) {
-                        let value = sexpr_to_json_value(item)?;
+                    for (idx, item) in list.iter().skip(1).enumerate() {
+                        let value = sexpr_to_json_value(item)
+                            .map_err(|e| e.with_atom_field("array_element_index", idx))?;
                         // Implicit null filtering: skip nulls in arrays
                         if !value.is_null() {
                             arr.push(value);
@@ -135,7 +167,11 @@ fn sexpr_to_json_value(sexpr: &SExpr) -> Result<Value, String> {
                     }
                     Ok(Value::Array(arr))
                 }
-                _ => Err(format!("Unknown tag '{}'", tag)),
+                _ => Err(SError::new("sexpr-to-json")
+                    .with_code("unknown-tag")
+                    .with_message("Unknown tag for JSON conversion")
+                    .with_string_field("tag", tag)
+                    .with_string_field("expected", "obj or arr")),
             }
         }
     }
@@ -353,5 +389,28 @@ mod tests {
         let original: Value = serde_json::from_str(json).unwrap();
         let result: Value = serde_json::from_str(&json_out).unwrap();
         assert_eq!(original, result);
+    }
+
+    #[test]
+    fn citation_note_type_object() {
+        let sexpr = r#"(obj ("citation" "journal:250224_2002") ("note" "Data exists in two primary structural forms: structured data, which follows a predefined format or schema, and unstructured data, which lacks a consistent organizational framework.") ("type" "atomic"))"#;
+
+        // Convert S-expression to JSON
+        let json_out = sexpr_to_json(sexpr).unwrap();
+        let json_value: Value = serde_json::from_str(&json_out).unwrap();
+
+        // Verify the JSON object has the expected fields
+        assert_eq!(json_value["citation"], "journal:250224_2002");
+        assert_eq!(
+            json_value["note"],
+            "Data exists in two primary structural forms: structured data, which follows a predefined format or schema, and unstructured data, which lacks a consistent organizational framework."
+        );
+        assert_eq!(json_value["type"], "atomic");
+
+        // Verify round-trip: JSON -> S-expression -> JSON
+        let sexpr_out = json_to_sexpr(&json_out).unwrap();
+        let json_final = sexpr_to_json(&sexpr_out).unwrap();
+        let final_value: Value = serde_json::from_str(&json_final).unwrap();
+        assert_eq!(json_value, final_value);
     }
 }

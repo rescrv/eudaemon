@@ -1,5 +1,7 @@
 //! s-expression parser and AST
 
+use crate::s::error::{SError, SResult};
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum SExpr {
     Atom(String),
@@ -37,15 +39,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<SExpr, String> {
+    pub fn parse(&mut self) -> SResult<SExpr> {
         self.consume_whitespace();
         if self.position >= self.input.len() {
-            return Err("Unexpected end of input".to_string());
+            return Err(SError::new("parse")
+                .with_code("unexpected-eof")
+                .with_message("Unexpected end of input")
+                .with_atom_field("position", self.position));
         }
         match self.peek_char() {
             Some(b'(') => self.parse_list(),
+            Some(b'"') => self.parse_quoted_string(),
             Some(_) => self.parse_atom(),
-            None => Err("Unexpected end of input".to_string()),
+            None => Err(SError::new("parse")
+                .with_code("unexpected-eof")
+                .with_message("Unexpected end of input")
+                .with_atom_field("position", self.position)),
         }
     }
 
@@ -77,7 +86,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_list(&mut self) -> Result<SExpr, String> {
+    fn parse_list(&mut self) -> SResult<SExpr> {
+        let start_position = self.position;
         self.next_char(); // consume '('
         let mut list = Vec::new();
         loop {
@@ -90,12 +100,65 @@ impl<'a> Parser<'a> {
                 Some(_) => {
                     list.push(self.parse()?);
                 }
-                None => return Err("Unclosed list".to_string()),
+                None => {
+                    return Err(SError::new("parse")
+                        .with_code("unclosed-list")
+                        .with_message("Unclosed list: expected ')' but reached end of input")
+                        .with_atom_field("start_position", start_position)
+                        .with_atom_field("current_position", self.position)
+                        .with_atom_field("list_elements_parsed", list.len()));
+                }
             }
         }
     }
 
-    fn parse_atom(&mut self) -> Result<SExpr, String> {
+    fn parse_quoted_string(&mut self) -> SResult<SExpr> {
+        let start_position = self.position;
+        self.next_char(); // consume opening '"'
+        let mut result = String::from("\"");
+
+        loop {
+            match self.peek_char() {
+                None => {
+                    return Err(SError::new("parse")
+                        .with_code("unclosed-string")
+                        .with_message(
+                            "Unclosed quoted string: expected '\"' but reached end of input",
+                        )
+                        .with_atom_field("start_position", start_position)
+                        .with_atom_field("current_position", self.position));
+                }
+                Some(b'\\') => {
+                    self.next_char(); // consume '\'
+                    match self.peek_char() {
+                        Some(ch) => {
+                            result.push('\\');
+                            result.push(ch as char);
+                            self.next_char();
+                        }
+                        None => {
+                            return Err(SError::new("parse")
+                                .with_code("unclosed-string")
+                                .with_message("Unclosed quoted string: escape at end of input")
+                                .with_atom_field("start_position", start_position)
+                                .with_atom_field("current_position", self.position));
+                        }
+                    }
+                }
+                Some(b'"') => {
+                    result.push('"');
+                    self.next_char(); // consume closing '"'
+                    return Ok(SExpr::Atom(result));
+                }
+                Some(ch) => {
+                    result.push(ch as char);
+                    self.next_char();
+                }
+            }
+        }
+    }
+
+    fn parse_atom(&mut self) -> SResult<SExpr> {
         let start = self.position;
         while let Some(ch) = self.peek_char() {
             if ch.is_ascii_whitespace() || ch == b'(' || ch == b')' {
@@ -105,9 +168,16 @@ impl<'a> Parser<'a> {
         }
         let end = self.position;
         let atom = &self.input[start..end];
-        Ok(SExpr::Atom(
-            String::from_utf8(atom.to_vec()).map_err(|e| e.to_string())?,
-        ))
+        String::from_utf8(atom.to_vec())
+            .map(SExpr::Atom)
+            .map_err(|e| {
+                SError::new("parse")
+                    .with_code("invalid-utf8")
+                    .with_message("Invalid UTF-8 in atom")
+                    .with_atom_field("start_position", start)
+                    .with_atom_field("end_position", end)
+                    .with_string_field("utf8_error", &e.to_string())
+            })
     }
 }
 
@@ -195,6 +265,51 @@ mod tests {
     #[test]
     fn test_unclosed_list() {
         let mut parser = Parser::new("(foo bar");
+        assert!(parser.parse().is_err());
+    }
+
+    #[test]
+    fn quoted_string_simple() {
+        let mut parser = Parser::new(r#""hello""#);
+        assert_eq!(parser.parse(), Ok(SExpr::Atom(r#""hello""#.to_string())));
+    }
+
+    #[test]
+    fn quoted_string_with_spaces() {
+        let mut parser = Parser::new(r#""hello world""#);
+        assert_eq!(
+            parser.parse(),
+            Ok(SExpr::Atom(r#""hello world""#.to_string()))
+        );
+    }
+
+    #[test]
+    fn quoted_string_with_escapes() {
+        let mut parser = Parser::new(r#""hello \"world\"""#);
+        assert_eq!(
+            parser.parse(),
+            Ok(SExpr::Atom(r#""hello \"world\"""#.to_string()))
+        );
+    }
+
+    #[test]
+    fn list_with_quoted_strings() {
+        let mut parser = Parser::new(r#"(obj ("key" "value with spaces"))"#);
+        assert_eq!(
+            parser.parse(),
+            Ok(SExpr::List(vec![
+                SExpr::Atom("obj".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom(r#""key""#.to_string()),
+                    SExpr::Atom(r#""value with spaces""#.to_string())
+                ])
+            ]))
+        );
+    }
+
+    #[test]
+    fn unclosed_quoted_string() {
+        let mut parser = Parser::new(r#""hello"#);
         assert!(parser.parse().is_err());
     }
 }

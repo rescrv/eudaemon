@@ -1,7 +1,8 @@
+use crate::s::error::{SError, SResult};
 use crate::s::expr::SExpr;
 use std::collections::HashMap;
 
-pub type SExprFn = fn(&[SExpr]) -> Result<SExpr, String>;
+pub type SExprFn = fn(&[SExpr]) -> SResult<SExpr>;
 
 pub struct Env {
     pub funcs: HashMap<String, SExprFn>,
@@ -25,7 +26,7 @@ impl Env {
     }
 }
 
-pub fn eval(expr: &SExpr, env: &Env) -> Result<SExpr, String> {
+pub fn eval(expr: &SExpr, env: &Env) -> SResult<SExpr> {
     match expr {
         SExpr::Atom(s) => {
             // attempt to parse as a number, otherwise it's a string
@@ -43,19 +44,29 @@ pub fn eval(expr: &SExpr, env: &Env) -> Result<SExpr, String> {
             let func_name_expr = &list[0];
             let func_name = match func_name_expr {
                 SExpr::Atom(s) => s,
-                _ => return Err("First element of a list must be a function name".to_string()),
+                _ => {
+                    return Err(SError::new("eval")
+                        .with_code("invalid-function-name")
+                        .with_message("First element of a list must be a function name (atom)")
+                        .with_field("expression", func_name_expr.clone()));
+                }
             };
 
-            let func = env
-                .funcs
-                .get(func_name)
-                .ok_or(format!("Function '{}' not found", func_name))?;
+            let func = env.funcs.get(func_name).ok_or_else(|| {
+                SError::new("eval")
+                    .with_code("function-not-found")
+                    .with_message("Function not found in environment")
+                    .with_string_field("function_name", func_name)
+                    .with_atom_field("available_functions", env.funcs.len())
+            })?;
 
-            let args: Result<Vec<SExpr>, String> =
-                list.iter().skip(1).map(|arg| eval(arg, env)).collect();
+            let args: SResult<Vec<SExpr>> = list.iter().skip(1).map(|arg| eval(arg, env)).collect();
             let evaluated_args = args?;
 
-            func(&evaluated_args)
+            func(&evaluated_args).map_err(|e| {
+                e.with_string_field("during_call_to", func_name)
+                    .with_atom_field("num_args", evaluated_args.len())
+            })
         }
     }
 }
@@ -65,29 +76,68 @@ mod tests {
     use super::*;
     use crate::s::expr::Parser;
 
-    fn add(args: &[SExpr]) -> Result<SExpr, String> {
+    fn add(args: &[SExpr]) -> SResult<SExpr> {
         let mut sum = 0;
-        for arg in args {
+        for (idx, arg) in args.iter().enumerate() {
             if let SExpr::Atom(s) = arg {
-                sum += s.parse::<i64>().map_err(|e| e.to_string())?;
+                sum += s.parse::<i64>().map_err(|e| {
+                    SError::new("add")
+                        .with_code("invalid-argument")
+                        .with_message("Argument is not a valid integer")
+                        .with_atom_field("argument_index", idx)
+                        .with_string_field("argument_value", s)
+                        .with_string_field("parse_error", &e.to_string())
+                })?;
             } else {
-                return Err("add requires atomic arguments".to_string());
+                return Err(SError::new("add")
+                    .with_code("non-atomic-argument")
+                    .with_message("add requires atomic arguments")
+                    .with_atom_field("argument_index", idx)
+                    .with_field("argument_value", arg.clone()));
             }
         }
         Ok(SExpr::Atom(sum.to_string()))
     }
 
-    fn subtract(args: &[SExpr]) -> Result<SExpr, String> {
+    fn subtract(args: &[SExpr]) -> SResult<SExpr> {
         if args.len() != 2 {
-            return Err("subtract requires exactly two arguments".to_string());
+            return Err(SError::new("subtract")
+                .with_code("wrong-argument-count")
+                .with_message("subtract requires exactly two arguments")
+                .with_atom_field("expected", 2)
+                .with_atom_field("received", args.len()));
         }
         let a = match &args[0] {
-            SExpr::Atom(s) => s.parse::<i64>().map_err(|e| e.to_string())?,
-            _ => return Err("subtract arguments must be atoms".to_string()),
+            SExpr::Atom(s) => s.parse::<i64>().map_err(|e| {
+                SError::new("subtract")
+                    .with_code("invalid-argument")
+                    .with_message("First argument is not a valid integer")
+                    .with_string_field("argument_value", s)
+                    .with_string_field("parse_error", &e.to_string())
+            })?,
+            _ => {
+                return Err(SError::new("subtract")
+                    .with_code("non-atomic-argument")
+                    .with_message("subtract arguments must be atoms")
+                    .with_atom_field("argument_index", 0)
+                    .with_field("argument_value", args[0].clone()));
+            }
         };
         let b = match &args[1] {
-            SExpr::Atom(s) => s.parse::<i64>().map_err(|e| e.to_string())?,
-            _ => return Err("subtract arguments must be atoms".to_string()),
+            SExpr::Atom(s) => s.parse::<i64>().map_err(|e| {
+                SError::new("subtract")
+                    .with_code("invalid-argument")
+                    .with_message("Second argument is not a valid integer")
+                    .with_string_field("argument_value", s)
+                    .with_string_field("parse_error", &e.to_string())
+            })?,
+            _ => {
+                return Err(SError::new("subtract")
+                    .with_code("non-atomic-argument")
+                    .with_message("subtract arguments must be atoms")
+                    .with_atom_field("argument_index", 1)
+                    .with_field("argument_value", args[1].clone()));
+            }
         };
         Ok(SExpr::Atom((a - b).to_string()))
     }
