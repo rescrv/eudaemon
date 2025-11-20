@@ -7,6 +7,12 @@ pub struct Env {
     pub funcs: HashMap<String, SExprFn>,
 }
 
+impl Default for Env {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Env {
     pub fn new() -> Self {
         Env {
@@ -70,7 +76,7 @@ mod tests {
         }
         Ok(SExpr::Atom(sum.to_string()))
     }
-    
+
     fn subtract(args: &[SExpr]) -> Result<SExpr, String> {
         if args.len() != 2 {
             return Err("subtract requires exactly two arguments".to_string());
@@ -86,14 +92,13 @@ mod tests {
         Ok(SExpr::Atom((a - b).to_string()))
     }
 
-
     #[test]
     fn test_eval_atom() {
         let env = Env::new();
         let expr = SExpr::Atom("foo".to_string());
         assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("foo".to_string())));
     }
-    
+
     #[test]
     fn test_eval_numeric_atom() {
         let env = Env::new();
@@ -105,7 +110,7 @@ mod tests {
     fn test_eval_simple_func_call() {
         let mut env = Env::new();
         env.def_fn("+", add);
-        
+
         let mut parser = Parser::new("(+ 1 2)");
         let expr = parser.parse().unwrap();
 
@@ -116,30 +121,30 @@ mod tests {
     fn test_eval_nested_func_call() {
         let mut env = Env::new();
         env.def_fn("+", add);
-        
+
         let mut parser = Parser::new("(+ 1 (+ 2 3))");
         let expr = parser.parse().unwrap();
 
         assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("6".to_string())));
     }
-    
+
     #[test]
     fn test_eval_subtract_func_call() {
         let mut env = Env::new();
         env.def_fn("-", subtract);
-        
+
         let mut parser = Parser::new("(- 5 2)");
         let expr = parser.parse().unwrap();
 
         assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("3".to_string())));
     }
-    
+
     #[test]
     fn test_eval_complex_nested_func_call() {
         let mut env = Env::new();
         env.def_fn("+", add);
         env.def_fn("-", subtract);
-        
+
         let mut parser = Parser::new("(+ 10 (- 5 (+ 1 1)))");
         let expr = parser.parse().unwrap();
 
