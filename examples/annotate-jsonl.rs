@@ -73,12 +73,11 @@ Remember: Extract metadata from the writing above.
     let response = anthropic.send(params).await?;
 
     for content_block in &response.content {
-        if let ContentBlock::ToolUse(tool_use) = content_block {
-            if tool_use.name == "doit"
-                && let Some(metadata) = tool_use.input.get("metadata")
-            {
-                return Ok(metadata.clone());
-            }
+        if let ContentBlock::ToolUse(tool_use) = content_block
+            && tool_use.name == "doit"
+            && let Some(metadata) = tool_use.input.get("metadata")
+        {
+            return Ok(metadata.clone());
         }
     }
 

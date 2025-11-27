@@ -15,19 +15,17 @@ fn atom_to_string(atom: &str) -> String {
 pub fn get(value: &SExpr, key: &str) -> SExpr {
     match value {
         SExpr::List(items) if !items.is_empty() => {
-            if let SExpr::Atom(tag) = &items[0] {
-                if tag == "obj" {
-                    // Search for the key in the object
-                    for item in items.iter().skip(1) {
-                        if let SExpr::List(pair) = item {
-                            if pair.len() == 2 {
-                                if let SExpr::Atom(k) = &pair[0] {
-                                    if atom_to_string(k) == key {
-                                        return pair[1].clone();
-                                    }
-                                }
-                            }
-                        }
+            if let SExpr::Atom(tag) = &items[0]
+                && tag == "obj"
+            {
+                // Search for the key in the object
+                for item in items.iter().skip(1) {
+                    if let SExpr::List(pair) = item
+                        && pair.len() == 2
+                        && let SExpr::Atom(k) = &pair[0]
+                        && atom_to_string(k) == key
+                    {
+                        return pair[1].clone();
                     }
                 }
             }
@@ -47,10 +45,10 @@ pub fn keys(value: &SExpr) -> SExpr {
                         .iter()
                         .skip(1)
                         .filter_map(|item| {
-                            if let SExpr::List(pair) = item {
-                                if pair.len() == 2 {
-                                    return Some(pair[0].clone());
-                                }
+                            if let SExpr::List(pair) = item
+                                && pair.len() == 2
+                            {
+                                return Some(pair[0].clone());
                             }
                             None
                         })
@@ -87,10 +85,10 @@ pub fn values(value: &SExpr) -> SExpr {
                         .iter()
                         .skip(1)
                         .filter_map(|item| {
-                            if let SExpr::List(pair) = item {
-                                if pair.len() == 2 {
-                                    return Some(pair[1].clone());
-                                }
+                            if let SExpr::List(pair) = item
+                                && pair.len() == 2
+                            {
+                                return Some(pair[1].clone());
                             }
                             None
                         })
@@ -114,38 +112,36 @@ pub fn values(value: &SExpr) -> SExpr {
 pub fn assoc(value: &SExpr, key: &str, new_value: SExpr) -> SExpr {
     match value {
         SExpr::List(items) if !items.is_empty() => {
-            if let SExpr::Atom(tag) = &items[0] {
-                if tag == "obj" {
-                    let mut result = vec![SExpr::Atom("obj".to_string())];
-                    let mut found = false;
+            if let SExpr::Atom(tag) = &items[0]
+                && tag == "obj"
+            {
+                let mut result = vec![SExpr::Atom("obj".to_string())];
+                let mut found = false;
 
-                    for item in items.iter().skip(1) {
-                        if let SExpr::List(pair) = item {
-                            if pair.len() == 2 {
-                                if let SExpr::Atom(k) = &pair[0] {
-                                    if atom_to_string(k) == key {
-                                        result.push(SExpr::List(vec![
-                                            SExpr::Atom(format!("\"{}\"", key)),
-                                            new_value.clone(),
-                                        ]));
-                                        found = true;
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        result.push(item.clone());
-                    }
-
-                    if !found {
+                for item in items.iter().skip(1) {
+                    if let SExpr::List(pair) = item
+                        && pair.len() == 2
+                        && let SExpr::Atom(k) = &pair[0]
+                        && atom_to_string(k) == key
+                    {
                         result.push(SExpr::List(vec![
                             SExpr::Atom(format!("\"{}\"", key)),
-                            new_value,
+                            new_value.clone(),
                         ]));
+                        found = true;
+                        continue;
                     }
-
-                    return SExpr::List(result);
+                    result.push(item.clone());
                 }
+
+                if !found {
+                    result.push(SExpr::List(vec![
+                        SExpr::Atom(format!("\"{}\"", key)),
+                        new_value,
+                    ]));
+                }
+
+                return SExpr::List(result);
             }
             SExpr::Atom("null".to_string())
         }
@@ -161,25 +157,23 @@ pub fn assoc(value: &SExpr, key: &str, new_value: SExpr) -> SExpr {
 pub fn dissoc(value: &SExpr, key: &str) -> SExpr {
     match value {
         SExpr::List(items) if !items.is_empty() => {
-            if let SExpr::Atom(tag) = &items[0] {
-                if tag == "obj" {
-                    let mut result = vec![SExpr::Atom("obj".to_string())];
+            if let SExpr::Atom(tag) = &items[0]
+                && tag == "obj"
+            {
+                let mut result = vec![SExpr::Atom("obj".to_string())];
 
-                    for item in items.iter().skip(1) {
-                        if let SExpr::List(pair) = item {
-                            if pair.len() == 2 {
-                                if let SExpr::Atom(k) = &pair[0] {
-                                    if atom_to_string(k) == key {
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        result.push(item.clone());
+                for item in items.iter().skip(1) {
+                    if let SExpr::List(pair) = item
+                        && pair.len() == 2
+                        && let SExpr::Atom(k) = &pair[0]
+                        && atom_to_string(k) == key
+                    {
+                        continue;
                     }
-
-                    return SExpr::List(result);
+                    result.push(item.clone());
                 }
+
+                return SExpr::List(result);
             }
             SExpr::Atom("null".to_string())
         }
@@ -192,23 +186,20 @@ pub fn merge(objects: &[SExpr]) -> SExpr {
     let mut result_map: Vec<(String, SExpr)> = Vec::new();
 
     for obj in objects {
-        if let SExpr::List(items) = obj {
-            if !items.is_empty() {
-                if let SExpr::Atom(tag) = &items[0] {
-                    if tag == "obj" {
-                        for item in items.iter().skip(1) {
-                            if let SExpr::List(pair) = item {
-                                if pair.len() == 2 {
-                                    if let SExpr::Atom(k) = &pair[0] {
-                                        let key = atom_to_string(k);
-                                        // Remove existing entry with this key
-                                        result_map.retain(|(existing_key, _)| existing_key != &key);
-                                        result_map.push((key, pair[1].clone()));
-                                    }
-                                }
-                            }
-                        }
-                    }
+        if let SExpr::List(items) = obj
+            && !items.is_empty()
+            && let SExpr::Atom(tag) = &items[0]
+            && tag == "obj"
+        {
+            for item in items.iter().skip(1) {
+                if let SExpr::List(pair) = item
+                    && pair.len() == 2
+                    && let SExpr::Atom(k) = &pair[0]
+                {
+                    let key = atom_to_string(k);
+                    // Remove existing entry with this key
+                    result_map.retain(|(existing_key, _)| existing_key != &key);
+                    result_map.push((key, pair[1].clone()));
                 }
             }
         }

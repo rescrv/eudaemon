@@ -20,10 +20,6 @@ impl Accumulator {
             self.count += 1;
         }
     }
-
-    fn weight(&self) -> u64 {
-        self.count + self.children.values().map(|v| v.weight()).sum::<u64>()
-    }
 }
 
 #[tokio::main]
