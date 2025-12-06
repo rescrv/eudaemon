@@ -4,3 +4,4 @@ pub mod expr;
 pub mod json;
 pub mod markdown;
 pub mod nodeid;
+pub mod selector;

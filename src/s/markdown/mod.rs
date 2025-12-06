@@ -32,6 +32,7 @@
 //! ```
 
 pub mod curation;
+pub mod invariants;
 pub mod mutations;
 
 use markdown::ParseOptions;

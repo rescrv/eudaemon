@@ -803,6 +803,572 @@ pub fn scan_links_to_sexpr(doc: &SExpr) -> SExpr {
     SExpr::List(result)
 }
 
+// ============================================================================
+// Node Tagging (Stigmergic Annotation)
+// ============================================================================
+
+/// Tag format used in HTML comments: <!-- @tag:key=value -->
+const TAG_PREFIX: &str = "@tag:";
+
+/// Attaches a metadata tag to a node via an HTML comment.
+///
+/// The tag is inserted as an HTML comment immediately before the target node:
+/// `<!-- @tag:key=value -->`
+///
+/// This allows agents to leave metadata for future passes without polluting
+/// the visible document content.
+pub fn tag_node(doc: &SExpr, path: &PathId, key: &str, value: &str) -> SResult<SExpr> {
+    // Verify the target path exists.
+    get_by_path(doc, path).ok_or_else(|| {
+        SError::new("tagging")
+            .with_code("node-not-found")
+            .with_message("No node at the specified path")
+            .with_string_field("path", &path.to_string())
+    })?;
+
+    // Build the tag comment.
+    let comment = format!("<!-- {}{}={} -->", TAG_PREFIX, key, value);
+    let html_node = SExpr::List(vec![SExpr::Atom("html".to_string()), string_atom(&comment)]);
+
+    // Insert before the target node.
+    super::mutations::insert_before(doc, path, html_node)
+}
+
+/// Removes a tag from a node.
+///
+/// Looks for an HTML comment tag immediately before the node and removes it
+/// if it matches the specified key.
+pub fn remove_tag(doc: &SExpr, path: &PathId, key: &str) -> SResult<SExpr> {
+    // Check if there's a tag comment before this node.
+    let prev_path = get_previous_sibling_path(path).ok_or_else(|| {
+        SError::new("tagging")
+            .with_code("no-previous-sibling")
+            .with_message("No previous sibling to check for tag")
+    })?;
+
+    let prev_node = get_by_path(doc, &prev_path).ok_or_else(|| {
+        SError::new("tagging")
+            .with_code("node-not-found")
+            .with_message("Previous sibling not found")
+    })?;
+
+    // Check if it's an HTML tag comment with the specified key.
+    if !is_tag_comment_for_key(&prev_node, key) {
+        return Err(SError::new("tagging")
+            .with_code("tag-not-found")
+            .with_message("No matching tag found before node")
+            .with_string_field("key", key));
+    }
+
+    // Remove the tag comment.
+    prune(doc, &prev_path)
+}
+
+/// Information about a tagged node.
+#[derive(Debug, Clone)]
+pub struct TagInfo {
+    /// Path to the tagged node (the node after the tag comment).
+    pub path: PathId,
+    /// The tag key.
+    pub key: String,
+    /// The tag value.
+    pub value: String,
+}
+
+/// Finds all nodes with a specific tag key.
+pub fn get_tagged_nodes(doc: &SExpr, key: &str) -> Vec<TagInfo> {
+    let mut results = Vec::new();
+    find_tags_recursive(doc, &PathId::root(), key, &mut results);
+    results
+}
+
+/// Recursively searches for tag comments.
+fn find_tags_recursive(expr: &SExpr, path: &PathId, key: &str, results: &mut Vec<TagInfo>) {
+    if let SExpr::List(items) = expr {
+        // Look for HTML tag comments followed by the tagged node.
+        let mut i = 1; // Skip the tag element at index 0.
+        while i < items.len() {
+            let child_path = path.child(i);
+
+            if let Some((k, v)) = extract_tag_from_node(&items[i])
+                && k == key
+                && i + 1 < items.len()
+            {
+                // The next node is the tagged node.
+                results.push(TagInfo {
+                    path: path.child(i + 1),
+                    key: k,
+                    value: v,
+                });
+            }
+
+            // Recurse into children.
+            find_tags_recursive(&items[i], &child_path, key, results);
+            i += 1;
+        }
+    }
+}
+
+/// Extracts tag key and value from an HTML comment node.
+fn extract_tag_from_node(node: &SExpr) -> Option<(String, String)> {
+    if let SExpr::List(items) = node
+        && items.len() >= 2
+        && let SExpr::Atom(tag) = &items[0]
+        && tag == "html"
+    {
+        let content = extract_string_content(&items[1]);
+        return parse_tag_content(&content);
+    }
+    None
+}
+
+/// Parses tag content from an HTML comment.
+/// Format: <!-- @tag:key=value -->
+fn parse_tag_content(content: &str) -> Option<(String, String)> {
+    let content = content.trim();
+    if !content.starts_with("<!--") || !content.ends_with("-->") {
+        return None;
+    }
+    let inner = content[4..content.len() - 3].trim();
+    if !inner.starts_with(TAG_PREFIX) {
+        return None;
+    }
+    let tag_content = &inner[TAG_PREFIX.len()..];
+
+    let eq_pos = tag_content.find('=')?;
+    let key = tag_content[..eq_pos].to_string();
+    let value = tag_content[eq_pos + 1..].to_string();
+    Some((key, value))
+}
+
+/// Checks if a node is a tag comment for a specific key.
+fn is_tag_comment_for_key(node: &SExpr, key: &str) -> bool {
+    if let Some((k, _)) = extract_tag_from_node(node) {
+        return k == key;
+    }
+    false
+}
+
+/// Gets the previous sibling path.
+fn get_previous_sibling_path(path: &PathId) -> Option<PathId> {
+    let indices = path.indices();
+    if indices.is_empty() {
+        return None;
+    }
+    let last = *indices.last()?;
+    if last == 0 {
+        return None;
+    }
+    let mut new_indices = indices.to_vec();
+    *new_indices.last_mut()? = last - 1;
+    Some(PathId::new(new_indices))
+}
+
+// ============================================================================
+// Topological Refactoring
+// ============================================================================
+
+/// Updates all links pointing to a source URL to point to a target URL.
+///
+/// This is useful when moving content between documents or renaming files,
+/// to ensure all internal references remain valid.
+pub fn rehome_orphans(doc: &SExpr, source_url: &str, target_url: &str) -> SResult<SExpr> {
+    rehome_orphans_recursive(doc, source_url, target_url)
+}
+
+/// Recursively updates links.
+fn rehome_orphans_recursive(expr: &SExpr, source_url: &str, target_url: &str) -> SResult<SExpr> {
+    match expr {
+        SExpr::Atom(_) => Ok(expr.clone()),
+        SExpr::List(items) if items.is_empty() => Ok(expr.clone()),
+        SExpr::List(items) => {
+            // Check if this is a link or image with the source URL.
+            if let SExpr::Atom(tag) = &items[0] {
+                match tag.as_str() {
+                    "link" | "img" if items.len() >= 2 => {
+                        let url = extract_string_content(&items[1]);
+                        if url == source_url {
+                            let mut new_items = items.clone();
+                            new_items[1] = string_atom(target_url);
+                            // Recurse into remaining children.
+                            for item in new_items.iter_mut().skip(2) {
+                                *item = rehome_orphans_recursive(item, source_url, target_url)?;
+                            }
+                            return Ok(SExpr::List(new_items));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Recurse into all children.
+            let new_items: SResult<Vec<SExpr>> = items
+                .iter()
+                .map(|item| rehome_orphans_recursive(item, source_url, target_url))
+                .collect();
+            Ok(SExpr::List(new_items?))
+        }
+    }
+}
+
+/// Strategy for extracting content to a new document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractStrategy {
+    /// Replace extracted content with a link to the new document.
+    LeaveLink,
+    /// Replace with a transclusion directive (platform-specific).
+    Transclude,
+    /// Replace with a redirect notice in frontmatter style.
+    Redirect,
+}
+
+/// Extracts content with a specified strategy.
+///
+/// This is an enhanced version of `extract_to_ref` that supports multiple
+/// replacement strategies.
+pub fn extract_with_strategy(
+    doc: &SExpr,
+    paths: &[PathId],
+    target_filename: &str,
+    strategy: ExtractStrategy,
+    summary: Option<&str>,
+) -> SResult<ExtractResult> {
+    if paths.is_empty() {
+        return Err(SError::new("curation")
+            .with_code("empty-paths")
+            .with_message("No paths provided to extract"));
+    }
+
+    // Collect nodes to extract.
+    let mut nodes_to_extract = Vec::new();
+    for path in paths {
+        let node = get_by_path(doc, path).ok_or_else(|| {
+            SError::new("curation")
+                .with_code("node-not-found")
+                .with_message("Node not found at path")
+                .with_string_field("path", &path.to_string())
+        })?;
+        nodes_to_extract.push((path.clone(), node));
+    }
+
+    // Build the target document.
+    let mut target_children = vec![SExpr::Atom("doc".to_string())];
+    for (_, node) in &nodes_to_extract {
+        target_children.push(node.clone());
+    }
+    let target_doc = SExpr::List(target_children);
+
+    // Build the replacement node based on strategy.
+    let replacement = match strategy {
+        ExtractStrategy::LeaveLink => {
+            let link_text = summary.unwrap_or("See extracted content");
+            SExpr::List(vec![
+                SExpr::Atom("p".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("link".to_string()),
+                    string_atom(target_filename),
+                    string_atom(""),
+                    string_atom(link_text),
+                ]),
+            ])
+        }
+        ExtractStrategy::Transclude => {
+            // Use a common transclusion syntax: ![[filename]]
+            let transclude_text = format!("![[{}]]", target_filename);
+            SExpr::List(vec![
+                SExpr::Atom("p".to_string()),
+                string_atom(&transclude_text),
+            ])
+        }
+        ExtractStrategy::Redirect => {
+            // Leave a redirect notice.
+            let notice = format!(
+                "This content has been moved to [{}]({}).",
+                target_filename, target_filename
+            );
+            SExpr::List(vec![
+                SExpr::Atom("blockquote".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("p".to_string()),
+                    string_atom("[!info] Content Moved"),
+                ]),
+                SExpr::List(vec![SExpr::Atom("p".to_string()), string_atom(&notice)]),
+            ])
+        }
+    };
+
+    // Remove nodes from source and insert replacement.
+    let mut result = doc.clone();
+    let mut sorted_paths: Vec<_> = paths.iter().collect();
+    sorted_paths.sort_by(|a, b| b.indices().cmp(a.indices()));
+
+    for (i, path) in sorted_paths.iter().enumerate() {
+        if i == sorted_paths.len() - 1 {
+            result = replace_at(&result, path, replacement.clone())?;
+        } else {
+            result = prune(&result, path)?;
+        }
+    }
+
+    Ok(ExtractResult {
+        source_doc: result,
+        target_doc,
+        suggested_filename: target_filename.to_string(),
+    })
+}
+
+// ============================================================================
+// Token Economy (Lens Functions)
+// ============================================================================
+
+/// Returns a pruned AST containing only nodes at the specified paths
+/// and their ancestors.
+///
+/// This is useful for "surgical" edits where you want to focus on specific
+/// nodes without loading the entire document context.
+pub fn focus_context(doc: &SExpr, paths: &[PathId]) -> SExpr {
+    if paths.is_empty() {
+        return SExpr::List(vec![SExpr::Atom("doc".to_string())]);
+    }
+
+    // Collect all ancestor paths that need to be included.
+    let mut required_paths: std::collections::HashSet<Vec<usize>> =
+        std::collections::HashSet::new();
+
+    for path in paths {
+        // Include the path itself and all ancestors.
+        let indices = path.indices();
+        for len in 0..=indices.len() {
+            required_paths.insert(indices[..len].to_vec());
+        }
+    }
+
+    // Build the pruned tree.
+    focus_context_recursive(doc, &PathId::root(), &required_paths)
+}
+
+/// Recursively builds the focused tree.
+fn focus_context_recursive(
+    expr: &SExpr,
+    path: &PathId,
+    required: &std::collections::HashSet<Vec<usize>>,
+) -> SExpr {
+    match expr {
+        SExpr::Atom(_) => expr.clone(),
+        SExpr::List(items) if items.is_empty() => expr.clone(),
+        SExpr::List(items) => {
+            let mut new_items = vec![items[0].clone()]; // Keep the tag.
+
+            for (i, child) in items.iter().enumerate().skip(1) {
+                let child_path = path.child(i);
+                if required.contains(child_path.indices()) {
+                    new_items.push(focus_context_recursive(child, &child_path, required));
+                }
+            }
+
+            SExpr::List(new_items)
+        }
+    }
+}
+
+/// Returns a skeleton of the document structure without prose content.
+///
+/// The skeleton shows headers, list structure, and placeholders for content.
+/// This allows an agent to decide where to work based on structure before
+/// requesting the full text.
+pub fn skeletonize(doc: &SExpr, max_depth: Option<u8>) -> SExpr {
+    skeletonize_recursive(doc, 0, max_depth.unwrap_or(u8::MAX))
+}
+
+/// Recursively builds the skeleton.
+fn skeletonize_recursive(expr: &SExpr, current_depth: u8, max_depth: u8) -> SExpr {
+    if current_depth > max_depth {
+        return SExpr::Atom("\"...\"".to_string());
+    }
+
+    match expr {
+        SExpr::Atom(s) => {
+            // Replace string content with placeholder.
+            if s.starts_with('"') && s.ends_with('"') {
+                SExpr::Atom("\"...\"".to_string())
+            } else {
+                expr.clone()
+            }
+        }
+        SExpr::List(items) if items.is_empty() => expr.clone(),
+        SExpr::List(items) => {
+            let tag = match &items[0] {
+                SExpr::Atom(t) => t.as_str(),
+                _ => return expr.clone(),
+            };
+
+            match tag {
+                // Keep structure nodes but skeletonize children.
+                "doc" | "ul" | "ol" | "li" | "blockquote" | "table" | "tr" | "td" | "th" => {
+                    let new_items: Vec<SExpr> = items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, item)| {
+                            if i == 0 {
+                                item.clone()
+                            } else {
+                                skeletonize_recursive(item, current_depth + 1, max_depth)
+                            }
+                        })
+                        .collect();
+                    SExpr::List(new_items)
+                }
+                // Keep headers with their text (important for navigation).
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => expr.clone(),
+                // Replace paragraphs with placeholder.
+                "p" => SExpr::List(vec![
+                    SExpr::Atom("p".to_string()),
+                    SExpr::Atom("\"...\"".to_string()),
+                ]),
+                // Replace code blocks with language only.
+                "code-block" => {
+                    if items.len() >= 2 {
+                        SExpr::List(vec![
+                            SExpr::Atom("code-block".to_string()),
+                            items[1].clone(),
+                            SExpr::Atom("\"...\"".to_string()),
+                        ])
+                    } else {
+                        expr.clone()
+                    }
+                }
+                // Keep other structural elements.
+                _ => {
+                    let new_items: Vec<SExpr> = items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, item)| {
+                            if i == 0 {
+                                item.clone()
+                            } else {
+                                skeletonize_recursive(item, current_depth + 1, max_depth)
+                            }
+                        })
+                        .collect();
+                    SExpr::List(new_items)
+                }
+            }
+        }
+    }
+}
+
+/// Summary statistics about a document's structure.
+#[derive(Debug, Clone, Default)]
+pub struct SkeletonSummary {
+    /// Count of each heading level.
+    pub heading_counts: [usize; 6],
+    /// Total number of paragraphs.
+    pub paragraph_count: usize,
+    /// Total number of code blocks.
+    pub code_block_count: usize,
+    /// Total number of list items.
+    pub list_item_count: usize,
+    /// Total number of links.
+    pub link_count: usize,
+    /// Total number of images.
+    pub image_count: usize,
+    /// Maximum nesting depth.
+    pub max_depth: usize,
+    /// Languages used in code blocks.
+    pub code_languages: Vec<String>,
+}
+
+/// Returns summary statistics about a document's structure.
+pub fn skeleton_summary(doc: &SExpr) -> SkeletonSummary {
+    let mut summary = SkeletonSummary::default();
+    skeleton_summary_recursive(doc, 0, &mut summary);
+    summary
+}
+
+/// Recursively collects summary statistics.
+fn skeleton_summary_recursive(expr: &SExpr, depth: usize, summary: &mut SkeletonSummary) {
+    summary.max_depth = summary.max_depth.max(depth);
+
+    if let SExpr::List(items) = expr {
+        if items.is_empty() {
+            return;
+        }
+
+        if let SExpr::Atom(tag) = &items[0] {
+            match tag.as_str() {
+                "h1" => summary.heading_counts[0] += 1,
+                "h2" => summary.heading_counts[1] += 1,
+                "h3" => summary.heading_counts[2] += 1,
+                "h4" => summary.heading_counts[3] += 1,
+                "h5" => summary.heading_counts[4] += 1,
+                "h6" => summary.heading_counts[5] += 1,
+                "p" => summary.paragraph_count += 1,
+                "code-block" => {
+                    summary.code_block_count += 1;
+                    if items.len() >= 2 {
+                        let lang = extract_string_content(&items[1]);
+                        if !lang.is_empty() && !summary.code_languages.contains(&lang) {
+                            summary.code_languages.push(lang);
+                        }
+                    }
+                }
+                "li" => summary.list_item_count += 1,
+                "link" | "link-ref" => summary.link_count += 1,
+                "img" | "img-ref" => summary.image_count += 1,
+                _ => {}
+            }
+        }
+
+        // Recurse into children.
+        for child in items.iter().skip(1) {
+            skeleton_summary_recursive(child, depth + 1, summary);
+        }
+    }
+}
+
+/// Converts a SkeletonSummary to an s-expression for programmatic access.
+pub fn skeleton_summary_to_sexpr(summary: &SkeletonSummary) -> SExpr {
+    SExpr::List(vec![
+        SExpr::Atom("summary".to_string()),
+        SExpr::List(vec![
+            SExpr::Atom("\"headings\"".to_string()),
+            SExpr::List(vec![
+                SExpr::Atom("arr".to_string()),
+                SExpr::Atom(summary.heading_counts[0].to_string()),
+                SExpr::Atom(summary.heading_counts[1].to_string()),
+                SExpr::Atom(summary.heading_counts[2].to_string()),
+                SExpr::Atom(summary.heading_counts[3].to_string()),
+                SExpr::Atom(summary.heading_counts[4].to_string()),
+                SExpr::Atom(summary.heading_counts[5].to_string()),
+            ]),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("\"paragraphs\"".to_string()),
+            SExpr::Atom(summary.paragraph_count.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("\"code-blocks\"".to_string()),
+            SExpr::Atom(summary.code_block_count.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("\"list-items\"".to_string()),
+            SExpr::Atom(summary.list_item_count.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("\"links\"".to_string()),
+            SExpr::Atom(summary.link_count.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("\"images\"".to_string()),
+            SExpr::Atom(summary.image_count.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("\"max-depth\"".to_string()),
+            SExpr::Atom(summary.max_depth.to_string()),
+        ]),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -992,5 +1558,215 @@ mod tests {
         assert!(s.contains("arr"));
         assert!(s.contains("link-info"));
         assert!(s.contains("test.md"));
+    }
+
+    // Tagging tests
+
+    #[test]
+    fn tag_node_basic() {
+        let doc = parse(r#"(doc (h1 "Title") (p "Content"))"#);
+        let result = tag_node(&doc, &PathId::new(vec![2]), "status", "draft").unwrap();
+        let s = result.to_string();
+        println!("DEBUG tagged: {}", s);
+        assert!(s.contains("@tag:status=draft"));
+        assert!(s.contains("html"));
+    }
+
+    #[test]
+    fn get_tagged_nodes_basic() {
+        let doc =
+            parse(r#"(doc (h1 "Title") (html "<!-- @tag:needs-review=true -->") (p "Content"))"#);
+        let tagged = get_tagged_nodes(&doc, "needs-review");
+        println!("DEBUG tagged nodes: {:?}", tagged);
+        assert_eq!(tagged.len(), 1);
+        assert_eq!(tagged[0].path, PathId::new(vec![3]));
+        assert_eq!(tagged[0].value, "true");
+    }
+
+    #[test]
+    fn remove_tag_basic() {
+        let doc = parse(r#"(doc (h1 "Title") (html "<!-- @tag:draft=true -->") (p "Content"))"#);
+        let result = remove_tag(&doc, &PathId::new(vec![3]), "draft").unwrap();
+        let s = result.to_string();
+        println!("DEBUG after remove tag: {}", s);
+        assert!(!s.contains("@tag:draft"));
+        assert!(s.contains("(p \"Content\")"));
+    }
+
+    // Rehome orphans tests
+
+    #[test]
+    fn rehome_orphans_basic() {
+        let doc = parse(
+            r#"(doc (p (link "old.md" "" "Link1")) (p (link "old.md" "" "Link2")) (p (link "other.md" "" "Other")))"#,
+        );
+        let result = rehome_orphans(&doc, "old.md", "new.md").unwrap();
+        let s = result.to_string();
+        println!("DEBUG rehomed: {}", s);
+        assert!(!s.contains("old.md"));
+        assert!(s.contains("new.md"));
+        assert!(s.contains("other.md")); // Unchanged
+    }
+
+    #[test]
+    fn rehome_orphans_images() {
+        let doc = parse(r#"(doc (p (img "old.png" "Alt" "")))"#);
+        let result = rehome_orphans(&doc, "old.png", "new.png").unwrap();
+        let s = result.to_string();
+        assert!(s.contains("new.png"));
+        assert!(!s.contains("old.png"));
+    }
+
+    // Extract with strategy tests
+
+    #[test]
+    fn extract_with_leave_link() {
+        let doc = parse(r#"(doc (h1 "Title") (p "Extract me"))"#);
+        let result = extract_with_strategy(
+            &doc,
+            &[PathId::new(vec![2])],
+            "extracted.md",
+            ExtractStrategy::LeaveLink,
+            Some("See details"),
+        )
+        .unwrap();
+        assert!(result.source_doc.to_string().contains("extracted.md"));
+        assert!(result.source_doc.to_string().contains("link"));
+    }
+
+    #[test]
+    fn extract_with_transclude() {
+        let doc = parse(r#"(doc (h1 "Title") (p "Extract me"))"#);
+        let result = extract_with_strategy(
+            &doc,
+            &[PathId::new(vec![2])],
+            "extracted.md",
+            ExtractStrategy::Transclude,
+            None,
+        )
+        .unwrap();
+        let s = result.source_doc.to_string();
+        println!("DEBUG transclude: {}", s);
+        assert!(s.contains("![[extracted.md]]"));
+    }
+
+    #[test]
+    fn extract_with_redirect() {
+        let doc = parse(r#"(doc (h1 "Title") (p "Extract me"))"#);
+        let result = extract_with_strategy(
+            &doc,
+            &[PathId::new(vec![2])],
+            "extracted.md",
+            ExtractStrategy::Redirect,
+            None,
+        )
+        .unwrap();
+        let s = result.source_doc.to_string();
+        println!("DEBUG redirect: {}", s);
+        assert!(s.contains("Content Moved"));
+        assert!(s.contains("blockquote"));
+    }
+
+    // Focus context tests
+
+    #[test]
+    fn focus_context_basic() {
+        let doc = parse(r#"(doc (h1 "A") (p "B") (ul (li (p "C")) (li (p "D"))) (p "E"))"#);
+        // Focus on the first list item's paragraph.
+        let focused = focus_context(&doc, &[PathId::new(vec![3, 1, 1])]);
+        let s = focused.to_string();
+        println!("DEBUG focused: {}", s);
+        // Should contain doc, ul, first li, and the p inside.
+        assert!(s.contains("doc"));
+        assert!(s.contains("ul"));
+        assert!(s.contains("li"));
+        // Should NOT contain h1, the standalone p's, or second li.
+        assert!(!s.contains("(h1"));
+        assert!(!s.contains("(p \"B\")"));
+        assert!(!s.contains("(p \"E\")"));
+    }
+
+    #[test]
+    fn focus_context_multiple_paths() {
+        let doc = parse(r#"(doc (h1 "A") (p "B") (h2 "C"))"#);
+        let focused = focus_context(&doc, &[PathId::new(vec![1]), PathId::new(vec![3])]);
+        let s = focused.to_string();
+        println!("DEBUG multi-focused: {}", s);
+        // Should contain h1 and h2 but not p.
+        assert!(s.contains("(h1"));
+        assert!(s.contains("(h2"));
+        assert!(!s.contains("(p \"B\")"));
+    }
+
+    // Skeletonize tests
+
+    #[test]
+    fn skeletonize_basic() {
+        let doc = parse(
+            r#"(doc (h1 "Title") (p "Long paragraph text") (code-block "rust" "fn main() {}"))"#,
+        );
+        let skeleton = skeletonize(&doc, None);
+        let s = skeleton.to_string();
+        println!("DEBUG skeleton: {}", s);
+        // Headers preserved.
+        assert!(s.contains("(h1 \"Title\")"));
+        // Paragraphs replaced.
+        assert!(s.contains("(p \"...\")"));
+        // Code block language preserved but content replaced.
+        assert!(s.contains("code-block"));
+        assert!(s.contains("\"rust\""));
+        assert!(!s.contains("fn main"));
+    }
+
+    #[test]
+    fn skeletonize_with_depth() {
+        let doc = parse(r#"(doc (ul (li (ul (li (p "Deep"))))))"#);
+        let skeleton = skeletonize(&doc, Some(2));
+        let s = skeleton.to_string();
+        println!("DEBUG skeleton depth 2: {}", s);
+        assert!(s.contains("\"...\""));
+    }
+
+    #[test]
+    fn skeleton_summary_basic() {
+        let doc = parse(
+            r#"(doc 
+                (h1 "Title") 
+                (p "Intro") 
+                (h2 "Section") 
+                (p "Content") 
+                (code-block "rust" "code") 
+                (ul (li "A") (li "B"))
+                (p (link "test.md" "" "Link"))
+            )"#,
+        );
+        let summary = skeleton_summary(&doc);
+        println!("DEBUG summary: {:?}", summary);
+        assert_eq!(summary.heading_counts[0], 1); // h1
+        assert_eq!(summary.heading_counts[1], 1); // h2
+        assert_eq!(summary.paragraph_count, 3);
+        assert_eq!(summary.code_block_count, 1);
+        assert_eq!(summary.list_item_count, 2);
+        assert_eq!(summary.link_count, 1);
+        assert!(summary.code_languages.contains(&"rust".to_string()));
+    }
+
+    #[test]
+    fn skeleton_summary_to_sexpr_basic() {
+        let summary = SkeletonSummary {
+            heading_counts: [1, 2, 0, 0, 0, 0],
+            paragraph_count: 5,
+            code_block_count: 2,
+            list_item_count: 3,
+            link_count: 4,
+            image_count: 1,
+            max_depth: 4,
+            code_languages: vec!["rust".to_string()],
+        };
+        let sexpr = skeleton_summary_to_sexpr(&summary);
+        let s = sexpr.to_string();
+        println!("DEBUG summary sexpr: {}", s);
+        assert!(s.contains("summary"));
+        assert!(s.contains("paragraphs"));
     }
 }
