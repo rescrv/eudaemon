@@ -5,11 +5,8 @@
 
 use std::io::{self, BufRead, Write};
 
-use agentkb::dialect;
-use agentkb::s::eval::{Env, eval};
-use agentkb::s::expr::{Parser, SExpr};
-use agentkb::s::json::unescape_string;
-use agentkb::{SError, SResult};
+use agentkb::{Env, Parser, SError, SExpr, SResult, eval, unescape_string};
+use agentkb::{assoc, dissoc, get, keys, merge, values};
 
 /// Extract string content from a quoted atom and unescape
 fn atom_to_string(atom: &str) -> String {
@@ -59,7 +56,7 @@ fn setup_env() -> Env {
                     .with_field("key", args[1].clone()));
             }
         };
-        Ok(dialect::get(&args[0], &key))
+        Ok(get(&args[0], &key))
     });
 
     // keys function: (keys value)
@@ -71,7 +68,7 @@ fn setup_env() -> Env {
                 .with_atom_field("expected", 1)
                 .with_atom_field("received", args.len()));
         }
-        Ok(dialect::keys(&args[0]))
+        Ok(keys(&args[0]))
     });
 
     // values function: (values value)
@@ -83,7 +80,7 @@ fn setup_env() -> Env {
                 .with_atom_field("expected", 1)
                 .with_atom_field("received", args.len()));
         }
-        Ok(dialect::values(&args[0]))
+        Ok(values(&args[0]))
     });
 
     // assoc function: (assoc value "key" new-value)
@@ -104,7 +101,7 @@ fn setup_env() -> Env {
                     .with_field("key", args[1].clone()));
             }
         };
-        Ok(dialect::assoc(&args[0], &key, args[2].clone()))
+        Ok(assoc(&args[0], &key, args[2].clone()))
     });
 
     // dissoc function: (dissoc value "key")
@@ -125,12 +122,12 @@ fn setup_env() -> Env {
                     .with_field("key", args[1].clone()));
             }
         };
-        Ok(dialect::dissoc(&args[0], &key))
+        Ok(dissoc(&args[0], &key))
     });
 
     // merge function: (merge obj1 obj2 ...)
     env.def_fn("merge", |args: &[SExpr]| -> SResult<SExpr> {
-        Ok(dialect::merge(args))
+        Ok(merge(args))
     });
 
     env
