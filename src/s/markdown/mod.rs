@@ -42,6 +42,7 @@ use markdown::mdast::Node;
 use super::error::{SError, SResult};
 use super::expr::SExpr;
 use super::json::unescape_string;
+use super::util::{extract_string, string_atom};
 
 /// Parses markdown text into an S-expression AST.
 pub fn markdown_to_sexpr(md: &str) -> SResult<SExpr> {
@@ -308,20 +309,6 @@ fn node_to_sexpr(node: &Node) -> SResult<SExpr> {
             Ok(SExpr::List(elements))
         }
     }
-}
-
-/// Creates a quoted string atom with proper escaping.
-fn string_atom(s: &str) -> SExpr {
-    SExpr::Atom(format!("\"{}\"", escape_string(s)))
-}
-
-/// Escapes special characters in a string for s-expression representation.
-fn escape_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 /// Converts an S-expression AST back to markdown text.
@@ -778,20 +765,6 @@ fn render_table_row(row: &SExpr, output: &mut String, depth: usize) -> SResult<(
     Ok(())
 }
 
-/// Extracts string content from an atom, handling quoted strings.
-fn extract_string(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                unescape_string(&s[1..s.len() - 1])
-            } else {
-                s.clone()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
 // ============================================================================
 // Frontmatter utilities
 // ============================================================================
@@ -985,6 +958,7 @@ pub fn remove_frontmatter_field(content: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::s::util::escape_string;
 
     #[test]
     fn parse_simple_paragraph() {

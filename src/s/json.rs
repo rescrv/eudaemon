@@ -2,6 +2,7 @@
 
 use crate::s::error::{SError, SResult};
 use crate::s::expr::{Parser, SExpr};
+use crate::s::util::escape_string;
 use serde_json::Value;
 
 /// Converts JSON string to S-expression string representation.
@@ -58,14 +59,6 @@ pub fn json_value_to_sexpr(value: &Value) -> SExpr {
             SExpr::List(elements)
         }
     }
-}
-
-fn escape_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 /// Converts S-expression string to JSON string.

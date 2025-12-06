@@ -49,8 +49,10 @@
 
 use super::error::{SError, SResult};
 use super::expr::SExpr;
-use super::json::unescape_string;
 use super::nodeid::PathId;
+use super::util::{
+    extract_string, extract_text_content, get_previous_sibling_indices, is_internal_url,
+};
 
 /// A parsed selector that can be matched against AST nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -408,7 +410,7 @@ fn get_url(node: &SExpr) -> Option<String> {
             if let SExpr::List(items) = node
                 && items.len() >= 2
             {
-                return Some(extract_string_content(&items[1]));
+                return Some(extract_string(&items[1]));
             }
             None
         }
@@ -423,54 +425,9 @@ fn get_code_lang(node: &SExpr) -> Option<String> {
         && let SExpr::List(items) = node
         && items.len() >= 2
     {
-        return Some(extract_string_content(&items[1]));
+        return Some(extract_string(&items[1]));
     }
     None
-}
-
-/// Checks if a URL is internal.
-fn is_internal_url(url: &str) -> bool {
-    if url.is_empty() || url.starts_with('#') {
-        return true;
-    }
-    if url.starts_with("./") || url.starts_with("../") {
-        return true;
-    }
-    !url.contains("://")
-}
-
-/// Extracts text content from a node.
-fn extract_text_content(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                unescape_string(&s[1..s.len() - 1])
-            } else {
-                s.clone()
-            }
-        }
-        SExpr::List(items) => {
-            let mut text = String::new();
-            for item in items.iter().skip(1) {
-                text.push_str(&extract_text_content(item));
-            }
-            text
-        }
-    }
-}
-
-/// Extracts string content from an atom.
-fn extract_string_content(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                unescape_string(&s[1..s.len() - 1])
-            } else {
-                s.clone()
-            }
-        }
-        _ => String::new(),
-    }
 }
 
 /// Gets a node at a specific path.
@@ -489,17 +446,7 @@ fn get_node_at_path(doc: &SExpr, path: &PathId) -> Option<SExpr> {
 
 /// Gets the path of the previous sibling, if any.
 fn get_previous_sibling_path(path: &PathId) -> Option<PathId> {
-    let indices = path.indices();
-    if indices.is_empty() {
-        return None;
-    }
-    let last = *indices.last()?;
-    if last == 0 {
-        return None;
-    }
-    let mut new_indices = indices.to_vec();
-    *new_indices.last_mut()? = last - 1;
-    Some(PathId::new(new_indices))
+    get_previous_sibling_indices(path.indices()).map(PathId::new)
 }
 
 /// Checks if a node has a specific tag (metadata via HTML comment).
@@ -513,7 +460,7 @@ fn check_node_tag(doc: &SExpr, path: &PathId, key: &str, value: Option<&str>) ->
         && let SExpr::List(items) = &prev_node
         && items.len() >= 2
     {
-        let content = extract_string_content(&items[1]);
+        let content = extract_string(&items[1]);
         return parse_tag_comment(&content, key, value);
     }
     false

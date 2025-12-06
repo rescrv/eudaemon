@@ -6,3 +6,4 @@ pub mod markdown;
 pub mod nodeid;
 pub mod repl;
 pub mod selector;
+pub mod util;

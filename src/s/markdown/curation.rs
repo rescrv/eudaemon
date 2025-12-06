@@ -6,6 +6,10 @@
 use crate::s::error::{SError, SResult};
 use crate::s::expr::SExpr;
 use crate::s::nodeid::{PathId, get_by_path};
+use crate::s::util::{
+    extract_string, extract_text_content, get_previous_sibling_indices, is_internal_url,
+    string_atom,
+};
 
 use super::mutations::{insert_after, prepend_child, prune, replace_at};
 
@@ -447,26 +451,6 @@ fn collect_headings_for_toc(expr: &SExpr, toc_items: &mut Vec<SExpr>) {
     }
 }
 
-/// Extracts plain text content from an s-expression node.
-fn extract_text_content(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                super::super::json::unescape_string(&s[1..s.len() - 1])
-            } else {
-                s.clone()
-            }
-        }
-        SExpr::List(items) => {
-            let mut text = String::new();
-            for item in items.iter().skip(1) {
-                text.push_str(&extract_text_content(item));
-            }
-            text
-        }
-    }
-}
-
 /// Converts text to a URL-friendly slug.
 fn slugify(text: &str) -> String {
     text.to_lowercase()
@@ -485,16 +469,6 @@ fn slugify(text: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
-}
-
-/// Helper to create a quoted string atom.
-fn string_atom(s: &str) -> SExpr {
-    SExpr::Atom(format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-    ))
 }
 
 // ============================================================================
@@ -531,8 +505,8 @@ fn scan_links_impl(expr: &SExpr, path: &PathId, links: &mut Vec<LinkInfo>) {
             if let SExpr::Atom(tag) = &items[0] {
                 match tag.as_str() {
                     "link" if items.len() >= 4 => {
-                        let url = extract_string_content(&items[1]);
-                        let title = extract_string_content(&items[2]);
+                        let url = extract_string(&items[1]);
+                        let title = extract_string(&items[2]);
                         let text = items
                             .iter()
                             .skip(3)
@@ -545,26 +519,26 @@ fn scan_links_impl(expr: &SExpr, path: &PathId, links: &mut Vec<LinkInfo>) {
                             url: url.clone(),
                             text,
                             title,
-                            is_internal: is_internal_link(&url),
+                            is_internal: is_internal_url(&url),
                             is_image: false,
                         });
                     }
                     "img" if items.len() >= 4 => {
-                        let url = extract_string_content(&items[1]);
-                        let alt = extract_string_content(&items[2]);
-                        let title = extract_string_content(&items[3]);
+                        let url = extract_string(&items[1]);
+                        let alt = extract_string(&items[2]);
+                        let title = extract_string(&items[3]);
 
                         links.push(LinkInfo {
                             path: path.clone(),
                             url: url.clone(),
                             text: alt,
                             title,
-                            is_internal: is_internal_link(&url),
+                            is_internal: is_internal_url(&url),
                             is_image: true,
                         });
                     }
                     "link-ref" if items.len() >= 2 => {
-                        let identifier = extract_string_content(&items[1]);
+                        let identifier = extract_string(&items[1]);
                         let text = items
                             .iter()
                             .skip(2)
@@ -582,8 +556,8 @@ fn scan_links_impl(expr: &SExpr, path: &PathId, links: &mut Vec<LinkInfo>) {
                         });
                     }
                     "img-ref" if items.len() >= 3 => {
-                        let identifier = extract_string_content(&items[1]);
-                        let alt = extract_string_content(&items[2]);
+                        let identifier = extract_string(&items[1]);
+                        let alt = extract_string(&items[2]);
 
                         links.push(LinkInfo {
                             path: path.clone(),
@@ -604,32 +578,6 @@ fn scan_links_impl(expr: &SExpr, path: &PathId, links: &mut Vec<LinkInfo>) {
             }
         }
         _ => {}
-    }
-}
-
-/// Determines if a URL is an internal link.
-fn is_internal_link(url: &str) -> bool {
-    if url.is_empty() || url.starts_with('#') {
-        return true;
-    }
-    if url.starts_with("./") || url.starts_with("../") {
-        return true;
-    }
-    // Check for protocol
-    !url.contains("://")
-}
-
-/// Extracts string content from a quoted atom.
-fn extract_string_content(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                super::super::json::unescape_string(&s[1..s.len() - 1])
-            } else {
-                s.clone()
-            }
-        }
-        _ => String::new(),
     }
 }
 
@@ -682,9 +630,9 @@ fn scan_definitions_impl(expr: &SExpr, path: &PathId, defs: &mut Vec<LinkDefinit
                 && items.len() >= 4
             {
                 defs.push(LinkDefinition {
-                    identifier: extract_string_content(&items[1]),
-                    url: extract_string_content(&items[2]),
-                    title: extract_string_content(&items[3]),
+                    identifier: extract_string(&items[1]),
+                    url: extract_string(&items[2]),
+                    title: extract_string(&items[3]),
                     path: path.clone(),
                 });
             }
@@ -916,7 +864,7 @@ fn extract_tag_from_node(node: &SExpr) -> Option<(String, String)> {
         && let SExpr::Atom(tag) = &items[0]
         && tag == "html"
     {
-        let content = extract_string_content(&items[1]);
+        let content = extract_string(&items[1]);
         return parse_tag_content(&content);
     }
     None
@@ -951,17 +899,7 @@ fn is_tag_comment_for_key(node: &SExpr, key: &str) -> bool {
 
 /// Gets the previous sibling path.
 fn get_previous_sibling_path(path: &PathId) -> Option<PathId> {
-    let indices = path.indices();
-    if indices.is_empty() {
-        return None;
-    }
-    let last = *indices.last()?;
-    if last == 0 {
-        return None;
-    }
-    let mut new_indices = indices.to_vec();
-    *new_indices.last_mut()? = last - 1;
-    Some(PathId::new(new_indices))
+    get_previous_sibling_indices(path.indices()).map(PathId::new)
 }
 
 // ============================================================================
@@ -986,7 +924,7 @@ fn rehome_orphans_recursive(expr: &SExpr, source_url: &str, target_url: &str) ->
             if let SExpr::Atom(tag) = &items[0] {
                 match tag.as_str() {
                     "link" | "img" if items.len() >= 2 => {
-                        let url = extract_string_content(&items[1]);
+                        let url = extract_string(&items[1]);
                         if url == source_url {
                             let mut new_items = items.clone();
                             new_items[1] = string_atom(target_url);
@@ -1306,7 +1244,7 @@ fn skeleton_summary_recursive(expr: &SExpr, depth: usize, summary: &mut Skeleton
                 "code-block" => {
                     summary.code_block_count += 1;
                     if items.len() >= 2 {
-                        let lang = extract_string_content(&items[1]);
+                        let lang = extract_string(&items[1]);
                         if !lang.is_empty() && !summary.code_languages.contains(&lang) {
                             summary.code_languages.push(lang);
                         }
@@ -1540,13 +1478,13 @@ mod tests {
 
     #[test]
     fn is_internal_link_tests() {
-        assert!(is_internal_link("./page.md"));
-        assert!(is_internal_link("../other/page.md"));
-        assert!(is_internal_link("#section"));
-        assert!(is_internal_link("page.md"));
-        assert!(!is_internal_link("https://example.com"));
-        assert!(!is_internal_link("http://example.com"));
-        assert!(!is_internal_link("ftp://files.com/file"));
+        assert!(is_internal_url("./page.md"));
+        assert!(is_internal_url("../other/page.md"));
+        assert!(is_internal_url("#section"));
+        assert!(is_internal_url("page.md"));
+        assert!(!is_internal_url("https://example.com"));
+        assert!(!is_internal_url("http://example.com"));
+        assert!(!is_internal_url("ftp://files.com/file"));
     }
 
     #[test]

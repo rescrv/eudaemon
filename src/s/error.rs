@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::s::expr::SExpr;
+use crate::s::util::escape_string;
 
 /// Result alias that carries structured `SExpr` errors.
 pub type SResult<T> = Result<T, SError>;
@@ -87,15 +88,6 @@ fn atom<T: ToString>(value: T) -> SExpr {
 
 fn string_literal(value: &str) -> SExpr {
     SExpr::Atom(format!("\"{}\"", escape_string(value)))
-}
-
-fn escape_string(input: &str) -> String {
-    input
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 #[cfg(test)]

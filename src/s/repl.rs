@@ -34,6 +34,7 @@ use super::nodeid::{
     NodeId, PathId, get_by_path, get_context, get_node, get_parent, get_siblings,
     to_annotated_sexpr,
 };
+use super::util::{extract_string, string_atom};
 
 /// REPL state containing the working directory and loaded documents.
 pub struct Repl {
@@ -482,32 +483,6 @@ pub fn register_markdown_builtins(env: &mut Env) {
     env.def_fn("scan-link-defs", builtin_scan_link_defs);
     env.def_fn("find-undef-refs", builtin_find_undef_refs);
     env.def_fn("update-link", builtin_update_link);
-}
-
-/// Extracts string content from an atom.
-fn extract_string(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                super::json::unescape_string(&s[1..s.len() - 1])
-            } else {
-                s.clone()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
-/// Creates a quoted string atom.
-fn string_atom(s: &str) -> SExpr {
-    SExpr::Atom(format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t")
-    ))
 }
 
 // Conversion functions
