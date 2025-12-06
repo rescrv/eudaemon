@@ -1249,4 +1249,305 @@ mod tests {
     fn parse(s: &str) -> SExpr {
         super::super::expr::Parser::new(s).parse().unwrap()
     }
+
+    #[test]
+    fn set_frontmatter_invalid_format_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = set_frontmatter(&doc, "invalid", "content").unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("frontmatter".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("invalid-format".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Frontmatter format must be 'yaml' or 'toml'\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("format".to_string()),
+                    SExpr::Atom("\"invalid\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn set_frontmatter_on_atom_error() {
+        let doc = SExpr::Atom("atom".to_string());
+        let err = set_frontmatter(&doc, "yaml", "content").unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("frontmatter".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("invalid-document".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom(
+                        "\"Cannot set frontmatter on non-document expression\"".to_string()
+                    ),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn set_frontmatter_toml() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = set_frontmatter(&doc, "toml", "title = \"Hello\"").unwrap();
+        assert!(result.to_string().contains("(toml"));
+    }
+
+    #[test]
+    fn get_frontmatter_toml() {
+        let doc = parse(r#"(doc (toml "title = \"Hello\"") (h1 "Title"))"#);
+        let fm = get_frontmatter(&doc);
+        assert!(fm.is_some());
+        assert!(fm.unwrap().to_string().contains("toml"));
+    }
+
+    #[test]
+    fn get_frontmatter_content_none() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        assert!(get_frontmatter_content(&doc).is_none());
+    }
+
+    #[test]
+    fn get_frontmatter_content_yaml() {
+        let doc = parse(r#"(doc (yaml "title: Hello") (h1 "Title"))"#);
+        let content = get_frontmatter_content(&doc);
+        assert_eq!(content, Some("title: Hello".to_string()));
+    }
+
+    #[test]
+    fn parse_yaml_frontmatter_with_comments() {
+        let content = "# comment\ntitle: Hello\n# another comment\nauthor: Alice";
+        let obj = parse_yaml_frontmatter(content);
+        assert_eq!(
+            get_frontmatter_field(&obj, "title"),
+            Some("Hello".to_string())
+        );
+        assert_eq!(
+            get_frontmatter_field(&obj, "author"),
+            Some("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_yaml_frontmatter_quoted_values() {
+        let content = "title: \"Hello World\"\nauthor: 'Alice'";
+        let obj = parse_yaml_frontmatter(content);
+        assert_eq!(
+            get_frontmatter_field(&obj, "title"),
+            Some("Hello World".to_string())
+        );
+        assert_eq!(
+            get_frontmatter_field(&obj, "author"),
+            Some("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_yaml_frontmatter_empty() {
+        let obj = parse_yaml_frontmatter("");
+        assert_eq!(obj, SExpr::List(vec![SExpr::Atom("obj".to_string())]));
+    }
+
+    #[test]
+    fn get_frontmatter_field_not_found() {
+        let obj = parse_yaml_frontmatter("title: Hello");
+        assert!(get_frontmatter_field(&obj, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn sexpr_to_markdown_unknown_tag_error() {
+        let expr = parse("(unknown-tag \"content\")");
+        let err = sexpr_to_markdown(&expr).unwrap_err();
+        eprintln!("DEBUG unknown tag error: {}", err.detail());
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("sexpr-to-markdown".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("unknown-tag".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Unknown markdown element tag\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("tag".to_string()),
+                    SExpr::Atom("\"unknown-tag\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn sexpr_to_markdown_empty_list() {
+        let expr = SExpr::List(vec![]);
+        let result = sexpr_to_markdown(&expr).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn roundtrip_blockquote() {
+        let md = "> This is quoted.\n";
+        let sexpr = markdown_to_sexpr(md).unwrap();
+        let output = sexpr_to_markdown(&sexpr).unwrap();
+        assert!(output.contains("> "));
+    }
+
+    #[test]
+    fn roundtrip_image() {
+        let md = "![alt](url.png)\n";
+        let sexpr = markdown_to_sexpr(md).unwrap();
+        let output = sexpr_to_markdown(&sexpr).unwrap();
+        assert!(output.contains("![alt](url.png)"));
+    }
+
+    #[test]
+    fn roundtrip_thematic_break() {
+        let md = "Above\n\n---\n\nBelow\n";
+        let sexpr = markdown_to_sexpr(md).unwrap();
+        let output = sexpr_to_markdown(&sexpr).unwrap();
+        assert!(output.contains("---"));
+    }
+
+    #[test]
+    fn roundtrip_inline_code() {
+        let md = "Use `code` here.\n";
+        let sexpr = markdown_to_sexpr(md).unwrap();
+        let output = sexpr_to_markdown(&sexpr).unwrap();
+        assert!(output.contains("`code`"));
+    }
+
+    #[test]
+    fn roundtrip_emphasis_and_strong() {
+        let md = "This is *emphasized* and **strong**.\n";
+        let sexpr = markdown_to_sexpr(md).unwrap();
+        let output = sexpr_to_markdown(&sexpr).unwrap();
+        assert!(output.contains("*emphasized*"));
+        assert!(output.contains("**strong**"));
+    }
+
+    #[test]
+    fn render_link_with_title() {
+        let expr = parse(r#"(doc (p (link "url" "Title" "text")))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("[text](url \"Title\")"));
+    }
+
+    #[test]
+    fn render_image_with_title() {
+        let expr = parse(r#"(doc (p (img "url.png" "alt" "Title")))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("![alt](url.png \"Title\")"));
+    }
+
+    #[test]
+    fn render_definition() {
+        let expr = parse(r#"(doc (def "ref" "https://example.com" "Example"))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("[ref]: https://example.com \"Example\""));
+    }
+
+    #[test]
+    fn render_link_ref() {
+        let expr = parse(r#"(doc (p (link-ref "ref" "text")))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("[text][ref]"));
+    }
+
+    #[test]
+    fn render_img_ref() {
+        let expr = parse(r#"(doc (p (img-ref "ref" "alt")))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("![alt][ref]"));
+    }
+
+    #[test]
+    fn render_yaml_frontmatter() {
+        let expr = parse(r#"(doc (yaml "title: Hello"))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("---\ntitle: Hello\n---"));
+    }
+
+    #[test]
+    fn render_toml_frontmatter() {
+        let expr = parse(r#"(doc (toml "title = \"Hello\""))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("+++\n"));
+    }
+
+    #[test]
+    fn render_html() {
+        let expr = parse(r#"(doc (p (html "<span>test</span>")))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("<span>test</span>"));
+    }
+
+    #[test]
+    fn render_break() {
+        let expr = parse(r#"(doc (p "line1" (br) "line2"))"#);
+        let output = sexpr_to_markdown(&expr).unwrap();
+        assert!(output.contains("line1  \nline2"));
+    }
+
+    #[test]
+    fn escape_string_all_chars() {
+        assert_eq!(escape_string("a\\b"), "a\\\\b");
+        assert_eq!(escape_string("a\"b"), "a\\\"b");
+        assert_eq!(escape_string("a\nb"), "a\\nb");
+        assert_eq!(escape_string("a\rb"), "a\\rb");
+        assert_eq!(escape_string("a\tb"), "a\\tb");
+    }
+
+    #[test]
+    fn extract_string_unquoted() {
+        let atom = SExpr::Atom("unquoted".to_string());
+        assert_eq!(extract_string(&atom), "unquoted");
+    }
+
+    #[test]
+    fn extract_string_from_list() {
+        let list = SExpr::List(vec![SExpr::Atom("tag".to_string())]);
+        assert_eq!(extract_string(&list), "");
+    }
+
+    #[test]
+    fn is_list_true_ul() {
+        let expr = parse("(ul (li \"item\"))");
+        assert!(is_list(&expr));
+    }
+
+    #[test]
+    fn is_list_true_ol() {
+        let expr = parse("(ol (li \"item\"))");
+        assert!(is_list(&expr));
+    }
+
+    #[test]
+    fn is_list_false() {
+        let expr = parse("(p \"not a list\")");
+        assert!(!is_list(&expr));
+    }
 }

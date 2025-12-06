@@ -612,7 +612,349 @@ mod tests {
         .unwrap();
         // The li should now be a direct child of doc
         let s = result.to_string();
-        println!("DEBUG graft result: {}", s);
+        eprintln!("DEBUG graft result: {}", s);
         assert!(s.contains("(li (p \"B\"))"));
+    }
+
+    #[test]
+    fn replace_at_index_out_of_bounds_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err =
+            replace_at(&doc, &PathId::new(vec![99]), SExpr::Atom("x".to_string())).unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("mutations".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("index-out-of-bounds".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Path index exceeds list length\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("index".to_string()),
+                    SExpr::Atom("99".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("list_length".to_string()),
+                    SExpr::Atom("2".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn replace_at_cannot_descend_atom_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = replace_at(
+            &doc,
+            &PathId::new(vec![1, 1, 1]),
+            SExpr::Atom("x".to_string()),
+        )
+        .unwrap_err();
+        eprintln!(
+            "DEBUG replace_at_cannot_descend_atom_error: {}",
+            err.detail()
+        );
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("cannot-descend-atom".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn prune_cannot_prune_root_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = prune(&doc, &PathId::root()).unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("mutations".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("cannot-prune-root".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Cannot prune the root document\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn prune_lenient_invalid_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = prune_lenient(&doc, &PathId::new(vec![99]));
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn prune_nested() {
+        let doc = parse("(doc (ul (li \"A\") (li \"B\")))");
+        let result = prune(&doc, &PathId::new(vec![1, 1])).unwrap();
+        assert_eq!(result.to_string(), "(doc (ul (li \"B\")))");
+    }
+
+    #[test]
+    fn insert_before_root_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = insert_before(&doc, &PathId::root(), parse("(p \"X\")")).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("cannot-insert-before-root".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn insert_after_root_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = insert_after(&doc, &PathId::root(), parse("(p \"X\")")).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("cannot-insert-after-root".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn insert_before_lenient_invalid_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = insert_before_lenient(&doc, &PathId::new(vec![99]), parse("(p \"X\")"));
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn insert_after_lenient_invalid_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = insert_after_lenient(&doc, &PathId::new(vec![99]), parse("(p \"X\")"));
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn insert_before_nested() {
+        let doc = parse("(doc (ul (li \"A\") (li \"C\")))");
+        let result = insert_before(&doc, &PathId::new(vec![1, 2]), parse("(li \"B\")")).unwrap();
+        assert_eq!(
+            result.to_string(),
+            "(doc (ul (li \"A\") (li \"B\") (li \"C\")))"
+        );
+    }
+
+    #[test]
+    fn insert_after_nested() {
+        let doc = parse("(doc (ul (li \"A\") (li \"B\")))");
+        let result = insert_after(&doc, &PathId::new(vec![1, 1]), parse("(li \"X\")")).unwrap();
+        assert_eq!(
+            result.to_string(),
+            "(doc (ul (li \"A\") (li \"X\") (li \"B\")))"
+        );
+    }
+
+    #[test]
+    fn append_child_to_atom_error() {
+        let doc = parse("atom");
+        let err = append_child(&doc, &PathId::root(), parse("(p \"X\")")).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("cannot-append-to-atom".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn append_child_lenient_invalid_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = append_child_lenient(&doc, &PathId::new(vec![99]), parse("(p \"X\")"));
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn append_child_nested() {
+        let doc = parse("(doc (ul (li \"A\")))");
+        let result = append_child(&doc, &PathId::new(vec![1]), parse("(li \"B\")")).unwrap();
+        assert_eq!(result.to_string(), "(doc (ul (li \"A\") (li \"B\")))");
+    }
+
+    #[test]
+    fn prepend_child_to_atom_error() {
+        let doc = parse("atom");
+        let err = prepend_child(&doc, &PathId::root(), parse("(p \"X\")")).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("cannot-prepend-to-atom".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn prepend_child_lenient_invalid_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = prepend_child_lenient(&doc, &PathId::new(vec![99]), parse("(p \"X\")"));
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn prepend_child_to_empty_list() {
+        let doc = parse("()");
+        let result = prepend_child(&doc, &PathId::root(), parse("(h1 \"Title\")")).unwrap();
+        assert_eq!(result.to_string(), "((h1 \"Title\"))");
+    }
+
+    #[test]
+    fn hoist_node_not_found_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = hoist(&doc, &PathId::new(vec![99]), 1).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("node-not-found".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn hoist_not_a_heading_error() {
+        let doc = parse("(doc (p \"Not a heading\"))");
+        let err = hoist(&doc, &PathId::new(vec![1]), 1).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("not-a-heading".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn hoist_lenient_invalid_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = hoist_lenient(&doc, &PathId::new(vec![99]), 1);
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn hoist_zero_delta() {
+        let doc = parse("(doc (h3 \"Title\"))");
+        let result = hoist(&doc, &PathId::new(vec![1]), 0).unwrap();
+        assert_eq!(result.to_string(), "(doc (h3 \"Title\"))");
+    }
+
+    #[test]
+    fn graft_source_not_found_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let err = graft(&doc, &PathId::new(vec![99]), &PathId::root(), 1).unwrap_err();
+        if let SExpr::List(items) = err.detail() {
+            assert_eq!(
+                items[2],
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("source-not-found".to_string()),
+                ])
+            );
+        } else {
+            panic!("Expected list");
+        }
+    }
+
+    #[test]
+    fn graft_lenient_invalid_source() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = graft_lenient(&doc, &PathId::new(vec![99]), &PathId::root(), 1);
+        assert_eq!(result, doc);
+    }
+
+    type MutationFn = Box<dyn FnOnce(&SExpr) -> SResult<SExpr>>;
+
+    #[test]
+    fn apply_mutations_sequence() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let mutations: Vec<MutationFn> = vec![
+            Box::new(|d| append_child(d, &PathId::root(), parse("(p \"A\")"))),
+            Box::new(|d| append_child(d, &PathId::root(), parse("(p \"B\")"))),
+        ];
+        let result = apply_mutations(&doc, mutations).unwrap();
+        assert_eq!(
+            result.to_string(),
+            "(doc (h1 \"Title\") (p \"A\") (p \"B\"))"
+        );
+    }
+
+    #[test]
+    fn apply_mutations_aborts_on_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let mutations: Vec<MutationFn> = vec![
+            Box::new(|d| append_child(d, &PathId::root(), parse("(p \"A\")"))),
+            Box::new(|d| replace_at(d, &PathId::new(vec![99]), parse("(p \"X\")"))),
+            Box::new(|d| append_child(d, &PathId::root(), parse("(p \"B\")"))),
+        ];
+        let result = apply_mutations(&doc, mutations);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_mutations_lenient_continues_on_error() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let mutations: Vec<MutationFn> = vec![
+            Box::new(|d| append_child(d, &PathId::root(), parse("(p \"A\")"))),
+            Box::new(|d| replace_at(d, &PathId::new(vec![99]), parse("(p \"X\")"))),
+            Box::new(|d| append_child(d, &PathId::root(), parse("(p \"B\")"))),
+        ];
+        let result = apply_mutations_lenient(&doc, mutations);
+        assert_eq!(
+            result.to_string(),
+            "(doc (h1 \"Title\") (p \"A\") (p \"B\"))"
+        );
     }
 }

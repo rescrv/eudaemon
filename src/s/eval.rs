@@ -844,11 +844,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_function() {
+    fn unknown_function_error() {
         let env = Env::new();
         let mut parser = Parser::new("(unknown 1 2)");
         let expr = parser.parse().unwrap();
-        assert!(eval(&expr, &env).is_err());
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("function-not-found"));
     }
 
     // Tests for special forms
@@ -1478,5 +1479,319 @@ mod tests {
             SExpr::Atom("6".to_string()),
         ]);
         assert_eq!(eval(&expr, &env), Ok(expected));
+    }
+
+    #[test]
+    fn eval_empty_list() {
+        let env = Env::new();
+        let expr = SExpr::List(vec![]);
+        assert_eq!(eval(&expr, &env), Ok(SExpr::List(vec![])));
+    }
+
+    #[test]
+    fn eval_quote_wrong_arg_count_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(quote a b)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_if_wrong_arg_count_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(if #t then-only)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_let_invalid_bindings_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(let not-a-list x)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-let-bindings"));
+    }
+
+    #[test]
+    fn eval_let_invalid_binding_pair_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(let ((x)) x)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-binding"));
+    }
+
+    #[test]
+    fn eval_let_non_atom_binding_name_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(let (((not-atom) 5)) x)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-binding-name"));
+    }
+
+    #[test]
+    fn eval_begin_empty_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(begin)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_map_wrong_arg_count_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(map double)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_map_non_atom_function_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(map (not-atom) (quote (1 2)))");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-function"));
+    }
+
+    #[test]
+    fn eval_map_non_list_arg_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        env.def_fn("double", double);
+        let mut parser = Parser::new("(map double not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn eval_filter_non_list_arg_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        env.def_fn("is-even", is_even);
+        let mut parser = Parser::new("(filter is-even not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn eval_reduce_wrong_arg_count_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(reduce + 0)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_reduce_non_list_arg_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        env.def_fn("+", add);
+        let mut parser = Parser::new("(reduce + 0 not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn eval_thread_last_empty_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(->>)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_thread_last_invalid_form_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(->> 5 ())");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-thread-form"));
+    }
+
+    #[test]
+    fn eval_thread_last_with_atom_func() {
+        let mut env = Env::new();
+        env.def_fn("double", double);
+        let mut parser = Parser::new("(->> 5 double)");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("10".to_string())));
+    }
+
+    #[test]
+    fn eval_if_empty_list_is_falsy() {
+        let mut env = Env::new();
+        env.def_fn("+", add);
+        let mut parser = Parser::new("(if (quote ()) (+ 1 2) (+ 3 4))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("7".to_string())));
+    }
+
+    #[test]
+    fn eval_if_nonempty_list_is_truthy() {
+        let mut env = Env::new();
+        env.def_fn("+", add);
+        let mut parser = Parser::new("(if (quote (x)) (+ 1 2) (+ 3 4))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("3".to_string())));
+    }
+
+    #[test]
+    fn builtin_null_p_wrong_arg_count_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(null? a b)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn builtin_first_wrong_arg_count_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(first)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn builtin_first_non_list_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(first not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn builtin_rest_empty_list_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(rest (quote ()))");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("empty-list"));
+    }
+
+    #[test]
+    fn builtin_cons_non_list_second_arg_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(cons a not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn builtin_append_non_list_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(append (quote (a)) not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn builtin_append_empty() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(append)");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::List(vec![])));
+    }
+
+    #[test]
+    fn builtin_length_non_list_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(length not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn builtin_nth_zero_index() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(nth 0 (quote (a b c)))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("a".to_string())));
+    }
+
+    #[test]
+    fn builtin_nth_invalid_index_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(nth not-a-number (quote (a b)))");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-index"));
+    }
+
+    #[test]
+    fn builtin_nth_non_atom_index_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(nth (quote (bad)) (quote (a b)))");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn builtin_nth_non_list_second_arg_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(nth 0 not-a-list)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+    }
+
+    #[test]
+    fn eval_non_atom_function_name_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("((not-an-atom) 1 2)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-function-name"));
+    }
+
+    #[test]
+    fn env_child_inherits_bindings() {
+        let mut env = Env::new();
+        env.def_fn("+", add);
+        let mut parser = Parser::new("(let ((x 10)) (let ((y 20)) (+ x y)))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("30".to_string())));
+    }
+
+    #[test]
+    fn env_child_inherits_functions() {
+        let mut env = Env::new();
+        env.def_fn("+", add);
+        let mut parser = Parser::new("(let ((x 5)) (+ x 3))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("8".to_string())));
     }
 }

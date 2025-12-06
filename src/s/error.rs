@@ -97,3 +97,295 @@ fn escape_string(input: &str) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_new_creates_base_structure() {
+        let err = SError::new("test-phase");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test-phase".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_with_code() {
+        let err = SError::new("parse").with_code("syntax-error");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("parse".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("syntax-error".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_with_message() {
+        let err = SError::new("eval").with_message("Something went wrong");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("eval".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Something went wrong\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_with_atom_field() {
+        let err = SError::new("test").with_atom_field("count", 42);
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("count".to_string()),
+                    SExpr::Atom("42".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_with_string_field() {
+        let err = SError::new("test").with_string_field("name", "value");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("name".to_string()),
+                    SExpr::Atom("\"value\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_with_field_sexpr() {
+        let field_value = SExpr::List(vec![
+            SExpr::Atom("nested".to_string()),
+            SExpr::Atom("data".to_string()),
+        ]);
+        let err = SError::new("test").with_field("complex", field_value.clone());
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![SExpr::Atom("complex".to_string()), field_value,]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_chained_builders() {
+        let err = SError::new("mutations")
+            .with_code("index-out-of-bounds")
+            .with_message("Path index exceeds list length")
+            .with_atom_field("index", 10)
+            .with_atom_field("list_length", 5);
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("mutations".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("index-out-of-bounds".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Path index exceeds list length\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("index".to_string()),
+                    SExpr::Atom("10".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("list_length".to_string()),
+                    SExpr::Atom("5".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_into_detail_consumes() {
+        let err = SError::new("test").with_code("test-code");
+        let expected = err.detail().clone();
+        let detail = err.into_detail();
+        assert_eq!(detail, expected);
+    }
+
+    #[test]
+    fn error_from_sexpr() {
+        let sexpr = SExpr::List(vec![
+            SExpr::Atom("error".to_string()),
+            SExpr::Atom("custom".to_string()),
+        ]);
+        let err: SError = sexpr.clone().into();
+        assert_eq!(*err.detail(), sexpr);
+    }
+
+    #[test]
+    fn error_display_matches_detail() {
+        let err = SError::new("test").with_code("code");
+        assert_eq!(err.to_string(), err.detail().to_string());
+    }
+
+    #[test]
+    fn error_escapes_newline_in_message() {
+        let err = SError::new("test").with_message("line1\nline2");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"line1\\nline2\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_escapes_tab_in_message() {
+        let err = SError::new("test").with_message("col1\tcol2");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"col1\\tcol2\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_escapes_quotes_in_message() {
+        let err = SError::new("test").with_message("has \"quotes\"");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"has \\\"quotes\\\"\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_escapes_backslash_in_message() {
+        let err = SError::new("test").with_message("path\\to\\file");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"path\\\\to\\\\file\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_escapes_carriage_return_in_message() {
+        let err = SError::new("test").with_message("line1\rline2");
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("test".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"line1\\rline2\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn error_implements_std_error() {
+        let err = SError::new("test");
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn error_clone() {
+        let err = SError::new("test").with_code("code");
+        let cloned = err.clone();
+        assert_eq!(err.detail(), cloned.detail());
+    }
+
+    #[test]
+    fn error_partial_eq() {
+        let err1 = SError::new("test").with_code("code");
+        let err2 = SError::new("test").with_code("code");
+        let err3 = SError::new("test").with_code("different");
+        assert_eq!(err1, err2);
+        assert_ne!(err1, err3);
+    }
+}

@@ -688,4 +688,289 @@ mod tests {
         }];
         assert!(!all_pass(&doc, &invariants));
     }
+
+    #[test]
+    fn validation_result_pass() {
+        let result = ValidationResult::pass("test description");
+        assert!(result.passed);
+        assert_eq!(result.description, "test description");
+        assert!(result.violations.is_empty());
+    }
+
+    #[test]
+    fn validation_result_fail() {
+        let violations = vec![Violation::new(PathId::root(), "error")];
+        let result = ValidationResult::fail("test description", violations);
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 1);
+    }
+
+    #[test]
+    fn violation_new() {
+        let v = Violation::new(PathId::new(vec![1, 2]), "message");
+        assert_eq!(v.path, PathId::new(vec![1, 2]));
+        assert_eq!(v.message, "message");
+        assert!(v.context.is_none());
+    }
+
+    #[test]
+    fn violation_with_context() {
+        let v = Violation::with_context(PathId::root(), "message", "context");
+        assert_eq!(v.context, Some("context".to_string()));
+    }
+
+    #[test]
+    fn invariant_has_sibling_pass() {
+        let doc = parse(r#"(doc (h1 "Title") (p "After h1"))"#);
+        let inv = Invariant::HasSibling {
+            selector: "h1".to_string(),
+            sibling_selector: "p".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn invariant_has_sibling_fail() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::HasSibling {
+            selector: "h1".to_string(),
+            sibling_selector: "p".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 1);
+    }
+
+    #[test]
+    fn invariant_has_sibling_invalid_selector() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::HasSibling {
+            selector: "[invalid".to_string(),
+            sibling_selector: "p".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_has_sibling_invalid_sibling_selector() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::HasSibling {
+            selector: "h1".to_string(),
+            sibling_selector: "[invalid".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_has_child_invalid_selector() {
+        let doc = parse(r#"(doc (ul (li "Item")))"#);
+        let inv = Invariant::HasChild {
+            selector: "[invalid".to_string(),
+            child_selector: "p".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_has_child_invalid_child_selector() {
+        let doc = parse(r#"(doc (ul (li "Item")))"#);
+        let inv = Invariant::HasChild {
+            selector: "li".to_string(),
+            child_selector: "[invalid".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_must_exist_invalid_selector() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::MustExist {
+            selector: "[invalid".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_must_not_exist_invalid_selector() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::MustNotExist {
+            selector: "[invalid".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_max_depth_invalid_selector() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::MaxDepth {
+            selector: "[invalid".to_string(),
+            max_depth: 2,
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_requires_tag_pass() {
+        let doc = parse(r#"(doc (html "<!-- @tag:status=draft -->") (h1 "Draft"))"#);
+        let inv = Invariant::RequiresTag {
+            selector: "h1".to_string(),
+            tag_key: "status".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        eprintln!("DEBUG requires_tag result: {:?}", result);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn invariant_requires_tag_fail() {
+        let doc = parse(r#"(doc (h1 "No tag"))"#);
+        let inv = Invariant::RequiresTag {
+            selector: "h1".to_string(),
+            tag_key: "status".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 1);
+    }
+
+    #[test]
+    fn invariant_requires_tag_invalid_selector() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::RequiresTag {
+            selector: "[invalid".to_string(),
+            tag_key: "status".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_no_heading_skips_deep_structure() {
+        let doc = parse(r#"(doc (h1 "A") (blockquote (h2 "B")) (h3 "C"))"#);
+        let result = assert_invariant(&doc, &Invariant::NoHeadingSkips);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn invariant_no_heading_skips_back_to_higher() {
+        let doc = parse(r#"(doc (h1 "A") (h2 "B") (h3 "C") (h1 "D"))"#);
+        let result = assert_invariant(&doc, &Invariant::NoHeadingSkips);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn invariant_no_heading_skips_multiple_violations() {
+        let doc = parse(r#"(doc (h1 "A") (h4 "Skip") (h6 "Skip more"))"#);
+        let result = assert_invariant(&doc, &Invariant::NoHeadingSkips);
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 2);
+    }
+
+    #[test]
+    fn invariant_custom_pass() {
+        fn always_pass(_expr: &SExpr, _path: &PathId) -> bool {
+            true
+        }
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::Custom {
+            description: "Always passes".to_string(),
+            predicate: always_pass,
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn invariant_custom_fail() {
+        fn no_atoms(expr: &SExpr, _path: &PathId) -> bool {
+            !matches!(expr, SExpr::Atom(_))
+        }
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::Custom {
+            description: "No atoms".to_string(),
+            predicate: no_atoms,
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn validate_all_empty() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let results = validate_all(&doc, &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn all_pass_empty() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        assert!(all_pass(&doc, &[]));
+    }
+
+    #[test]
+    fn invariant_max_depth_zero() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let inv = Invariant::MaxDepth {
+            selector: "h1".to_string(),
+            max_depth: 0,
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn invariant_has_child_deeply_nested() {
+        let doc = parse(r#"(doc (div (div (div (p "Deep")))))"#);
+        let inv = Invariant::HasChild {
+            selector: "doc".to_string(),
+            child_selector: "p".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn invariant_has_child_atom_node() {
+        let doc = parse(r#"atom"#);
+        let inv = Invariant::HasChild {
+            selector: "*".to_string(),
+            child_selector: "p".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        eprintln!("DEBUG has_child_atom_node result: {:?}", result);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn get_siblings_for_path_root_returns_empty() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let siblings = get_siblings_for_path(&doc, &PathId::root());
+        assert!(siblings.is_empty());
+    }
+
+    #[test]
+    fn get_siblings_for_path_invalid_parent_returns_empty() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let siblings = get_siblings_for_path(&doc, &PathId::new(vec![99, 1]));
+        assert!(siblings.is_empty());
+    }
+
+    #[test]
+    fn invariant_must_not_exist_multiple_matches() {
+        let doc = parse(r#"(doc (h6 "A") (h6 "B") (h6 "C"))"#);
+        let inv = Invariant::MustNotExist {
+            selector: "h6".to_string(),
+        };
+        let result = assert_invariant(&doc, &inv);
+        assert!(!result.passed);
+        assert_eq!(result.violations.len(), 3);
+    }
 }

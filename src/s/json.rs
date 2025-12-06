@@ -413,4 +413,207 @@ mod tests {
         let final_value: Value = serde_json::from_str(&json_final).unwrap();
         assert_eq!(json_value, final_value);
     }
+
+    #[test]
+    fn invalid_json_error() {
+        let err = json_to_sexpr("not valid json").unwrap_err();
+        assert!(err.to_string().contains("invalid-json"));
+    }
+
+    #[test]
+    fn sexpr_to_json_empty_list_error() {
+        let err = sexpr_to_json("()").unwrap_err();
+        assert!(err.to_string().contains("empty-list"));
+    }
+
+    #[test]
+    fn sexpr_to_json_invalid_tag_error() {
+        let err = sexpr_to_json("((not-atom) 1 2)").unwrap_err();
+        assert!(err.to_string().contains("invalid-tag"));
+    }
+
+    #[test]
+    fn sexpr_to_json_unknown_tag_error() {
+        let err = sexpr_to_json("(unknown 1 2 3)").unwrap_err();
+        assert!(err.to_string().contains("unknown-tag"));
+    }
+
+    #[test]
+    fn sexpr_to_json_invalid_object_key_error() {
+        let err = sexpr_to_json("(obj (not-quoted-key 1))").unwrap_err();
+        assert!(err.to_string().contains("invalid-object-key"));
+    }
+
+    #[test]
+    fn sexpr_to_json_invalid_object_entry_error() {
+        let err = sexpr_to_json("(obj (\"key\" 1 2))").unwrap_err();
+        assert!(err.to_string().contains("invalid-object-entry"));
+    }
+
+    #[test]
+    fn sexpr_to_json_unconvertible_atom_error() {
+        let err = sexpr_to_json("not-a-literal").unwrap_err();
+        assert!(err.to_string().contains("unconvertible-atom"));
+    }
+
+    #[test]
+    fn converts_json_negative_integer() {
+        let json = "-42";
+        let sexpr = json_to_sexpr(json).unwrap();
+        assert_eq!(sexpr, "-42");
+    }
+
+    #[test]
+    fn converts_json_negative_float() {
+        let json = "-3.14";
+        let sexpr = json_to_sexpr(json).unwrap();
+        assert_eq!(sexpr, "-3.14");
+    }
+
+    #[test]
+    fn converts_json_scientific_notation() {
+        let json = "1.5e10";
+        let sexpr = json_to_sexpr(json).unwrap();
+        let back = sexpr_to_json(&sexpr).unwrap();
+        let original: f64 = serde_json::from_str(json).unwrap();
+        let result: f64 = serde_json::from_str(&back).unwrap();
+        assert!((original - result).abs() < 1e-6);
+    }
+
+    #[test]
+    fn converts_json_empty_object() {
+        let json = "{}";
+        let sexpr = json_to_sexpr(json).unwrap();
+        assert_eq!(sexpr, "(obj)");
+    }
+
+    #[test]
+    fn converts_json_nested_object() {
+        let json = r#"{"outer": {"inner": 42}}"#;
+        let sexpr = json_to_sexpr(json).unwrap();
+        assert!(sexpr.contains("(obj"));
+        assert!(sexpr.contains("inner"));
+        let back = sexpr_to_json(&sexpr).unwrap();
+        let original: Value = serde_json::from_str(json).unwrap();
+        let result: Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(original, result);
+    }
+
+    #[test]
+    fn converts_json_array_of_objects() {
+        let json = r#"[{"a": 1}, {"b": 2}]"#;
+        let sexpr = json_to_sexpr(json).unwrap();
+        assert!(sexpr.contains("(arr"));
+        let back = sexpr_to_json(&sexpr).unwrap();
+        let original: Value = serde_json::from_str(json).unwrap();
+        let result: Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(original, result);
+    }
+
+    #[test]
+    fn converts_json_mixed_array() {
+        let json = r#"[1, "two", true, null]"#;
+        let sexpr = json_to_sexpr(json).unwrap();
+        assert!(sexpr.contains("(arr"));
+        assert!(sexpr.contains("1"));
+        assert!(sexpr.contains("\"two\""));
+        assert!(sexpr.contains("#t"));
+        assert!(sexpr.contains("null"));
+    }
+
+    #[test]
+    fn unescape_string_basic() {
+        assert_eq!(unescape_string("hello"), "hello");
+    }
+
+    #[test]
+    fn unescape_string_newline() {
+        assert_eq!(unescape_string("line1\\nline2"), "line1\nline2");
+    }
+
+    #[test]
+    fn unescape_string_tab() {
+        assert_eq!(unescape_string("col1\\tcol2"), "col1\tcol2");
+    }
+
+    #[test]
+    fn unescape_string_carriage_return() {
+        assert_eq!(unescape_string("a\\rb"), "a\rb");
+    }
+
+    #[test]
+    fn unescape_string_backslash() {
+        assert_eq!(unescape_string("path\\\\to\\\\file"), "path\\to\\file");
+    }
+
+    #[test]
+    fn unescape_string_quote() {
+        assert_eq!(unescape_string("say \\\"hello\\\""), "say \"hello\"");
+    }
+
+    #[test]
+    fn unescape_string_unknown_escape() {
+        assert_eq!(unescape_string("\\x"), "\\x");
+    }
+
+    #[test]
+    fn unescape_string_trailing_backslash() {
+        assert_eq!(unescape_string("ends with \\"), "ends with \\");
+    }
+
+    #[test]
+    fn round_trip_deeply_nested() {
+        let json = r#"{"a": {"b": {"c": {"d": [1, 2, 3]}}}}"#;
+        let sexpr = json_to_sexpr(json).unwrap();
+        let back = sexpr_to_json(&sexpr).unwrap();
+        let original: Value = serde_json::from_str(json).unwrap();
+        let result: Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(original, result);
+    }
+
+    #[test]
+    fn round_trip_unicode() {
+        let json = r#"{"emoji": "🎉", "chinese": "中文"}"#;
+        let sexpr = json_to_sexpr(json).unwrap();
+        let back = sexpr_to_json(&sexpr).unwrap();
+        let original: Value = serde_json::from_str(json).unwrap();
+        let result: Value = serde_json::from_str(&back).unwrap();
+        assert_eq!(original, result);
+    }
+
+    #[test]
+    fn null_in_object_preserved() {
+        let sexpr = r#"(obj ("key" null))"#;
+        let json = sexpr_to_json(sexpr).unwrap();
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["key"].is_null());
+    }
+
+    #[test]
+    fn all_nulls_filtered_from_array() {
+        let sexpr = "(arr null null null)";
+        let json = sexpr_to_json(sexpr).unwrap();
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn json_value_to_sexpr_large_integer() {
+        let value: Value = serde_json::from_str("9007199254740993").unwrap();
+        let sexpr = json_value_to_sexpr(&value);
+        assert_eq!(sexpr, SExpr::Atom("9007199254740993".to_string()));
+    }
+
+    #[test]
+    fn sexpr_to_json_value_float() {
+        let sexpr = SExpr::Atom("1.234".to_string());
+        let value = sexpr_to_json_value(&sexpr).unwrap();
+        assert!((value.as_f64().unwrap() - 1.234).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sexpr_to_json_value_negative_integer() {
+        let sexpr = SExpr::Atom("-999".to_string());
+        let value = sexpr_to_json_value(&sexpr).unwrap();
+        assert_eq!(value.as_i64().unwrap(), -999);
+    }
 }

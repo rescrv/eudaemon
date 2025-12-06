@@ -281,4 +281,187 @@ mod tests {
         let result = merge(&[obj1, obj2]);
         assert_eq!(result.to_string(), r#"(obj ("a" 1) ("b" 3) ("c" 4))"#);
     }
+
+    #[test]
+    fn get_returns_null_for_non_object() {
+        let value = parse("not-an-object");
+        assert_eq!(get(&value, "key"), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn get_returns_null_for_empty_list() {
+        let value = parse("()");
+        assert_eq!(get(&value, "key"), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn get_returns_null_for_array() {
+        let value = parse("(arr 1 2 3)");
+        assert_eq!(get(&value, "key"), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn get_with_nested_value() {
+        let value = parse(r#"(obj ("nested" (obj ("inner" 42))))"#);
+        let nested = get(&value, "nested");
+        let inner = get(&nested, "inner");
+        assert_eq!(inner, SExpr::Atom("42".to_string()));
+    }
+
+    #[test]
+    fn keys_returns_null_for_atom() {
+        let value = parse("atom");
+        assert_eq!(keys(&value), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn keys_returns_null_for_empty_list() {
+        let value = parse("()");
+        assert_eq!(keys(&value), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn keys_returns_indices_for_array() {
+        let value = parse("(arr a b c)");
+        assert_eq!(keys(&value).to_string(), "(arr 0 1 2)");
+    }
+
+    #[test]
+    fn keys_returns_empty_for_empty_object() {
+        let value = parse("(obj)");
+        assert_eq!(keys(&value).to_string(), "(arr)");
+    }
+
+    #[test]
+    fn values_returns_null_for_atom() {
+        let value = parse("atom");
+        assert_eq!(values(&value), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn values_returns_null_for_empty_list() {
+        let value = parse("()");
+        assert_eq!(values(&value), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn values_returns_array_unchanged() {
+        let value = parse("(arr 1 2 3)");
+        assert_eq!(values(&value).to_string(), "(arr 1 2 3)");
+    }
+
+    #[test]
+    fn values_returns_empty_for_empty_object() {
+        let value = parse("(obj)");
+        assert_eq!(values(&value).to_string(), "(arr)");
+    }
+
+    #[test]
+    fn assoc_returns_null_for_non_object() {
+        let value = parse("not-an-object");
+        assert_eq!(
+            assoc(&value, "key", SExpr::Atom("1".to_string())),
+            SExpr::Atom("null".to_string())
+        );
+    }
+
+    #[test]
+    fn assoc_returns_null_for_array() {
+        let value = parse("(arr 1 2 3)");
+        assert_eq!(
+            assoc(&value, "key", SExpr::Atom("1".to_string())),
+            SExpr::Atom("null".to_string())
+        );
+    }
+
+    #[test]
+    fn assoc_creates_object_from_null() {
+        let value = parse("null");
+        let result = assoc(&value, "key", SExpr::Atom("42".to_string()));
+        assert_eq!(result.to_string(), r#"(obj ("key" 42))"#);
+    }
+
+    #[test]
+    fn assoc_to_empty_object() {
+        let value = parse("(obj)");
+        let result = assoc(&value, "key", SExpr::Atom("42".to_string()));
+        assert_eq!(result.to_string(), r#"(obj ("key" 42))"#);
+    }
+
+    #[test]
+    fn dissoc_returns_null_for_non_object() {
+        let value = parse("not-an-object");
+        assert_eq!(dissoc(&value, "key"), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn dissoc_returns_null_for_array() {
+        let value = parse("(arr 1 2 3)");
+        assert_eq!(dissoc(&value, "key"), SExpr::Atom("null".to_string()));
+    }
+
+    #[test]
+    fn dissoc_missing_key_unchanged() {
+        let value = parse(r#"(obj ("a" 1))"#);
+        let result = dissoc(&value, "missing");
+        assert_eq!(result.to_string(), r#"(obj ("a" 1))"#);
+    }
+
+    #[test]
+    fn dissoc_last_key_returns_empty_object() {
+        let value = parse(r#"(obj ("only" 1))"#);
+        let result = dissoc(&value, "only");
+        assert_eq!(result.to_string(), "(obj)");
+    }
+
+    #[test]
+    fn merge_empty_returns_empty_object() {
+        let result = merge(&[]);
+        assert_eq!(result.to_string(), "(obj)");
+    }
+
+    #[test]
+    fn merge_single_object() {
+        let obj = parse(r#"(obj ("a" 1))"#);
+        let result = merge(&[obj]);
+        assert_eq!(result.to_string(), r#"(obj ("a" 1))"#);
+    }
+
+    #[test]
+    fn merge_skips_non_objects() {
+        let obj = parse(r#"(obj ("a" 1))"#);
+        let non_obj = parse("not-an-object");
+        let result = merge(&[obj, non_obj]);
+        assert_eq!(result.to_string(), r#"(obj ("a" 1))"#);
+    }
+
+    #[test]
+    fn merge_three_objects() {
+        let obj1 = parse(r#"(obj ("a" 1))"#);
+        let obj2 = parse(r#"(obj ("b" 2))"#);
+        let obj3 = parse(r#"(obj ("c" 3))"#);
+        let result = merge(&[obj1, obj2, obj3]);
+        assert_eq!(result.to_string(), r#"(obj ("a" 1) ("b" 2) ("c" 3))"#);
+    }
+
+    #[test]
+    fn merge_later_values_override() {
+        let obj1 = parse(r#"(obj ("x" 1))"#);
+        let obj2 = parse(r#"(obj ("x" 2))"#);
+        let obj3 = parse(r#"(obj ("x" 3))"#);
+        let result = merge(&[obj1, obj2, obj3]);
+        assert_eq!(result.to_string(), r#"(obj ("x" 3))"#);
+    }
+
+    #[test]
+    fn keys_preserves_order() {
+        let value = parse(r#"(obj ("z" 1) ("a" 2) ("m" 3))"#);
+        assert_eq!(keys(&value).to_string(), r#"(arr "z" "a" "m")"#);
+    }
+
+    #[test]
+    fn values_preserves_order() {
+        let value = parse(r#"(obj ("z" 1) ("a" 2) ("m" 3))"#);
+        assert_eq!(values(&value).to_string(), "(arr 1 2 3)");
+    }
 }

@@ -1113,4 +1113,296 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().1.to_string().contains("First"));
     }
+
+    #[test]
+    fn query_one_returns_none_when_no_match() {
+        let doc = parse_doc(r#"(doc (h1 "Title"))"#);
+        let result = query_one(&doc, "p").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_empty_selector_error() {
+        let err = Selector::parse("").unwrap_err();
+        assert!(err.to_string().contains("unexpected-end"));
+    }
+
+    #[test]
+    fn parse_whitespace_only_selector_error() {
+        let err = Selector::parse("   ").unwrap_err();
+        assert!(err.to_string().contains("unexpected-end"));
+    }
+
+    #[test]
+    fn parse_invalid_char_error() {
+        let err = Selector::parse("123").unwrap_err();
+        assert!(err.to_string().contains("unexpected-char"));
+    }
+
+    #[test]
+    fn parse_unclosed_bracket_error() {
+        let err = Selector::parse("p[text=foo").unwrap_err();
+        eprintln!("DEBUG parse_unclosed_bracket_error: {}", err.detail());
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("selector".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("unclosed-bracket".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Expected ']' in attribute selector\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_invalid_operator_bang_error() {
+        let err = Selector::parse("p[text!foo]").unwrap_err();
+        assert!(err.to_string().contains("invalid-operator"));
+    }
+
+    #[test]
+    fn parse_invalid_operator_tilde_error() {
+        let err = Selector::parse("p[text~foo]").unwrap_err();
+        assert!(err.to_string().contains("invalid-operator"));
+    }
+
+    #[test]
+    fn parse_invalid_operator_caret_error() {
+        let err = Selector::parse("p[text^foo]").unwrap_err();
+        assert!(err.to_string().contains("invalid-operator"));
+    }
+
+    #[test]
+    fn parse_invalid_operator_dollar_error() {
+        let err = Selector::parse("p[text$foo]").unwrap_err();
+        assert!(err.to_string().contains("invalid-operator"));
+    }
+
+    #[test]
+    fn parse_unknown_operator_error() {
+        let err = Selector::parse("p[text%foo]").unwrap_err();
+        assert!(err.to_string().contains("invalid-operator"));
+    }
+
+    #[test]
+    fn select_sibling_combinator() {
+        let doc = parse_doc(r#"(doc (h2 "A") (p "B") (p "C") (p "D"))"#);
+        let results = query(&doc, "h2 ~ p").unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn attribute_not_equal() {
+        let doc = parse_doc(r#"(doc (h1 "A") (h2 "B") (h3 "C"))"#);
+        let results = query(&doc, "h*[level!=2]").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn attribute_starts_with() {
+        let doc = parse_doc(r#"(doc (h1 "Introduction") (h2 "Internal Details") (h2 "Summary"))"#);
+        let results = query(&doc, "h*[text^=\"Int\"]").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn attribute_ends_with() {
+        let doc = parse_doc(r#"(doc (h1 "Introduction") (h2 "Configuration") (h2 "Summary"))"#);
+        let results = query(&doc, "h*[text$=\"tion\"]").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn attribute_less_than() {
+        let doc = parse_doc(r#"(doc (h1 "A") (h2 "B") (h3 "C") (h4 "D"))"#);
+        let results = query(&doc, "h*[level<3]").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn attribute_greater_than() {
+        let doc = parse_doc(r#"(doc (h1 "A") (h2 "B") (h3 "C") (h4 "D"))"#);
+        let results = query(&doc, "h*[level>2]").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn attribute_greater_than_equal() {
+        let doc = parse_doc(r#"(doc (h1 "A") (h2 "B") (h3 "C") (h4 "D"))"#);
+        let results = query(&doc, "h*[level>=2]").unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn attribute_boolean_check() {
+        let doc = parse_doc(
+            r#"(doc (p (link "./local.md" "" "Local")) (p (link "https://ext.com" "" "Ext")))"#,
+        );
+        let results = query(&doc, "link[internal]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn attribute_numeric_non_parseable_returns_no_match() {
+        let doc = parse_doc(r#"(doc (h1 "Not a number"))"#);
+        let results = query(&doc, "h1[text>5]").unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn multiple_attribute_predicates() {
+        let doc = parse_doc(r#"(doc (h1 "A") (h2 "B") (h3 "C") (h4 "D"))"#);
+        let results = query(&doc, "h*[level>=2][level<=3]").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn select_by_tag_attribute() {
+        let doc = parse_doc(r#"(doc (h1 "A") (p "B") (h2 "C"))"#);
+        let results = query(&doc, "*[tag=h1]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn select_by_path_attribute() {
+        let doc = parse_doc(r#"(doc (h1 "A") (p "B"))"#);
+        let results = query(&doc, "*[path=1]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn select_by_url_attribute() {
+        let doc = parse_doc(r#"(doc (p (link "test.md" "" "Test")))"#);
+        let results = query(&doc, "link[url=test.md]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn select_by_lang_attribute() {
+        let doc = parse_doc(r#"(doc (code-block "rust" "fn main() {}"))"#);
+        let results = query(&doc, "code-block[lang=rust]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn select_images_by_image_attribute() {
+        let doc = parse_doc(r#"(doc (p (img "pic.png" "Alt" "Title")))"#);
+        let results = query(&doc, "*[image=true]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn tagged_selector_with_html_comment() {
+        let doc = parse_doc(r#"(doc (html "<!-- @tag:status=draft -->") (h1 "Draft Title"))"#);
+        let results = query(&doc, "#status=draft").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn tagged_selector_key_only() {
+        let doc = parse_doc(r#"(doc (html "<!-- @tag:deprecated -->") (h1 "Old API"))"#);
+        let results = query(&doc, "#deprecated").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn tagged_selector_no_match_wrong_value() {
+        let doc = parse_doc(r#"(doc (html "<!-- @tag:status=published -->") (h1 "Title"))"#);
+        let results = query(&doc, "#status=draft").unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn chained_combinators() {
+        let doc = parse_doc(r#"(doc (blockquote (ul (li (p "Deep")))))"#);
+        let results = query(&doc, "blockquote ul li p").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn child_then_descendant_combinator() {
+        let doc = parse_doc(r#"(doc (ul (li (p "A"))) (ol (li (div (p "B")))))"#);
+        let results = query(&doc, "ul > li p").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.to_string().contains("A"));
+    }
+
+    #[test]
+    fn select_root_with_universal() {
+        let doc = parse_doc(r#"(doc (h1 "Title"))"#);
+        let results = query(&doc, "*[depth=0]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn select_deeply_nested() {
+        let doc = parse_doc(r#"(doc (a (b (c (d (e (f "Deep")))))))"#);
+        let results = query(&doc, "f").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn quoted_value_in_attribute() {
+        let doc = parse_doc(r#"(doc (h1 "Hello World"))"#);
+        let results = query(&doc, "h1[text=\"Hello World\"]").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn internal_url_empty() {
+        assert!(is_internal_url(""));
+    }
+
+    #[test]
+    fn internal_url_hash() {
+        assert!(is_internal_url("#section"));
+    }
+
+    #[test]
+    fn internal_url_relative_dot() {
+        assert!(is_internal_url("./page.md"));
+    }
+
+    #[test]
+    fn internal_url_relative_dotdot() {
+        assert!(is_internal_url("../other/page.md"));
+    }
+
+    #[test]
+    fn internal_url_no_protocol() {
+        assert!(is_internal_url("page.md"));
+    }
+
+    #[test]
+    fn external_url_https() {
+        assert!(!is_internal_url("https://example.com"));
+    }
+
+    #[test]
+    fn external_url_http() {
+        assert!(!is_internal_url("http://example.com"));
+    }
+
+    #[test]
+    fn get_attribute_unknown_returns_none() {
+        let doc = parse_doc(r#"(h1 "Title")"#);
+        let result = get_attribute(&doc, "unknown", &PathId::root(), 0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_text_content_nested() {
+        let doc = parse_doc(r#"(p "Hello " (strong "world") "!")"#);
+        let text = extract_text_content(&doc);
+        assert_eq!(text, "Hello world!");
+    }
 }

@@ -27,30 +27,26 @@ impl std::fmt::Display for SExpr {
 }
 
 pub struct Parser<'a> {
-    input: &'a [u8],
+    input: &'a str,
+    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     position: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         Parser {
-            input: input.as_bytes(),
+            input,
+            chars: input.char_indices().peekable(),
             position: 0,
         }
     }
 
     pub fn parse(&mut self) -> SResult<SExpr> {
         self.consume_whitespace();
-        if self.position >= self.input.len() {
-            return Err(SError::new("parse")
-                .with_code("unexpected-eof")
-                .with_message("Unexpected end of input")
-                .with_atom_field("position", self.position));
-        }
         match self.peek_char() {
-            Some(b'\'') => self.parse_quoted(),
-            Some(b'(') => self.parse_list(),
-            Some(b'"') => self.parse_quoted_string(),
+            Some('\'') => self.parse_quoted(),
+            Some('(') => self.parse_list(),
+            Some('"') => self.parse_quoted_string(),
             Some(_) => self.parse_atom(),
             None => Err(SError::new("parse")
                 .with_code("unexpected-eof")
@@ -65,18 +61,13 @@ impl<'a> Parser<'a> {
         Ok(SExpr::List(vec![SExpr::Atom("quote".to_string()), expr]))
     }
 
-    fn peek_char(&self) -> Option<u8> {
-        if self.position < self.input.len() {
-            Some(self.input[self.position])
-        } else {
-            None
-        }
+    fn peek_char(&mut self) -> Option<char> {
+        self.chars.peek().map(|&(_, ch)| ch)
     }
 
-    fn next_char(&mut self) -> Option<u8> {
-        if self.position < self.input.len() {
-            let ch = self.input[self.position];
-            self.position += 1;
+    fn next_char(&mut self) -> Option<char> {
+        if let Some((idx, ch)) = self.chars.next() {
+            self.position = idx + ch.len_utf8();
             Some(ch)
         } else {
             None
@@ -100,7 +91,7 @@ impl<'a> Parser<'a> {
         loop {
             self.consume_whitespace();
             match self.peek_char() {
-                Some(b')') => {
+                Some(')') => {
                     self.next_char();
                     return Ok(SExpr::List(list));
                 }
@@ -135,12 +126,12 @@ impl<'a> Parser<'a> {
                         .with_atom_field("start_position", start_position)
                         .with_atom_field("current_position", self.position));
                 }
-                Some(b'\\') => {
+                Some('\\') => {
                     self.next_char(); // consume '\'
                     match self.peek_char() {
                         Some(ch) => {
                             result.push('\\');
-                            result.push(ch as char);
+                            result.push(ch);
                             self.next_char();
                         }
                         None => {
@@ -152,13 +143,13 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                Some(b'"') => {
+                Some('"') => {
                     result.push('"');
                     self.next_char(); // consume closing '"'
                     return Ok(SExpr::Atom(result));
                 }
                 Some(ch) => {
-                    result.push(ch as char);
+                    result.push(ch);
                     self.next_char();
                 }
             }
@@ -168,23 +159,13 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self) -> SResult<SExpr> {
         let start = self.position;
         while let Some(ch) = self.peek_char() {
-            if ch.is_ascii_whitespace() || ch == b'(' || ch == b')' {
+            if ch.is_ascii_whitespace() || ch == '(' || ch == ')' {
                 break;
             }
             self.next_char();
         }
         let end = self.position;
-        let atom = &self.input[start..end];
-        String::from_utf8(atom.to_vec())
-            .map(SExpr::Atom)
-            .map_err(|e| {
-                SError::new("parse")
-                    .with_code("invalid-utf8")
-                    .with_message("Invalid UTF-8 in atom")
-                    .with_atom_field("start_position", start)
-                    .with_atom_field("end_position", end)
-                    .with_string_field("utf8_error", &e.to_string())
-            })
+        Ok(SExpr::Atom(self.input[start..end].to_string()))
     }
 }
 
@@ -270,9 +251,10 @@ mod tests {
     }
 
     #[test]
-    fn test_unclosed_list() {
+    fn unclosed_list_error() {
         let mut parser = Parser::new("(foo bar");
-        assert!(parser.parse().is_err());
+        let err = parser.parse().unwrap_err();
+        assert!(err.to_string().contains("unclosed-list"));
     }
 
     #[test]
@@ -315,8 +297,183 @@ mod tests {
     }
 
     #[test]
-    fn unclosed_quoted_string() {
+    fn unclosed_quoted_string_error() {
         let mut parser = Parser::new(r#""hello"#);
-        assert!(parser.parse().is_err());
+        let err = parser.parse().unwrap_err();
+        assert!(err.to_string().contains("unclosed-string"));
+    }
+
+    #[test]
+    fn empty_input_error() {
+        let mut parser = Parser::new("");
+        let err = parser.parse().unwrap_err();
+        assert!(err.to_string().contains("unexpected-eof"));
+    }
+
+    #[test]
+    fn whitespace_only_input_error() {
+        let mut parser = Parser::new("   \n\t  ");
+        let err = parser.parse().unwrap_err();
+        assert!(err.to_string().contains("unexpected-eof"));
+    }
+
+    #[test]
+    fn quoted_syntax_shorthand() {
+        let mut parser = Parser::new("'foo");
+        assert_eq!(parser.parse().unwrap().to_string(), "(quote foo)");
+    }
+
+    #[test]
+    fn quoted_list_shorthand() {
+        let mut parser = Parser::new("'(a b c)");
+        assert_eq!(parser.parse().unwrap().to_string(), "(quote (a b c))");
+    }
+
+    #[test]
+    fn deeply_nested_lists() {
+        let mut parser = Parser::new("(a (b (c (d (e (f))))))");
+        assert_eq!(
+            parser.parse().unwrap().to_string(),
+            "(a (b (c (d (e (f))))))"
+        );
+    }
+
+    #[test]
+    fn atom_with_special_characters() {
+        let mut parser = Parser::new("foo-bar_baz123");
+        assert_eq!(
+            parser.parse().unwrap(),
+            SExpr::Atom("foo-bar_baz123".to_string())
+        );
+    }
+
+    #[test]
+    fn atom_with_symbols() {
+        let mut parser = Parser::new("+-*/<>=!?");
+        assert_eq!(
+            parser.parse().unwrap(),
+            SExpr::Atom("+-*/<>=!?".to_string())
+        );
+    }
+
+    #[test]
+    fn numeric_atom_positive() {
+        let mut parser = Parser::new("123");
+        assert_eq!(parser.parse().unwrap(), SExpr::Atom("123".to_string()));
+    }
+
+    #[test]
+    fn numeric_atom_negative() {
+        let mut parser = Parser::new("-456");
+        assert_eq!(parser.parse().unwrap(), SExpr::Atom("-456".to_string()));
+    }
+
+    #[test]
+    fn numeric_atom_float() {
+        let mut parser = Parser::new("3.14159");
+        assert_eq!(parser.parse().unwrap(), SExpr::Atom("3.14159".to_string()));
+    }
+
+    #[test]
+    fn quoted_string_with_newlines() {
+        let mut parser = Parser::new(r#""hello\nworld""#);
+        assert_eq!(
+            parser.parse().unwrap(),
+            SExpr::Atom(r#""hello\nworld""#.to_string())
+        );
+    }
+
+    #[test]
+    fn quoted_string_with_tabs() {
+        let mut parser = Parser::new(r#""col1\tcol2""#);
+        assert_eq!(
+            parser.parse().unwrap(),
+            SExpr::Atom(r#""col1\tcol2""#.to_string())
+        );
+    }
+
+    #[test]
+    fn quoted_string_with_backslashes() {
+        let mut parser = Parser::new(r#""path\\to\\file""#);
+        assert_eq!(
+            parser.parse().unwrap(),
+            SExpr::Atom(r#""path\\to\\file""#.to_string())
+        );
+    }
+
+    #[test]
+    fn escape_at_end_of_string_error() {
+        let mut parser = Parser::new(r#""hello\"#);
+        let err = parser.parse().unwrap_err();
+        assert!(err.to_string().contains("unclosed-string"));
+    }
+
+    #[test]
+    fn nested_lists_with_multiple_levels() {
+        let input = "(doc (h1 \"Title\") (ul (li \"A\") (li \"B\")) (p \"End\"))";
+        let mut parser = Parser::new(input);
+        assert_eq!(parser.parse().unwrap().to_string(), input);
+    }
+
+    #[test]
+    fn list_with_mixed_content() {
+        let mut parser = Parser::new("(func 123 \"str\" symbol (nested))");
+        let expected = SExpr::List(vec![
+            SExpr::Atom("func".to_string()),
+            SExpr::Atom("123".to_string()),
+            SExpr::Atom("\"str\"".to_string()),
+            SExpr::Atom("symbol".to_string()),
+            SExpr::List(vec![SExpr::Atom("nested".to_string())]),
+        ]);
+        assert_eq!(parser.parse().unwrap(), expected);
+    }
+
+    #[test]
+    fn display_nested_list() {
+        let expr = SExpr::List(vec![
+            SExpr::Atom("outer".to_string()),
+            SExpr::List(vec![
+                SExpr::Atom("inner".to_string()),
+                SExpr::Atom("value".to_string()),
+            ]),
+        ]);
+        assert_eq!(expr.to_string(), "(outer (inner value))");
+    }
+
+    #[test]
+    fn display_empty_list() {
+        let expr = SExpr::List(vec![]);
+        assert_eq!(expr.to_string(), "()");
+    }
+
+    #[test]
+    fn display_single_element_list() {
+        let expr = SExpr::List(vec![SExpr::Atom("only".to_string())]);
+        assert_eq!(expr.to_string(), "(only)");
+    }
+
+    #[test]
+    fn parser_handles_carriage_return() {
+        let mut parser = Parser::new("(a\r\nb)");
+        assert_eq!(
+            parser.parse().unwrap(),
+            SExpr::List(vec![
+                SExpr::Atom("a".to_string()),
+                SExpr::Atom("b".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn unclosed_nested_list_error() {
+        let mut parser = Parser::new("(a (b (c)");
+        let err = parser.parse().unwrap_err();
+        assert!(err.to_string().contains("unclosed-list"));
+    }
+
+    #[test]
+    fn quoted_string_empty() {
+        let mut parser = Parser::new(r#""""#);
+        assert_eq!(parser.parse().unwrap(), SExpr::Atom(r#""""#.to_string()));
     }
 }

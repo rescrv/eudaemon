@@ -474,10 +474,227 @@ mod tests {
         let annotated = to_annotated_sexpr(&doc);
         let s = annotated.to_string();
 
-        // Should contain @ annotations and path IDs
         assert!(s.contains("(@"));
         assert!(s.contains("\"root\""));
         assert!(s.contains("\"1\""));
-        println!("DEBUG annotated: {}", s);
+    }
+
+    #[test]
+    fn path_id_depth() {
+        assert_eq!(PathId::root().depth(), 0);
+        assert_eq!(PathId::new(vec![1]).depth(), 1);
+        assert_eq!(PathId::new(vec![1, 2, 3]).depth(), 3);
+    }
+
+    #[test]
+    fn path_id_parse_invalid_error() {
+        let err = PathId::parse("not.a.number").unwrap_err();
+        eprintln!("DEBUG path_id_parse_invalid_error: {}", err.detail());
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("nodeid".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("invalid-path-id".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Failed to parse path ID\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("input".to_string()),
+                    SExpr::Atom("\"not.a.number\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("parse_error".to_string()),
+                    SExpr::Atom("\"invalid digit found in string\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn content_id_parse_invalid_error() {
+        let err = ContentId::parse("no-hash-prefix").unwrap_err();
+        eprintln!("DEBUG content_id_parse_invalid_error: {}", err.detail());
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("nodeid".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("invalid-content-id".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"Content ID must start with '#'\"".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("input".to_string()),
+                    SExpr::Atom("\"no-hash-prefix\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn get_by_path_invalid_index_returns_none() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = get_by_path(&doc, &PathId::new(vec![99]));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_by_path_into_atom_returns_none() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = get_by_path(&doc, &PathId::new(vec![1, 1, 1]));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_by_content_not_found_returns_none() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let nonexistent = ContentId::compute(&parse("(p \"Not in doc\")"));
+        let result = get_by_content(&doc, &nonexistent);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_node_with_path() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let id = NodeId::Path(PathId::new(vec![1]));
+        let result = get_node(&doc, &id);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1.to_string(), "(h1 \"Title\")");
+    }
+
+    #[test]
+    fn get_node_with_content() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let h1 = parse("(h1 \"Title\")");
+        let id = NodeId::Content(ContentId::compute(&h1));
+        let result = get_node(&doc, &id);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1.to_string(), "(h1 \"Title\")");
+    }
+
+    #[test]
+    fn get_parent_of_root_returns_none() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = get_parent(&doc, &PathId::root());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_parent_of_child() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let result = get_parent(&doc, &PathId::new(vec![1]));
+        assert!(result.is_some());
+        let (parent_path, parent_node) = result.unwrap();
+        assert_eq!(parent_path, PathId::root());
+        assert_eq!(parent_node, doc);
+    }
+
+    #[test]
+    fn get_siblings_of_root_returns_empty() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let siblings = get_siblings(&doc, &PathId::root());
+        assert!(siblings.is_empty());
+    }
+
+    #[test]
+    fn get_siblings_invalid_parent_returns_empty() {
+        let doc = parse("(doc (h1 \"Title\"))");
+        let siblings = get_siblings(&doc, &PathId::new(vec![99, 1]));
+        assert!(siblings.is_empty());
+    }
+
+    #[test]
+    fn get_context_at_boundary_start() {
+        let doc = parse("(doc (p \"1\") (p \"2\") (p \"3\"))");
+        let path = PathId::new(vec![1]);
+        let context = get_context(&doc, &path, 1);
+        assert_eq!(context.len(), 2);
+    }
+
+    #[test]
+    fn get_context_at_boundary_end() {
+        let doc = parse("(doc (p \"1\") (p \"2\") (p \"3\"))");
+        let path = PathId::new(vec![3]);
+        let context = get_context(&doc, &path, 1);
+        assert_eq!(context.len(), 2);
+    }
+
+    #[test]
+    fn get_context_not_found_returns_empty() {
+        let doc = parse("(doc (p \"1\") (p \"2\"))");
+        let path = PathId::new(vec![99]);
+        let context = get_context(&doc, &path, 1);
+        assert!(context.is_empty());
+    }
+
+    #[test]
+    fn annotate_document_deeply_nested() {
+        let doc = parse("(doc (ul (li (p \"Deep\"))))");
+        let nodes = annotate_document(&doc);
+        // doc, ul, li, p, "Deep" = 5 nodes
+        assert_eq!(nodes.len(), 5);
+    }
+
+    #[test]
+    fn annotate_document_empty_list() {
+        let doc = parse("()");
+        let nodes = annotate_document(&doc);
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn to_annotated_sexpr_empty_list() {
+        let doc = parse("()");
+        let annotated = to_annotated_sexpr(&doc);
+        let s = annotated.to_string();
+        assert!(s.contains("(@"));
+    }
+
+    #[test]
+    fn node_id_display_path() {
+        let id = NodeId::Path(PathId::new(vec![1, 2]));
+        assert_eq!(id.to_string(), "1.2");
+    }
+
+    #[test]
+    fn node_id_display_content() {
+        let expr = parse("(h1 \"Test\")");
+        let content_id = ContentId::compute(&expr);
+        let id = NodeId::Content(content_id.clone());
+        assert_eq!(id.to_string(), content_id.to_string());
+    }
+
+    #[test]
+    fn content_id_deterministic_across_calls() {
+        let expr = parse("(p \"Content\")");
+        let id1 = ContentId::compute(&expr);
+        let id2 = ContentId::compute(&expr);
+        let id3 = ContentId::compute(&expr);
+        assert_eq!(id1, id2);
+        assert_eq!(id2, id3);
+    }
+
+    #[test]
+    fn path_id_equality() {
+        let p1 = PathId::new(vec![1, 2, 3]);
+        let p2 = PathId::new(vec![1, 2, 3]);
+        let p3 = PathId::new(vec![1, 2, 4]);
+        assert_eq!(p1, p2);
+        assert_ne!(p1, p3);
     }
 }

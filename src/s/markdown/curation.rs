@@ -1765,8 +1765,267 @@ mod tests {
         };
         let sexpr = skeleton_summary_to_sexpr(&summary);
         let s = sexpr.to_string();
-        println!("DEBUG summary sexpr: {}", s);
+        eprintln!("DEBUG summary sexpr: {}", s);
         assert!(s.contains("summary"));
         assert!(s.contains("paragraphs"));
+    }
+
+    #[test]
+    fn wrap_in_callout_empty_paths_error() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let err = wrap_in_callout(&doc, &[], "warning", None).unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("curation".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("empty-paths".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"No paths provided to wrap_in_callout\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn wrap_in_details_empty_paths_error() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let err = wrap_in_details(&doc, &[], "Summary").unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("curation".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("empty-paths".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"No paths provided to wrap_in_details\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn wrap_in_details_basic() {
+        let doc = parse(r#"(doc (p "Content"))"#);
+        let result = wrap_in_details(&doc, &[PathId::new(vec![1])], "Click to expand").unwrap();
+        let s = result.to_string();
+        eprintln!("DEBUG wrap_in_details: {}", s);
+        assert!(s.contains("<details>"));
+        assert!(s.contains("<summary>Click to expand</summary>"));
+        assert!(s.contains("</details>"));
+    }
+
+    #[test]
+    fn extract_to_ref_empty_paths_error() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let err = extract_to_ref(&doc, &[], "file.md", None).unwrap_err();
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("curation".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("empty-paths".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom("\"No paths provided to extract_to_ref\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_sections_invalid_strategy_error() {
+        let doc = parse(r#"(doc (ul (li "A")) (ul (li "B")))"#);
+        let err = merge_sections(
+            &doc,
+            &PathId::new(vec![2]),
+            &PathId::new(vec![1]),
+            "invalid",
+        )
+        .unwrap_err();
+        eprintln!("DEBUG merge_sections error: {}", err.detail());
+        assert_eq!(
+            *err.detail(),
+            SExpr::List(vec![
+                SExpr::Atom("error".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("phase".to_string()),
+                    SExpr::Atom("curation".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("code".to_string()),
+                    SExpr::Atom("invalid-strategy".to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("message".to_string()),
+                    SExpr::Atom(
+                        "\"Strategy must be 'append', 'prepend', or 'replace'\"".to_string()
+                    ),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("strategy".to_string()),
+                    SExpr::Atom("\"invalid\"".to_string()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_sections_prepend() {
+        let doc = parse(r#"(doc (ul (li "A")) (ul (li "B")))"#);
+        let result = merge_sections(
+            &doc,
+            &PathId::new(vec![2]),
+            &PathId::new(vec![1]),
+            "prepend",
+        )
+        .unwrap();
+        let s = result.to_string();
+        eprintln!("DEBUG merge prepend: {}", s);
+        assert!(s.contains("(li \"B\")"));
+        assert!(s.contains("(li \"A\")"));
+    }
+
+    #[test]
+    fn merge_sections_replace() {
+        let doc = parse(r#"(doc (ul (li "A")) (ul (li "B")))"#);
+        let result = merge_sections(
+            &doc,
+            &PathId::new(vec![2]),
+            &PathId::new(vec![1]),
+            "replace",
+        )
+        .unwrap();
+        let s = result.to_string();
+        eprintln!("DEBUG merge replace: {}", s);
+        assert!(s.contains("(li \"B\")"));
+        assert!(!s.contains("(li \"A\")"));
+    }
+
+    #[test]
+    fn generate_toc_empty_doc() {
+        let doc = parse(r#"(doc)"#);
+        let toc = generate_toc(&doc);
+        assert_eq!(toc, SExpr::List(vec![SExpr::Atom("ul".to_string())]));
+    }
+
+    #[test]
+    fn scan_links_link_ref() {
+        let doc = parse(r#"(doc (p (link-ref "ref1" "Link text")))"#);
+        let links = scan_links(&doc);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "[ref1]");
+        assert!(links[0].is_internal);
+    }
+
+    #[test]
+    fn scan_links_img_ref() {
+        let doc = parse(r#"(doc (p (img-ref "img1" "Alt text")))"#);
+        let links = scan_links(&doc);
+        assert_eq!(links.len(), 1);
+        assert!(links[0].is_image);
+        assert!(links[0].is_internal);
+    }
+
+    #[test]
+    fn scan_link_definitions_basic() {
+        let doc = parse(r#"(doc (def "ref1" "https://example.com" "Example"))"#);
+        let defs = scan_link_definitions(&doc);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].identifier, "ref1");
+        assert_eq!(defs[0].url, "https://example.com");
+    }
+
+    #[test]
+    fn find_undefined_references_found() {
+        let doc = parse(r#"(doc (p (link-ref "undefined" "Text")))"#);
+        let undefined = find_undefined_references(&doc);
+        assert_eq!(undefined.len(), 1);
+    }
+
+    #[test]
+    fn find_undefined_references_defined() {
+        let doc = parse(r#"(doc (p (link-ref "defined" "Text")) (def "defined" "url" ""))"#);
+        let undefined = find_undefined_references(&doc);
+        assert_eq!(undefined.len(), 0);
+    }
+
+    #[test]
+    fn update_link_image() {
+        let doc = parse(r#"(doc (p (img "old.png" "Alt" "")))"#);
+        let result = update_link(&doc, &PathId::new(vec![1, 1]), "new.png").unwrap();
+        let s = result.to_string();
+        assert!(s.contains("new.png"));
+        assert!(!s.contains("old.png"));
+    }
+
+    #[test]
+    fn get_tagged_nodes_empty() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let tagged = get_tagged_nodes(&doc, "status");
+        assert!(tagged.is_empty());
+    }
+
+    #[test]
+    fn focus_context_empty_paths() {
+        let doc = parse(r#"(doc (h1 "Title"))"#);
+        let focused = focus_context(&doc, &[]);
+        assert_eq!(focused, SExpr::List(vec![SExpr::Atom("doc".to_string())]));
+    }
+
+    #[test]
+    fn skeleton_summary_empty_doc() {
+        let doc = parse(r#"(doc)"#);
+        let summary = skeleton_summary(&doc);
+        assert_eq!(summary.paragraph_count, 0);
+        assert_eq!(summary.heading_counts, [0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn slugify_empty() {
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn get_image_links_basic() {
+        let doc = parse(r#"(doc (p (img "pic.png" "Alt" "")) (p (link "page.md" "" "Link")))"#);
+        let images = get_image_links(&doc);
+        assert_eq!(images.len(), 1);
+        assert!(images[0].is_image);
+    }
+
+    #[test]
+    fn normalize_headers_no_mappings() {
+        let doc = parse(r#"(doc (h1 "Title") (h2 "Sub"))"#);
+        let result = normalize_headers(&doc, &[]).unwrap();
+        assert_eq!(result, doc);
+    }
+
+    #[test]
+    fn normalize_headers_nested() {
+        let doc = parse(r#"(doc (blockquote (h3 "Nested")))"#);
+        let result = normalize_headers(&doc, &[(3, 1)]).unwrap();
+        let s = result.to_string();
+        assert!(s.contains("(h1 \"Nested\")"));
     }
 }
