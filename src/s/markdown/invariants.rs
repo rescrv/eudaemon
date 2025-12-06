@@ -75,27 +75,49 @@ impl Violation {
 pub enum Invariant {
     /// Every node matching `selector` must have a child matching `child_selector`.
     HasChild {
+        /// CSS-like selector identifying the parent nodes to check.
         selector: String,
+        /// CSS-like selector that must match at least one child of each parent.
         child_selector: String,
     },
     /// Every node matching `selector` must have a sibling matching `sibling_selector`.
     HasSibling {
+        /// CSS-like selector identifying the nodes that must have siblings.
         selector: String,
+        /// CSS-like selector that must match at least one sibling.
         sibling_selector: String,
     },
     /// Nodes matching `selector` must not exist (useful for banning patterns).
-    MustNotExist { selector: String },
+    MustNotExist {
+        /// CSS-like selector identifying banned nodes.
+        selector: String,
+    },
     /// At least one node matching `selector` must exist.
-    MustExist { selector: String },
+    MustExist {
+        /// CSS-like selector that must match at least one node.
+        selector: String,
+    },
     /// Nodes matching `selector` must be at depth <= max_depth.
-    MaxDepth { selector: String, max_depth: usize },
+    MaxDepth {
+        /// CSS-like selector identifying nodes to check.
+        selector: String,
+        /// Maximum allowed depth from the document root.
+        max_depth: usize,
+    },
     /// Nodes matching `selector` must have an associated tag.
-    RequiresTag { selector: String, tag_key: String },
+    RequiresTag {
+        /// CSS-like selector identifying nodes that require tags.
+        selector: String,
+        /// The tag key that must be present.
+        tag_key: String,
+    },
     /// Heading levels must not skip (e.g., h1 -> h3 without h2).
     NoHeadingSkips,
     /// Custom predicate using a closure.
     Custom {
+        /// Human-readable description of what this predicate checks.
         description: String,
+        /// Function returning true if the node passes the check.
         predicate: fn(&SExpr, &PathId) -> bool,
     },
 }

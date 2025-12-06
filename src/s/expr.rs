@@ -2,9 +2,32 @@
 
 use crate::s::error::{SError, SResult};
 
+/// A symbolic expression: the fundamental data structure for representing structured data.
+///
+/// S-expressions provide a uniform representation for both code and data, enabling
+/// homoiconic transformations where programs can manipulate other programs as data.
+///
+/// # Examples
+///
+/// ```
+/// use agentkb::SExpr;
+///
+/// // An atom representing a symbol
+/// let symbol = SExpr::Atom("hello".to_string());
+///
+/// // A list representing a function call
+/// let call = SExpr::List(vec![
+///     SExpr::Atom("add".to_string()),
+///     SExpr::Atom("1".to_string()),
+///     SExpr::Atom("2".to_string()),
+/// ]);
+/// assert_eq!(call.to_string(), "(add 1 2)");
+/// ```
 #[derive(Debug, PartialEq, Clone)]
 pub enum SExpr {
+    /// An atomic value: a symbol, number, string, or other indivisible token.
     Atom(String),
+    /// A list of S-expressions, where the first element conventionally names the form.
     List(Vec<SExpr>),
 }
 
@@ -26,6 +49,21 @@ impl std::fmt::Display for SExpr {
     }
 }
 
+/// A recursive descent parser for S-expressions.
+///
+/// Transforms a string representation into an [`SExpr`] abstract syntax tree.
+/// The parser handles atoms, quoted strings with escape sequences, nested lists,
+/// and the quote shorthand (`'expr` → `(quote expr)`).
+///
+/// # Examples
+///
+/// ```
+/// use agentkb::Parser;
+///
+/// let mut parser = Parser::new("(doc (h1 \"Hello\"))");
+/// let expr = parser.parse().unwrap();
+/// assert_eq!(expr.to_string(), "(doc (h1 \"Hello\"))");
+/// ```
 pub struct Parser<'a> {
     input: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
@@ -33,6 +71,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    /// Creates a new parser for the given input string.
     pub fn new(input: &'a str) -> Self {
         Parser {
             input,
@@ -41,6 +80,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parses the input and returns the resulting S-expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input contains:
+    /// - Unclosed lists (missing `)`)
+    /// - Unclosed quoted strings (missing `"`)
+    /// - Unexpected end of input
     pub fn parse(&mut self) -> SResult<SExpr> {
         self.consume_whitespace();
         match self.peek_char() {

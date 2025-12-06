@@ -147,7 +147,9 @@ impl std::fmt::Display for ContentId {
 /// A node identifier that can be either path-based or content-based.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeId {
+    /// A positional identifier specifying the index path from the document root.
     Path(PathId),
+    /// A content-addressable identifier based on the node's structural hash.
     Content(ContentId),
 }
 

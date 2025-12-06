@@ -26,6 +26,15 @@ pub fn json_to_sexpr(s: &str) -> SResult<String> {
     Ok(sexpr.to_string())
 }
 
+/// Converts a [`serde_json::Value`] to an [`SExpr`].
+///
+/// Maps JSON types to explicitly tagged S-expressions:
+/// - Object → `(obj ("key" value) ...)`
+/// - Array → `(arr value value ...)`
+/// - String → `"string"`
+/// - Number → numeric atom
+/// - Boolean → `#t` or `#f`
+/// - Null → `null`
 pub fn json_value_to_sexpr(value: &Value) -> SExpr {
     match value {
         Value::Null => SExpr::Atom("null".to_string()),
@@ -76,6 +85,18 @@ pub fn sexpr_to_json(s: &str) -> SResult<String> {
     })
 }
 
+/// Converts an [`SExpr`] to a [`serde_json::Value`].
+///
+/// Expects explicitly tagged S-expressions as produced by [`json_value_to_sexpr`].
+/// Applies implicit null filtering: nulls in arrays are removed.
+///
+/// # Errors
+///
+/// Returns an error if the S-expression:
+/// - Is an empty list
+/// - Has a non-atom tag
+/// - Has an unrecognized tag (not `obj` or `arr`)
+/// - Contains an atom that cannot be converted to a JSON primitive
 pub fn sexpr_to_json_value(sexpr: &SExpr) -> SResult<Value> {
     match sexpr {
         SExpr::Atom(s) => {
@@ -170,6 +191,10 @@ pub fn sexpr_to_json_value(sexpr: &SExpr) -> SResult<Value> {
     }
 }
 
+/// Processes escape sequences in a string, converting them to their literal characters.
+///
+/// Recognizes standard escape sequences: `\n`, `\r`, `\t`, `\\`, `\"`.
+/// Unknown escape sequences are preserved literally.
 pub fn unescape_string(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars();

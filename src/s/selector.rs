@@ -82,10 +82,17 @@ pub enum SimpleSelector {
     /// Match by exact path.
     Path(PathId),
     /// Match by node tag (metadata).
-    Tagged { key: String, value: Option<String> },
+    Tagged {
+        /// The tag key to match.
+        key: String,
+        /// The optional tag value to match.
+        value: Option<String>,
+    },
     /// Tag selector with attribute predicates.
     WithAttributes {
+        /// The base selector to match before applying predicates.
         base: Box<SimpleSelector>,
+        /// Additional attribute predicates that must all be satisfied.
         predicates: Vec<AttributePredicate>,
     },
 }

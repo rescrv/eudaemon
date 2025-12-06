@@ -1,3 +1,68 @@
+//! A toolkit for transforming markdown documents using S-expressions.
+//!
+//! `agentkb` provides a bidirectional transformation layer between markdown and
+//! S-expressions, enabling programmatic manipulation of markdown content through
+//! a Lisp-like representation.  The crate is designed for building knowledge bases
+//! where documents need to be queried, transformed, and curated by automated agents.
+//!
+//! # Core Concepts
+//!
+//! ## S-expression Representation
+//!
+//! Markdown documents are represented as tagged S-expressions:
+//!
+//! ```text
+//! (doc
+//!   (h1 "Introduction")
+//!   (p "Some text with " (em "emphasis") " and " (strong "bold") ".")
+//!   (ul
+//!     (li (p "First item"))
+//!     (li (p "Second item"))))
+//! ```
+//!
+//! ## Path-based Navigation
+//!
+//! Nodes are addressed using [`PathId`], a dot-separated path from the document root:
+//! - `root` - the document itself
+//! - `1` - first child (after the doc tag)
+//! - `1.2` - second child of the first child
+//!
+//! ## Content-addressable References
+//!
+//! Nodes can also be referenced by [`ContentId`], a hash of their content,
+//! enabling stable references that survive structural changes.
+//!
+//! # Example
+//!
+//! ```rust
+//! use agentkb::{markdown_to_sexpr, sexpr_to_markdown, Parser, eval, Env, register_builtins};
+//!
+//! // Parse markdown to S-expression
+//! let doc = markdown_to_sexpr("# Hello\n\nWorld!").unwrap();
+//! assert!(doc.to_string().contains("(h1 \"Hello\")"));
+//!
+//! // Convert back to markdown
+//! let md = sexpr_to_markdown(&doc).unwrap();
+//! assert!(md.contains("# Hello"));
+//! ```
+//!
+//! # Modules
+//!
+//! The crate re-exports types from internal modules:
+//!
+//! - **Core S-expression types**: [`SExpr`], [`Parser`], [`SError`], [`SResult`]
+//! - **Evaluation**: [`Env`], [`eval`], [`register_builtins`], and built-in functions
+//! - **JSON conversion**: [`json_to_sexpr`], [`sexpr_to_json`]
+//! - **Markdown conversion**: [`markdown_to_sexpr`], [`sexpr_to_markdown`]
+//! - **Node navigation**: [`PathId`], [`ContentId`], [`NodeId`], [`get_by_path`]
+//! - **Mutations**: [`replace_at`], [`prune`], [`insert_before`], [`graft`]
+//! - **Selectors**: [`Selector`], [`query`], [`select`]
+//! - **Curation**: [`generate_toc`], [`wrap_in_callout`], [`mark_deprecated`]
+//! - **Invariants**: [`Invariant`], [`assert_invariant`], [`validate_all`]
+//! - **REPL**: [`Repl`], [`register_markdown_builtins`]
+
+#![deny(missing_docs)]
+
 mod dialect;
 mod s;
 
