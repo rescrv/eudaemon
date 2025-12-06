@@ -63,6 +63,7 @@
 
 #![deny(missing_docs)]
 
+pub mod agent;
 mod dialect;
 mod s;
 
