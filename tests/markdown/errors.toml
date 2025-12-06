@@ -1,0 +1,193 @@
+[metadata]
+version = "1.0"
+description = "Expected error tests: operations that should fail"
+
+# =============================================================================
+# prune errors
+# =============================================================================
+
+[[test]]
+name = "prune_root_fails"
+description = "Cannot prune the root document"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "prune", path = "root" }
+expected_error = { code = "cannot-prune-root" }
+
+[[test]]
+name = "prune_index_out_of_bounds"
+description = "Pruning non-existent index fails"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "prune", path = "99" }
+expected_error = { code = "index-out-of-bounds" }
+
+[[test]]
+name = "prune_nested_out_of_bounds"
+description = "Pruning non-existent nested index fails"
+before_sexpr = '(doc (ul (li (p "A"))))'
+mutation = { op = "prune", path = "1.99" }
+expected_error = { code = "index-out-of-bounds" }
+
+[[test]]
+name = "prune_descend_into_atom"
+description = "Cannot descend into an atom"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "prune", path = "1.1.1" }
+expected_error = { code = "cannot-descend-atom" }
+
+# =============================================================================
+# replace_at errors
+# =============================================================================
+
+[[test]]
+name = "replace_at_index_out_of_bounds"
+description = "Replacing non-existent index fails"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "replace_at", path = "99", node = '(p "New")' }
+expected_error = { code = "index-out-of-bounds" }
+
+[[test]]
+name = "replace_at_nested_out_of_bounds"
+description = "Replacing non-existent nested index fails"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "replace_at", path = "1.99", node = '"New"' }
+expected_error = { code = "index-out-of-bounds" }
+
+[[test]]
+name = "replace_at_descend_into_atom"
+description = "Cannot replace inside an atom"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "replace_at", path = "1.1.1", node = '"X"' }
+expected_error = { code = "cannot-descend-atom" }
+
+# =============================================================================
+# insert_before errors
+# =============================================================================
+
+[[test]]
+name = "insert_before_root_fails"
+description = "Cannot insert before root"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "insert_before", path = "root", node = '(p "Before root")' }
+expected_error = { code = "cannot-insert-before-root" }
+
+[[test]]
+name = "insert_before_out_of_bounds"
+description = "Inserting before non-existent index fails"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "insert_before", path = "99", node = '(p "New")' }
+expected_error = { code = "index-out-of-bounds" }
+
+# =============================================================================
+# insert_after errors
+# =============================================================================
+
+[[test]]
+name = "insert_after_root_fails"
+description = "Cannot insert after root"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "insert_after", path = "root", node = '(p "After root")' }
+expected_error = { code = "cannot-insert-after-root" }
+
+[[test]]
+name = "insert_after_out_of_bounds"
+description = "Inserting after non-existent index fails"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "insert_after", path = "99", node = '(p "New")' }
+expected_error = { code = "index-out-of-bounds" }
+
+# =============================================================================
+# append_child errors
+# =============================================================================
+
+[[test]]
+name = "append_child_to_atom"
+description = "Cannot append child to an atom"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "append_child", parent = "1.1", node = '(p "Child")' }
+expected_error = { code = "cannot-append-to-atom" }
+
+[[test]]
+name = "append_child_parent_not_found"
+description = "Cannot append to non-existent parent"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "append_child", parent = "99", node = '(p "Child")' }
+expected_error = { code = "index-out-of-bounds" }
+
+# =============================================================================
+# prepend_child errors
+# =============================================================================
+
+[[test]]
+name = "prepend_child_to_atom"
+description = "Cannot prepend child to an atom"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "prepend_child", parent = "1.1", node = '(p "Child")' }
+expected_error = { code = "cannot-prepend-to-atom" }
+
+[[test]]
+name = "prepend_child_parent_not_found"
+description = "Cannot prepend to non-existent parent"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "prepend_child", parent = "99", node = '(p "Child")' }
+expected_error = { code = "index-out-of-bounds" }
+
+# =============================================================================
+# hoist errors
+# =============================================================================
+
+[[test]]
+name = "hoist_non_heading"
+description = "Cannot hoist a non-heading element"
+before_sexpr = '(doc (p "Not a heading"))'
+mutation = { op = "hoist", path = "1", delta = 1 }
+expected_error = { code = "not-a-heading" }
+
+[[test]]
+name = "hoist_node_not_found"
+description = "Cannot hoist non-existent node"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "hoist", path = "99", delta = 1 }
+expected_error = { code = "node-not-found" }
+
+[[test]]
+name = "hoist_blockquote_fails"
+description = "Cannot hoist a blockquote"
+before_sexpr = '(doc (blockquote (p "Quote")))'
+mutation = { op = "hoist", path = "1", delta = 1 }
+expected_error = { code = "not-a-heading" }
+
+[[test]]
+name = "hoist_list_fails"
+description = "Cannot hoist a list"
+before_sexpr = '(doc (ul (li (p "Item"))))'
+mutation = { op = "hoist", path = "1", delta = 1 }
+expected_error = { code = "not-a-heading" }
+
+# =============================================================================
+# graft errors
+# =============================================================================
+
+[[test]]
+name = "graft_source_not_found"
+description = "Cannot graft from non-existent source"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "graft", source = "99", target_parent = "root", target_index = 1 }
+expected_error = { code = "source-not-found" }
+
+[[test]]
+name = "graft_source_nested_not_found"
+description = "Cannot graft from non-existent nested source"
+before_sexpr = '(doc (ul (li (p "A"))))'
+mutation = { op = "graft", source = "1.99", target_parent = "root", target_index = 1 }
+expected_error = { code = "source-not-found" }
+
+# =============================================================================
+# Unknown operation
+# =============================================================================
+
+[[test]]
+name = "unknown_operation"
+description = "Unknown mutation operation fails"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "unknown_op", path = "1" }
+expected_error = { message_contains = "Unknown mutation operation" }

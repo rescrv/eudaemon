@@ -34,6 +34,7 @@
 pub mod curation;
 pub mod invariants;
 pub mod mutations;
+pub mod test_runner;
 
 use markdown::ParseOptions;
 use markdown::mdast::Node;

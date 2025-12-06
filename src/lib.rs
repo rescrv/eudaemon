@@ -30,6 +30,10 @@ pub use s::markdown::mutations::{
     insert_before_lenient, prepend_child, prepend_child_lenient, prune, prune_lenient, replace_at,
     replace_at_lenient,
 };
+pub use s::markdown::test_runner::{
+    ExpectedError, Metadata, Mutation, TestCase, TestResult, TestSuite, run_test_directory,
+    run_test_file,
+};
 pub use s::markdown::{
     get_frontmatter, get_frontmatter_content, get_frontmatter_field, markdown_to_sexpr,
     parse_yaml_frontmatter, remove_frontmatter, remove_frontmatter_field, set_frontmatter,
