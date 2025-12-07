@@ -6,6 +6,7 @@ version = 4
 name = "agentkb"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "claudius",
  "markdown",
  "rustyline",
@@ -13,6 +14,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "utf8path",
 ]
 
 [[package]]
@@ -103,8 +105,6 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "claudius"
 version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb86dda9f26a450cadb7c82d2efdb1fa41ce9b38e6310c0d9c8156d9c7e947e1"
 dependencies = [
  "arrrg",
  "arrrg_derive",
