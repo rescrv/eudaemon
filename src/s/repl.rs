@@ -150,10 +150,20 @@ impl Repl {
     }
 
     /// Evaluates an s-expression string in the REPL environment.
+    ///
+    /// Loaded documents are available as variables using their filename.
+    /// For example, after `:load foo.md`, you can reference it as `foo.md` in expressions.
     pub fn eval(&self, input: &str) -> SResult<SExpr> {
         let mut parser = Parser::new(input);
         let expr = parser.parse()?;
-        super::eval::eval(&expr, &self.env)
+
+        // Create a child environment with loaded documents as bindings
+        let mut eval_env = self.env.clone();
+        for (name, doc) in &self.documents {
+            eval_env.bind(name, doc.clone());
+        }
+
+        super::eval::eval(&expr, &eval_env)
     }
 
     /// Runs the interactive REPL loop using rustyline with vim keybindings.
@@ -365,11 +375,13 @@ fn print_help() {
 
 S-expression evaluation:
   Type any s-expression to evaluate it.
+  Loaded documents are available as variables by filename.
   
 Examples:
-  (markdown-to-sexpr \"# Hello\")
-  (get-frontmatter doc)
-  (->> doc (generate-toc))"
+  :load docs/readme.md
+  (get-by-path docs/readme.md \"1\")
+  (generate-toc docs/readme.md)
+  (->> docs/readme.md (generate-toc))"
     );
 }
 

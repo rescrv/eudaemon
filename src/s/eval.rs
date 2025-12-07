@@ -50,7 +50,7 @@ impl Env {
     }
 
     /// Binds a variable in this environment.
-    fn bind(&mut self, name: &str, value: SExpr) {
+    pub fn bind(&mut self, name: &str, value: SExpr) {
         self.bindings.insert(name.to_string(), value);
     }
 
