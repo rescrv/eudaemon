@@ -19,13 +19,13 @@
 //! use std::sync::Arc;
 //!
 //! use agentkb::agent::AgentKB;
-//! use claudius::{Anthropic, Budget, MessageParam, MessageParamContent, MessageRole, StopReason};
+//! use claudius::{Agent, Anthropic, Budget, MessageParam, MessageParamContent, MessageRole, StopReason};
 //! use utf8path::Path;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let client = Anthropic::new(None).unwrap();
-//!     let mut agent = AgentKB::new(Path::new("kb"));
+//!     let mut agent = AgentKB::new(&Path::new("kb"));
 //!     let budget = Arc::new(Budget::from_dollars_flat_rate(0.25, 1000));
 //!     let mut messages = vec![MessageParam {
 //!         role: MessageRole::User,
@@ -83,7 +83,7 @@ impl AgentKB {
     /// use agentkb::agent::AgentKB;
     /// use utf8path::Path;
     ///
-    /// let agent = AgentKB::new(Path::new("docs"));
+    /// let agent = AgentKB::new(&Path::new("docs"));
     /// ```
     pub fn new(filesystem: &Path) -> Self {
         let tools = vec![Arc::new(ToolTextEditor20250429::new()) as _];

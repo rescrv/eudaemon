@@ -64,6 +64,7 @@
 #![deny(missing_docs)]
 
 pub mod agent;
+pub mod chunker;
 mod dialect;
 mod s;
 
