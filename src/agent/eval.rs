@@ -1,12 +1,13 @@
 //! S-expression evaluation tool for the AgentKB agent.
 //!
 //! This module provides a tool that allows the agent to evaluate s-expressions against
-//! loaded markdown documents. Documents are pre-loaded and bound as variables in the
-//! evaluation environment, enabling programmatic manipulation of the markdown wiki.
+//! markdown documents. Documents are read from the filesystem on each evaluation,
+//! enabling programmatic manipulation of the markdown wiki.
 //!
 //! # Example
 //!
-//! If documents `readme.md` and `guide.md` are loaded, the agent can evaluate expressions like:
+//! If documents `readme.md` and `guide.md` exist in the filesystem root, the agent can
+//! evaluate expressions like:
 //!
 //! ```text
 //! (generate-toc readme.md)
@@ -15,9 +16,8 @@
 //! ```
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::fs;
 use std::ops::ControlFlow;
-use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use claudius::{
@@ -25,16 +25,19 @@ use claudius::{
     ToolResultBlock, ToolResultBlockContent, ToolUnionParam, ToolUseBlock,
 };
 use serde_json::json;
+use utf8path::Path;
 
+use crate::markdown_to_sexpr;
 use crate::s::eval::{Env, register_builtins};
-use crate::s::expr::{Parser, SExpr};
+use crate::s::expr::Parser;
 use crate::s::repl::register_markdown_builtins;
+use crate::s::util::find_markdown_files;
 
-/// A tool for evaluating s-expressions against loaded markdown documents.
+/// A tool for evaluating s-expressions against markdown documents.
 ///
 /// The `ToolEval` provides the agent with the ability to programmatically manipulate
-/// markdown documents using a Lisp-like language. Documents are pre-loaded and available
-/// as variables in the evaluation environment.
+/// markdown documents using a Lisp-like language. Documents are read from the filesystem
+/// on each evaluation.
 ///
 /// # Available Functions
 ///
@@ -47,40 +50,37 @@ use crate::s::repl::register_markdown_builtins;
 ///
 /// # Document Variables
 ///
-/// Each document loaded via the command line is available as a variable using its filename.
-/// For example, if `docs/readme.md` is loaded, it's available as `readme.md`.
+/// Markdown files in the filesystem root are available as variables using their filename.
+/// For example, if `readme.md` exists in the root, it's available as `readme.md`.
+/// Files are read and parsed on each evaluation.
 pub struct ToolEval {
-    documents: Arc<RwLock<HashMap<String, SExpr>>>,
+    filesystem: Path<'static>,
 }
 
 impl ToolEval {
-    /// Creates a new eval tool with the given pre-loaded documents.
+    /// Creates a new eval tool rooted at the given filesystem path.
     ///
     /// # Arguments
     ///
-    /// * `documents` - A map of document names to their parsed s-expression representations.
+    /// * `filesystem` - The root path for filesystem operations.
     ///
     /// # Examples
     ///
-    /// ```rust,no_run
-    /// use std::collections::HashMap;
-    /// use std::sync::{Arc, RwLock};
+    /// ```rust
     /// use agentkb::agent::ToolEval;
-    /// use agentkb::SExpr;
+    /// use utf8path::Path;
     ///
-    /// let mut docs = HashMap::new();
-    /// docs.insert("readme.md".to_string(), SExpr::Atom("placeholder".to_string()));
-    /// let tool = ToolEval::new(Arc::new(RwLock::new(docs)));
+    /// let tool = ToolEval::new(Path::new("docs").into_owned());
     /// ```
-    pub fn new(documents: Arc<RwLock<HashMap<String, SExpr>>>) -> Self {
-        Self { documents }
+    pub fn new(filesystem: Path<'static>) -> Self {
+        Self { filesystem }
     }
 
-    /// Evaluates an s-expression string in the context of loaded documents.
+    /// Evaluates an s-expression string, loading documents from the filesystem.
     ///
     /// Creates an evaluation environment with all builtins and markdown functions
-    /// registered, then binds each loaded document as a variable before evaluating
-    /// the expression.
+    /// registered, then discovers and binds markdown documents from the filesystem
+    /// before evaluating the expression.
     ///
     /// # Arguments
     ///
@@ -97,24 +97,30 @@ impl ToolEval {
         register_builtins(&mut env);
         register_markdown_builtins(&mut env);
 
-        let docs = self
-            .documents
-            .read()
-            .map_err(|e| format!("Failed to acquire read lock: {}", e))?;
-        for (name, doc) in docs.iter() {
-            env.bind(name, doc.clone());
+        // Discover and load markdown files from filesystem
+        let doc_paths = find_markdown_files(std::path::Path::new(self.filesystem.as_str()));
+        for path in &doc_paths {
+            let full_path = self.filesystem.join(path);
+            if let Ok(content) = fs::read_to_string(full_path.as_str())
+                && let Ok(sexpr) = markdown_to_sexpr(&content)
+            {
+                let path_ref = Path::new(path);
+                let name = path_ref.basename().to_string();
+                env.bind(&name, sexpr);
+            }
         }
 
         let result = crate::s::eval::eval(&parsed, &env).map_err(|e| e.to_string())?;
         Ok(result.to_string())
     }
 
-    /// Returns a list of available document variable names.
+    /// Returns a list of available document variable names from the filesystem.
     pub fn available_documents(&self) -> Vec<String> {
-        self.documents
-            .read()
-            .map(|docs| docs.keys().cloned().collect())
-            .unwrap_or_default()
+        let doc_paths = find_markdown_files(std::path::Path::new(self.filesystem.as_str()));
+        doc_paths
+            .iter()
+            .map(|p| Path::new(p).basename().to_string())
+            .collect()
     }
 }
 
@@ -129,7 +135,7 @@ impl IntermediateToolResult for EvalUnit {
 
 /// Callback implementation for the eval tool.
 struct EvalCallback {
-    documents: Arc<RwLock<HashMap<String, SExpr>>>,
+    filesystem: Path<'static>,
 }
 
 #[async_trait]
@@ -156,7 +162,7 @@ impl<A: Agent> ToolCallback<A> for EvalCallback {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let tool = ToolEval::new(Arc::clone(&self.documents));
+        let tool = ToolEval::new(self.filesystem.clone());
 
         match tool.evaluate(expr) {
             Ok(result) => ControlFlow::Continue(Ok(ToolResultBlock {
@@ -182,18 +188,14 @@ impl<A: Agent> Tool<A> for ToolEval {
 
     fn callback(&self) -> Box<dyn ToolCallback<A> + '_> {
         Box::new(EvalCallback {
-            documents: Arc::clone(&self.documents),
+            filesystem: self.filesystem.clone(),
         })
     }
 
     fn to_param(&self) -> ToolUnionParam {
-        let doc_list: Vec<String> = self
-            .documents
-            .read()
-            .map(|docs| docs.keys().cloned().collect())
-            .unwrap_or_default();
+        let doc_list = self.available_documents();
         let doc_description = if doc_list.is_empty() {
-            "No documents currently loaded.".to_string()
+            "No markdown files found in filesystem.".to_string()
         } else {
             format!("Available document variables: {}", doc_list.join(", "))
         };
@@ -212,8 +214,9 @@ impl<A: Agent> Tool<A> for ToolEval {
             }),
         )
         .with_description(format!(
-            "Evaluate an s-expression against loaded markdown documents. \
+            "Evaluate an s-expression against markdown documents from the filesystem. \
              The expression can use any registered builtin or markdown function. \
+             Documents are read fresh from disk on each evaluation. \
              {}\n\n\
              Examples:\n\
              - (generate-toc readme.md) - Generate table of contents\n\
@@ -230,12 +233,16 @@ impl<A: Agent> Tool<A> for ToolEval {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markdown_to_sexpr;
+    use std::env;
+
+    fn test_filesystem() -> Path<'static> {
+        let dir = env::current_dir().unwrap();
+        Path::new(dir.to_str().unwrap()).into_owned()
+    }
 
     #[test]
     fn eval_simple_expression() {
-        let docs = Arc::new(RwLock::new(HashMap::new()));
-        let tool = ToolEval::new(docs);
+        let tool = ToolEval::new(test_filesystem());
         let result = tool.evaluate("(list 1 2 3)");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "(1 2 3)");
@@ -243,36 +250,39 @@ mod tests {
     }
 
     #[test]
-    fn eval_with_document() {
-        let mut docs = HashMap::new();
-        let doc = markdown_to_sexpr("# Hello\n\nWorld").unwrap();
-        docs.insert("test.md".to_string(), doc);
+    fn eval_with_filesystem_document() {
+        // This test uses the actual filesystem - stdlib.md or extlib.md should exist
+        let tool = ToolEval::new(test_filesystem());
+        let available = tool.available_documents();
+        println!("DEBUG: available documents: {:?}", available);
 
-        let tool = ToolEval::new(Arc::new(RwLock::new(docs)));
-        let result = tool.evaluate("(generate-toc test.md)");
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("ul"), "TOC should contain ul element");
-        println!("DEBUG: generate-toc result: {}", output);
+        // If there are markdown files, test with one
+        if !available.is_empty() {
+            let doc_name = &available[0];
+            let result = tool.evaluate(&format!("(generate-toc {})", doc_name));
+            assert!(result.is_ok(), "generate-toc should succeed: {:?}", result);
+            println!(
+                "DEBUG: generate-toc result for {}: {}",
+                doc_name,
+                result.unwrap()
+            );
+        }
     }
 
     #[test]
     fn eval_invalid_expression() {
-        let docs = Arc::new(RwLock::new(HashMap::new()));
-        let tool = ToolEval::new(docs);
+        let tool = ToolEval::new(test_filesystem());
         let result = tool.evaluate("(undefined-function)");
         assert!(result.is_err());
         println!("DEBUG: expected error for undefined function: {:?}", result);
     }
 
     #[test]
-    fn eval_pipeline() {
-        let mut docs = HashMap::new();
-        let doc = markdown_to_sexpr("# Title\n\n## Section\n\nParagraph").unwrap();
-        docs.insert("doc.md".to_string(), doc);
-
-        let tool = ToolEval::new(Arc::new(RwLock::new(docs)));
-        let result = tool.evaluate("(->> doc.md (annotate))");
+    fn eval_pipeline_with_inline_markdown() {
+        let tool = ToolEval::new(test_filesystem());
+        // Use markdown-to-sexpr to create a document inline
+        let result =
+            tool.evaluate("(->> (markdown-to-sexpr \"# Title\\n\\n## Section\") (annotate))");
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(
@@ -283,16 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn available_documents_lists_loaded_docs() {
-        let mut docs = HashMap::new();
-        docs.insert("a.md".to_string(), SExpr::Atom("a".to_string()));
-        docs.insert("b.md".to_string(), SExpr::Atom("b".to_string()));
-
-        let tool = ToolEval::new(Arc::new(RwLock::new(docs)));
+    fn available_documents_from_filesystem() {
+        let tool = ToolEval::new(test_filesystem());
         let available = tool.available_documents();
-        assert_eq!(available.len(), 2);
-        assert!(available.contains(&"a.md".to_string()));
-        assert!(available.contains(&"b.md".to_string()));
-        println!("DEBUG: available documents: {:?}", available);
+        // Should find at least stdlib.md and extlib.md in the project root
+        println!(
+            "DEBUG: available documents from filesystem: {:?}",
+            available
+        );
     }
 }

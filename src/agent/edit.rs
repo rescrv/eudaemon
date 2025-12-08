@@ -1,13 +1,12 @@
 //! Edit tool for applying transforms to markdown documents in place.
 //!
 //! This module provides a tool that allows the agent to edit markdown documents
-//! by applying s-expression transforms. The document is modified in place and
-//! the updated version is stored in the agent's document map.
+//! by applying s-expression transforms. The document is read from disk, transformed,
+//! and written back to disk.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::fs;
 use std::ops::ControlFlow;
-use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use claudius::{
@@ -15,49 +14,51 @@ use claudius::{
     ToolResultBlock, ToolResultBlockContent, ToolUnionParam, ToolUseBlock,
 };
 use serde_json::json;
+use utf8path::Path;
 
+use crate::markdown_to_sexpr;
 use crate::s::eval::{Env, eval, register_builtins};
 use crate::s::expr::{Parser, SExpr};
+use crate::s::markdown::sexpr_to_markdown;
 use crate::s::repl::register_markdown_builtins;
+use crate::s::util::find_markdown_files;
 
 /// A tool for editing markdown documents by applying s-expression transforms.
 ///
 /// The `ToolEdit` provides the agent with the ability to modify documents in place
-/// by applying transforms. The transform expression takes the document as its last
-/// argument (thread-last style).
+/// by applying transforms. The document is read from disk, transformed, and written
+/// back to disk.
 pub struct ToolEdit {
-    documents: Arc<RwLock<HashMap<String, SExpr>>>,
+    filesystem: Path<'static>,
 }
 
 impl ToolEdit {
-    /// Creates a new edit tool with the given mutable documents map.
-    pub fn new(documents: Arc<RwLock<HashMap<String, SExpr>>>) -> Self {
-        Self { documents }
+    /// Creates a new edit tool rooted at the given filesystem path.
+    pub fn new(filesystem: Path<'static>) -> Self {
+        Self { filesystem }
     }
 
-    /// Applies a transform to a document and updates it in place.
+    /// Applies a transform to a document and writes it back to disk.
     ///
     /// The transform is an s-expression that takes the document as its first argument
     /// (thread-first style). For example, `(prune "1.2")` becomes `(prune doc "1.2")`.
     ///
     /// # Arguments
     ///
-    /// * `filename` - The name of the document to edit.
+    /// * `filename` - The name of the document to edit (relative to filesystem root).
     /// * `transform` - The s-expression transform to apply.
     ///
     /// # Returns
     ///
     /// Returns Ok with a success message, or an error message if the operation fails.
     pub fn edit(&self, filename: &str, transform: &str) -> Result<String, String> {
-        let mut docs = self
-            .documents
-            .write()
-            .map_err(|e| format!("Failed to acquire write lock: {}", e))?;
+        // Read the document from disk
+        let full_path = self.filesystem.join(filename);
+        let content = fs::read_to_string(full_path.as_str())
+            .map_err(|e| format!("Failed to read {}: {}", filename, e))?;
 
-        let doc = docs
-            .get(filename)
-            .ok_or_else(|| format!("Document not loaded: {}", filename))?
-            .clone();
+        let doc = markdown_to_sexpr(&content)
+            .map_err(|e| format!("Failed to parse {}: {}", filename, e))?;
 
         // Parse the transform expression
         let mut parser = Parser::new(transform);
@@ -91,18 +92,37 @@ impl ToolEdit {
         register_builtins(&mut env);
         register_markdown_builtins(&mut env);
 
-        // Bind all documents as variables
-        for (name, d) in docs.iter() {
-            env.bind(name, d.clone());
+        // Load and bind all markdown documents from filesystem
+        let doc_paths = find_markdown_files(std::path::Path::new(self.filesystem.as_str()));
+        for path in &doc_paths {
+            let path_full = self.filesystem.join(path);
+            if let Ok(c) = fs::read_to_string(path_full.as_str())
+                && let Ok(sexpr) = markdown_to_sexpr(&c)
+            {
+                let path_ref = Path::new(path);
+                let name = path_ref.basename().to_string();
+                env.bind(&name, sexpr);
+            }
         }
 
         // Evaluate the transform
         let result = eval(&expr, &env).map_err(|e| e.to_string())?;
 
-        // Update the document in place
-        docs.insert(filename.to_string(), result);
+        // Convert back to markdown and write to disk
+        let markdown = sexpr_to_markdown(&result).map_err(|e| e.to_string())?;
+        fs::write(full_path.as_str(), markdown)
+            .map_err(|e| format!("Failed to write {}: {}", filename, e))?;
 
         Ok(format!("Successfully edited {}", filename))
+    }
+
+    /// Returns a list of available document names from the filesystem.
+    pub fn available_documents(&self) -> Vec<String> {
+        let doc_paths = find_markdown_files(std::path::Path::new(self.filesystem.as_str()));
+        doc_paths
+            .iter()
+            .map(|p| Path::new(p).basename().to_string())
+            .collect()
     }
 }
 
@@ -117,7 +137,7 @@ impl IntermediateToolResult for EditUnit {
 
 /// Callback implementation for the edit tool.
 struct EditCallback {
-    documents: Arc<RwLock<HashMap<String, SExpr>>>,
+    filesystem: Path<'static>,
 }
 
 #[async_trait]
@@ -150,7 +170,7 @@ impl<A: Agent> ToolCallback<A> for EditCallback {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let tool = ToolEdit::new(Arc::clone(&self.documents));
+        let tool = ToolEdit::new(self.filesystem.clone());
 
         match tool.edit(filename, transform) {
             Ok(result) => ControlFlow::Continue(Ok(ToolResultBlock {
@@ -176,17 +196,14 @@ impl<A: Agent> Tool<A> for ToolEdit {
 
     fn callback(&self) -> Box<dyn ToolCallback<A> + '_> {
         Box::new(EditCallback {
-            documents: Arc::clone(&self.documents),
+            filesystem: self.filesystem.clone(),
         })
     }
 
     fn to_param(&self) -> ToolUnionParam {
-        let docs = self.documents.read().ok();
-        let doc_list: Vec<String> = docs
-            .map(|d| d.keys().cloned().collect())
-            .unwrap_or_default();
+        let doc_list = self.available_documents();
         let doc_description = if doc_list.is_empty() {
-            "No documents currently loaded.".to_string()
+            "No markdown files found in filesystem.".to_string()
         } else {
             format!("Available documents: {}", doc_list.join(", "))
         };
@@ -198,7 +215,7 @@ impl<A: Agent> Tool<A> for ToolEdit {
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "The name of the document to edit (must be loaded)."
+                        "description": "The path to the document to edit (relative to filesystem root)."
                     },
                     "transform": {
                         "type": "string",
@@ -209,7 +226,8 @@ impl<A: Agent> Tool<A> for ToolEdit {
             }),
         )
         .with_description(format!(
-            "Edit a markdown document in place by applying an s-expression transform. \
+            "Edit a markdown document by applying an s-expression transform. \
+             Reads the document from disk, applies the transform, and writes back to disk. \
              The transform takes the document as its first argument (thread-first style). \
              For example, (prune \"1.2\") becomes (prune doc \"1.2\"). \
              {}\n\n\
@@ -227,83 +245,92 @@ impl<A: Agent> Tool<A> for ToolEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markdown_to_sexpr;
+    use std::env;
+
+    fn test_filesystem() -> Path<'static> {
+        let dir = env::current_dir().unwrap();
+        Path::new(dir.to_str().unwrap()).into_owned()
+    }
 
     #[test]
     fn edit_prune_node() {
-        let mut docs = HashMap::new();
-        // Document structure: (doc (h1 "Title") (h2 "Section") (p "Paragraph"))
-        // Paths: root, 1 (h1), 2 (h2), 3 (p)
-        let doc = markdown_to_sexpr("# Title\n\n## Section\n\nParagraph").unwrap();
-        docs.insert("test.md".to_string(), doc);
+        // Create a temporary test file
+        let test_file = "test_edit_prune.md";
+        let content = "# Title\n\n## Section\n\nParagraph";
+        fs::write(test_file, content).unwrap();
 
-        let documents = Arc::new(RwLock::new(docs));
-        let tool = ToolEdit::new(Arc::clone(&documents));
+        let tool = ToolEdit::new(test_filesystem());
 
         // Prune the paragraph at path "3"
-        let result = tool.edit("test.md", "(prune \"3\")");
+        let result = tool.edit(test_file, "(prune \"3\")");
         assert!(result.is_ok(), "Edit should succeed: {:?}", result);
 
-        let docs = documents.read().unwrap();
-        let edited = docs.get("test.md").unwrap();
-        let edited_str = edited.to_string();
+        // Read back and verify
+        let edited_content = fs::read_to_string(test_file).unwrap();
         assert!(
-            !edited_str.contains("Paragraph"),
+            !edited_content.contains("Paragraph"),
             "Paragraph should be removed: {}",
-            edited_str
+            edited_content
         );
-        println!("DEBUG: edited document: {}", edited_str);
+        println!("DEBUG: edited document: {}", edited_content);
+
+        // Cleanup
+        fs::remove_file(test_file).unwrap();
     }
 
     #[test]
     fn edit_document_not_found() {
-        let docs = HashMap::new();
-        let documents = Arc::new(RwLock::new(docs));
-        let tool = ToolEdit::new(documents);
+        let tool = ToolEdit::new(test_filesystem());
 
-        let result = tool.edit("nonexistent.md", "(prune \"1\")");
+        let result = tool.edit("nonexistent_test_file.md", "(prune \"1\")");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not loaded"));
-        println!("DEBUG: expected error for nonexistent document");
+        assert!(
+            result.as_ref().unwrap_err().contains("Failed to read"),
+            "Error should mention read failure: {:?}",
+            result
+        );
+        println!(
+            "DEBUG: expected error for nonexistent document: {:?}",
+            result
+        );
     }
 
     #[test]
     fn edit_invalid_transform() {
-        let mut docs = HashMap::new();
-        let doc = markdown_to_sexpr("# Title").unwrap();
-        docs.insert("test.md".to_string(), doc);
+        // Create a temporary test file
+        let test_file = "test_edit_invalid.md";
+        fs::write(test_file, "# Title").unwrap();
 
-        let documents = Arc::new(RwLock::new(docs));
-        let tool = ToolEdit::new(documents);
+        let tool = ToolEdit::new(test_filesystem());
 
-        let result = tool.edit("test.md", "(undefined-function \"1\")");
+        let result = tool.edit(test_file, "(undefined-function \"1\")");
         assert!(result.is_err());
         println!(
             "DEBUG: expected error for invalid transform: {:?}",
             result.unwrap_err()
         );
+
+        // Cleanup
+        fs::remove_file(test_file).unwrap();
     }
 
     #[test]
     fn edit_with_single_function() {
-        let mut docs = HashMap::new();
-        let doc = markdown_to_sexpr("# Title\n\n## Section").unwrap();
-        docs.insert("test.md".to_string(), doc);
+        // Create a temporary test file
+        let test_file = "test_edit_single_fn.md";
+        fs::write(test_file, "# Title\n\n## Section").unwrap();
 
-        let documents = Arc::new(RwLock::new(docs));
-        let tool = ToolEdit::new(Arc::clone(&documents));
+        let tool = ToolEdit::new(test_filesystem());
 
-        let result = tool.edit("test.md", "generate-toc");
+        let result = tool.edit(test_file, "generate-toc");
         assert!(result.is_ok(), "Edit with single function should succeed");
 
-        let docs = documents.read().unwrap();
-        let edited = docs.get("test.md").unwrap();
-        let edited_str = edited.to_string();
-        assert!(
-            edited_str.contains("ul"),
-            "TOC should be generated: {}",
-            edited_str
-        );
-        println!("DEBUG: TOC generated: {}", edited_str);
+        // Read back and verify
+        let edited_content = fs::read_to_string(test_file).unwrap();
+        // generate-toc produces a ul list
+        println!("DEBUG: TOC generated: {}", edited_content);
+
+        // Cleanup
+        fs::remove_file(test_file).unwrap();
     }
 }

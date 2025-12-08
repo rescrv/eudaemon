@@ -20,7 +20,7 @@ fn main() -> ExitCode {
             .unwrap_or_else(|_| ".".to_string())
     };
 
-    let mut repl = match Repl::new(&dir) {
+    let repl = match Repl::new(&dir) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Error: {}", e);

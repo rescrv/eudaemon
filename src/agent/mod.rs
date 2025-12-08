@@ -49,44 +49,13 @@ mod eval;
 pub use edit::ToolEdit;
 pub use eval::ToolEval;
 
-use std::collections::HashMap;
-use std::fs;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use claudius::{
     Agent, FileSystem, KnownModel, Message, MessageCreateParams, Model, SystemPrompt, Tool,
     ToolTextEditor20250728,
 };
 use utf8path::Path;
-
-use crate::SExpr;
-use crate::markdown_to_sexpr;
-
-/// Recursively find all markdown files under a directory.
-///
-/// Returns a vector of relative paths (as strings) to all `.md` files found
-/// under the given directory, recursively traversing subdirectories.
-fn find_markdown_files(dir: &std::path::Path) -> Vec<String> {
-    find_markdown_files_recursive(dir, dir)
-}
-
-/// Recursive helper for `find_markdown_files`.
-fn find_markdown_files_recursive(root: &std::path::Path, dir: &std::path::Path) -> Vec<String> {
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(find_markdown_files_recursive(root, &path));
-            } else if path.extension().is_some_and(|ext| ext == "md")
-                && let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str())
-            {
-                files.push(relative.to_string());
-            }
-        }
-    }
-    files
-}
 
 /// An agent for knowledge base operations over a chrooted filesystem.
 ///
@@ -108,22 +77,22 @@ fn find_markdown_files_recursive(root: &std::path::Path, dir: &std::path::Path) 
 /// - [`ToolTextEditor20250728`]: A text editor for viewing, searching, and
 ///   modifying files within the knowledge base.
 /// - [`ToolEval`]: An s-expression evaluator for programmatic manipulation
-///   of markdown documents using Lisp-like expressions.
+///   of markdown documents using Lisp-like expressions. Reads files from disk
+///   on each evaluation.
 /// - [`ToolEdit`]: An editor for applying s-expression transforms to documents
-///   in place.
+///   in place. Reads from disk, applies transform, writes back to disk.
 pub struct AgentKB {
     tools: Vec<Arc<dyn Tool<Self>>>,
     filesystem: Path<'static>,
-    documents: Arc<RwLock<HashMap<String, SExpr>>>,
 }
 
 impl AgentKB {
     /// Create a new knowledge base agent rooted at the given filesystem path.
     ///
     /// The agent will have access to all files under `filesystem` and will be
-    /// equipped with text editing tools for document manipulation. All markdown
-    /// files (*.md) under the filesystem root are automatically discovered and
-    /// loaded as variables in the eval tool.
+    /// equipped with text editing tools for document manipulation. Markdown
+    /// files are read from disk on each operation rather than being cached
+    /// in memory.
     ///
     /// # Arguments
     ///
@@ -135,43 +104,23 @@ impl AgentKB {
     /// use agentkb::agent::AgentKB;
     /// use utf8path::Path;
     ///
-    /// // Agent that auto-discovers all .md files under docs/
+    /// // Agent rooted at docs/
     /// let agent = AgentKB::new(&Path::new("docs"));
     /// ```
     pub fn new(filesystem: &Path) -> Self {
-        let document_paths = find_markdown_files(std::path::Path::new(filesystem.as_str()));
-        let mut documents = HashMap::new();
-
-        for path in &document_paths {
-            let full_path = filesystem.join(path);
-            if let Ok(content) = fs::read_to_string(full_path.as_str())
-                && let Ok(sexpr) = markdown_to_sexpr(&content)
-            {
-                // Use just the basename as the variable name
-                let path_ref = Path::new(path);
-                let name = path_ref.basename().to_string();
-                documents.insert(name, sexpr);
-            }
-        }
-
-        let documents = Arc::new(RwLock::new(documents));
+        let filesystem = filesystem.clone().into_owned();
         let tools: Vec<Arc<dyn Tool<Self>>> = vec![
             Arc::new(ToolTextEditor20250728::new()),
-            Arc::new(ToolEval::new(Arc::clone(&documents))),
-            Arc::new(ToolEdit::new(Arc::clone(&documents))),
+            Arc::new(ToolEval::new(filesystem.clone())),
+            Arc::new(ToolEdit::new(filesystem.clone())),
         ];
-        let filesystem = filesystem.clone().into_owned();
 
-        Self {
-            tools,
-            filesystem,
-            documents,
-        }
+        Self { tools, filesystem }
     }
 
-    /// Returns a reference to the loaded documents wrapped in RwLock.
-    pub fn documents(&self) -> &RwLock<HashMap<String, SExpr>> {
-        &self.documents
+    /// Returns the filesystem root path for this agent.
+    pub fn filesystem_root(&self) -> &Path<'_> {
+        &self.filesystem
     }
 }
 

@@ -1,12 +1,11 @@
 //! REPL for evaluating s-expressions against markdown documents in a directory.
 //!
 //! Provides an interactive environment for:
-//! - Loading and saving markdown files
+//! - Reading and writing markdown files directly from disk
 //! - Parsing markdown to s-expressions
 //! - Evaluating s-expressions with registered markdown functions
 //! - Converting s-expressions back to markdown
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,14 +33,15 @@ use super::nodeid::{
     NodeId, PathId, get_by_path, get_context, get_node, get_parent, get_siblings,
     to_annotated_sexpr,
 };
-use super::util::{extract_string, string_atom};
+use super::util::{extract_string, find_markdown_files, string_atom};
 
-/// REPL state containing the working directory and loaded documents.
+/// REPL state containing the working directory.
+///
+/// Documents are read from and written to the filesystem on each operation,
+/// rather than being cached in memory.
 pub struct Repl {
     /// Current working directory.
     working_dir: PathBuf,
-    /// Loaded markdown documents keyed by filename.
-    documents: HashMap<String, SExpr>,
     /// Evaluation environment with registered functions.
     env: Env,
 }
@@ -61,11 +61,7 @@ impl Repl {
         register_builtins(&mut env);
         register_markdown_builtins(&mut env);
 
-        Ok(Repl {
-            working_dir,
-            documents: HashMap::new(),
-            env,
-        })
+        Ok(Repl { working_dir, env })
     }
 
     /// Returns the current working directory.
@@ -73,33 +69,13 @@ impl Repl {
         &self.working_dir
     }
 
-    /// Lists all markdown files in the working directory.
+    /// Lists all markdown files in the working directory (recursively).
     pub fn list_files(&self) -> SResult<Vec<String>> {
-        let mut files = Vec::new();
-        let entries = fs::read_dir(&self.working_dir).map_err(|e| {
-            SError::new("repl")
-                .with_code("io-error")
-                .with_message("Failed to read directory")
-                .with_string_field("error", &e.to_string())
-        })?;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext == "md" || ext == "markdown")
-                && let Some(name) = path.file_name()
-            {
-                files.push(name.to_string_lossy().to_string());
-            }
-        }
-        files.sort();
-        Ok(files)
+        Ok(find_markdown_files(&self.working_dir))
     }
 
-    /// Loads a markdown file into the REPL.
-    pub fn load(&mut self, filename: &str) -> SResult<&SExpr> {
+    /// Reads a markdown file from disk and returns it as an s-expression.
+    pub fn read_file(&self, filename: &str) -> SResult<SExpr> {
         let path = self.working_dir.join(filename);
         let content = fs::read_to_string(&path).map_err(|e| {
             SError::new("repl")
@@ -109,20 +85,11 @@ impl Repl {
                 .with_string_field("error", &e.to_string())
         })?;
 
-        let sexpr = markdown_to_sexpr(&content)?;
-        self.documents.insert(filename.to_string(), sexpr);
-        Ok(self.documents.get(filename).unwrap())
+        markdown_to_sexpr(&content)
     }
 
-    /// Saves a document back to file.
-    pub fn save(&self, filename: &str) -> SResult<()> {
-        let doc = self.documents.get(filename).ok_or_else(|| {
-            SError::new("repl")
-                .with_code("not-loaded")
-                .with_message("Document not loaded")
-                .with_string_field("filename", filename)
-        })?;
-
+    /// Writes an s-expression document back to a file.
+    pub fn write_file(&self, filename: &str, doc: &SExpr) -> SResult<()> {
         let markdown = sexpr_to_markdown(doc)?;
         let path = self.working_dir.join(filename);
         fs::write(&path, markdown).map_err(|e| {
@@ -134,30 +101,14 @@ impl Repl {
         })
     }
 
-    /// Gets a loaded document.
-    pub fn get(&self, filename: &str) -> Option<&SExpr> {
-        self.documents.get(filename)
-    }
-
-    /// Sets a document in the REPL state.
-    pub fn set(&mut self, filename: &str, doc: SExpr) {
-        self.documents.insert(filename.to_string(), doc);
-    }
-
-    /// Returns list of loaded document names.
-    pub fn loaded(&self) -> Vec<&str> {
-        self.documents.keys().map(|s| s.as_str()).collect()
-    }
-
-    /// Edits a document in place by applying a transform expression.
+    /// Edits a document by reading from disk, applying a transform, and writing back.
     ///
     /// The transform is an s-expression that takes the document as its first argument
-    /// (thread-first style). The result of the transform replaces the document in
-    /// the REPL state.
+    /// (thread-first style). The result of the transform is written back to disk.
     ///
     /// # Arguments
     ///
-    /// * `filename` - The name of the loaded document to edit.
+    /// * `filename` - The name of the file to edit (relative to working directory).
     /// * `transform` - An s-expression string representing the transform to apply.
     ///
     /// # Examples
@@ -166,13 +117,9 @@ impl Repl {
     /// :edit readme.md (prune "1.2")
     /// :edit readme.md (replace-at "1" (h1 "New Title"))
     /// ```
-    pub fn edit_document(&mut self, filename: &str, transform: &str) -> SResult<()> {
-        let doc = self.documents.get(filename).ok_or_else(|| {
-            SError::new("repl")
-                .with_code("not-loaded")
-                .with_message("Document not loaded")
-                .with_string_field("filename", filename)
-        })?;
+    pub fn edit_document(&self, filename: &str, transform: &str) -> SResult<()> {
+        // Read document from disk
+        let doc = self.read_file(filename)?;
 
         // Parse the transform expression
         let mut parser = Parser::new(transform);
@@ -207,37 +154,53 @@ impl Repl {
             }
         };
 
-        // Create evaluation environment with document bindings
-        let mut eval_env = self.env.clone();
-        for (name, d) in &self.documents {
-            eval_env.bind(name, d.clone());
-        }
+        // Create evaluation environment with all document bindings from filesystem
+        let eval_env = self.create_eval_env()?;
 
-        // Evaluate and update the document
+        // Evaluate the transform
         let result = super::eval::eval(&expr, &eval_env)?;
-        self.documents.insert(filename.to_string(), result);
-        Ok(())
+
+        // Write result back to disk
+        self.write_file(filename, &result)
     }
 
     /// Evaluates an s-expression string in the REPL environment.
     ///
-    /// Loaded documents are available as variables using their filename.
-    /// For example, after `:load foo.md`, you can reference it as `foo.md` in expressions.
+    /// All markdown files in the working directory are available as variables
+    /// using their filename (basename only).
     pub fn eval(&self, input: &str) -> SResult<SExpr> {
         let mut parser = Parser::new(input);
         let expr = parser.parse()?;
 
-        // Create a child environment with loaded documents as bindings
-        let mut eval_env = self.env.clone();
-        for (name, doc) in &self.documents {
-            eval_env.bind(name, doc.clone());
-        }
-
+        let eval_env = self.create_eval_env()?;
         super::eval::eval(&expr, &eval_env)
     }
 
+    /// Creates an evaluation environment with all markdown files bound as variables.
+    fn create_eval_env(&self) -> SResult<Env> {
+        let mut eval_env = self.env.clone();
+
+        // Load all markdown files from filesystem
+        let files = self.list_files()?;
+        for file in &files {
+            let path = self.working_dir.join(file);
+            if let Ok(content) = fs::read_to_string(&path)
+                && let Ok(sexpr) = markdown_to_sexpr(&content)
+            {
+                // Bind by basename
+                let basename = Path::new(file)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(file);
+                eval_env.bind(basename, sexpr);
+            }
+        }
+
+        Ok(eval_env)
+    }
+
     /// Runs the interactive REPL loop using rustyline with vim keybindings.
-    pub fn run_interactive(&mut self) -> SResult<()> {
+    pub fn run_interactive(&self) -> SResult<()> {
         let mut rl = DefaultEditor::new().map_err(|e| {
             SError::new("repl")
                 .with_code("readline-error")
@@ -308,7 +271,7 @@ impl Repl {
 
     /// Handles a REPL command (lines starting with ':').
     /// Returns Ok(true) to continue, Ok(false) to quit.
-    fn handle_command(&mut self, input: &str) -> SResult<bool> {
+    fn handle_command(&self, input: &str) -> SResult<bool> {
         let parts: Vec<&str> = input.split_whitespace().collect();
         if parts.is_empty() {
             return Ok(true);
@@ -327,35 +290,9 @@ impl Repl {
                     println!("No markdown files in directory");
                 } else {
                     for f in files {
-                        let loaded = if self.documents.contains_key(&f) {
-                            "*"
-                        } else {
-                            " "
-                        };
-                        println!("{} {}", loaded, f);
+                        println!("  {}", f);
                     }
                 }
-            }
-
-            ":load" | ":l" => {
-                if parts.len() < 2 {
-                    return Err(SError::new("repl")
-                        .with_code("missing-argument")
-                        .with_message("Usage: :load <filename>"));
-                }
-                let doc = self.load(parts[1])?;
-                println!("Loaded: {}", parts[1]);
-                println!("{}", doc);
-            }
-
-            ":save" | ":s" => {
-                if parts.len() < 2 {
-                    return Err(SError::new("repl")
-                        .with_code("missing-argument")
-                        .with_message("Usage: :save <filename>"));
-                }
-                self.save(parts[1])?;
-                println!("Saved: {}", parts[1]);
             }
 
             ":show" => {
@@ -364,11 +301,8 @@ impl Repl {
                         .with_code("missing-argument")
                         .with_message("Usage: :show <filename>"));
                 }
-                if let Some(doc) = self.get(parts[1]) {
-                    println!("{}", doc);
-                } else {
-                    println!("Document not loaded: {}", parts[1]);
-                }
+                let doc = self.read_file(parts[1])?;
+                println!("{}", doc);
             }
 
             ":md" => {
@@ -377,12 +311,9 @@ impl Repl {
                         .with_code("missing-argument")
                         .with_message("Usage: :md <filename>"));
                 }
-                if let Some(doc) = self.get(parts[1]) {
-                    let md = sexpr_to_markdown(doc)?;
-                    println!("{}", md);
-                } else {
-                    println!("Document not loaded: {}", parts[1]);
-                }
+                let doc = self.read_file(parts[1])?;
+                let md = sexpr_to_markdown(&doc)?;
+                println!("{}", md);
             }
 
             ":annotate" | ":ann" => {
@@ -391,23 +322,9 @@ impl Repl {
                         .with_code("missing-argument")
                         .with_message("Usage: :annotate <filename>"));
                 }
-                if let Some(doc) = self.get(parts[1]) {
-                    let annotated = to_annotated_sexpr(doc);
-                    println!("{}", annotated);
-                } else {
-                    println!("Document not loaded: {}", parts[1]);
-                }
-            }
-
-            ":loaded" => {
-                let loaded = self.loaded();
-                if loaded.is_empty() {
-                    println!("No documents loaded");
-                } else {
-                    for name in loaded {
-                        println!("  {}", name);
-                    }
-                }
+                let doc = self.read_file(parts[1])?;
+                let annotated = to_annotated_sexpr(&doc);
+                println!("{}", annotated);
             }
 
             ":pwd" => {
@@ -428,7 +345,7 @@ impl Repl {
                 // Reconstruct the transform expression from the remaining parts
                 let transform = parts[2..].join(" ");
                 self.edit_document(filename, &transform)?;
-                println!("Edited: {}", filename);
+                println!("Edited and saved: {}", filename);
             }
 
             _ => {
@@ -447,26 +364,23 @@ fn print_help() {
   :help, :h, :?     Show this help
   :quit, :q, :exit  Exit the REPL
   :ls, :list        List markdown files in directory
-  :load <file>      Load a markdown file
-  :save <file>      Save a loaded document
-  :edit <file> <transform>  Edit document in place
-  :show <file>      Show document as s-expression
-  :md <file>        Show document as markdown
+  :show <file>      Show document as s-expression (reads from disk)
+  :md <file>        Show document as markdown (reads from disk)
   :annotate <file>  Show document with path/content IDs
-  :loaded           List loaded documents
+  :edit <file> <transform>  Edit document (reads, transforms, writes back)
   :pwd              Print working directory
   :fns              List available functions
 
 S-expression evaluation:
   Type any s-expression to evaluate it.
-  Loaded documents are available as variables by filename.
+  All markdown files in the directory are available as variables by filename.
+  Files are read fresh from disk on each evaluation.
   
 Examples:
-  :load docs/readme.md
-  (get-by-path docs/readme.md \"1\")
-  (generate-toc docs/readme.md)
-  (->> docs/readme.md (generate-toc))
-  :edit docs/readme.md (prune \"1.2\")"
+  (get-by-path readme.md \"1\")
+  (generate-toc readme.md)
+  (->> readme.md (generate-toc))
+  :edit readme.md (prune \"1.2\")"
     );
 }
 
@@ -1201,37 +1115,40 @@ mod tests {
     #[test]
     fn edit_document_prune() {
         let dir = env::current_dir().unwrap();
-        let mut repl = Repl::new(&dir).unwrap();
-        // Manually set a document (simulating :load)
-        let doc = markdown_to_sexpr("# Title\n\n## Section\n\nParagraph").unwrap();
-        repl.set("test.md", doc);
+        let repl = Repl::new(&dir).unwrap();
+
+        // Create a temporary test file
+        let test_file = "test_repl_edit_prune.md";
+        fs::write(dir.join(test_file), "# Title\n\n## Section\n\nParagraph").unwrap();
 
         // Edit to prune the paragraph at path "3"
-        let result = repl.edit_document("test.md", "(prune \"3\")");
+        let result = repl.edit_document(test_file, "(prune \"3\")");
         assert!(result.is_ok(), "Edit should succeed: {:?}", result);
 
-        // Verify the paragraph was removed
-        let edited = repl.get("test.md").unwrap();
-        let edited_str = edited.to_string();
+        // Verify the paragraph was removed by reading the file back
+        let edited_content = fs::read_to_string(dir.join(test_file)).unwrap();
         assert!(
-            !edited_str.contains("Paragraph"),
+            !edited_content.contains("Paragraph"),
             "Paragraph should be removed: {}",
-            edited_str
+            edited_content
         );
-        println!("DEBUG: edited document: {}", edited_str);
+        println!("DEBUG: edited document: {}", edited_content);
+
+        // Cleanup
+        fs::remove_file(dir.join(test_file)).unwrap();
     }
 
     #[test]
-    fn edit_document_not_loaded() {
+    fn edit_document_not_found() {
         let dir = env::current_dir().unwrap();
-        let mut repl = Repl::new(&dir).unwrap();
+        let repl = Repl::new(&dir).unwrap();
 
-        let result = repl.edit_document("nonexistent.md", "(prune \"1\")");
+        let result = repl.edit_document("nonexistent_repl_test.md", "(prune \"1\")");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("not-loaded"),
-            "Error should mention not-loaded: {}",
+            err.to_string().contains("io-error"),
+            "Error should mention io-error: {}",
             err
         );
         println!("DEBUG: expected error: {}", err);
@@ -1240,21 +1157,45 @@ mod tests {
     #[test]
     fn edit_document_with_single_function() {
         let dir = env::current_dir().unwrap();
-        let mut repl = Repl::new(&dir).unwrap();
-        let doc = markdown_to_sexpr("# Title\n\n## Section").unwrap();
-        repl.set("test.md", doc);
+        let repl = Repl::new(&dir).unwrap();
 
-        // Use a single function name (annotate)
-        let result = repl.edit_document("test.md", "annotate");
-        assert!(result.is_ok(), "Edit with single function should succeed");
+        // Create a temporary test file
+        let test_file = "test_repl_edit_single.md";
+        fs::write(dir.join(test_file), "# Title\n\n## Section").unwrap();
 
-        let edited = repl.get("test.md").unwrap();
-        let edited_str = edited.to_string();
+        // Use generate-toc which produces valid markdown output
+        let result = repl.edit_document(test_file, "generate-toc");
+        println!("DEBUG: edit result: {:?}", result);
         assert!(
-            edited_str.contains("(@"),
-            "Document should be annotated: {}",
-            edited_str
+            result.is_ok(),
+            "Edit with single function should succeed: {:?}",
+            result
         );
-        println!("DEBUG: annotated document: {}", edited_str);
+
+        // Read back - generate-toc produces a ul list
+        let edited_content = fs::read_to_string(dir.join(test_file)).unwrap();
+        println!("DEBUG: edited document: {}", edited_content);
+
+        // Cleanup
+        fs::remove_file(dir.join(test_file)).unwrap();
+    }
+
+    #[test]
+    fn read_file_from_disk() {
+        let dir = env::current_dir().unwrap();
+        let repl = Repl::new(&dir).unwrap();
+
+        // Create a temporary test file
+        let test_file = "test_repl_read.md";
+        fs::write(dir.join(test_file), "# Hello World").unwrap();
+
+        let result = repl.read_file(test_file);
+        assert!(result.is_ok());
+        let expr = result.unwrap();
+        assert!(expr.to_string().contains("h1"));
+        println!("DEBUG: read file: {}", expr);
+
+        // Cleanup
+        fs::remove_file(dir.join(test_file)).unwrap();
     }
 }

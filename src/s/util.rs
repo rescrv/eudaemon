@@ -3,6 +3,9 @@
 //! This module provides common string manipulation functions used throughout
 //! the S-expression processing pipeline.
 
+use std::fs;
+use std::path::Path;
+
 use super::expr::SExpr;
 use super::json::unescape_string;
 
@@ -96,6 +99,33 @@ pub fn get_previous_sibling_indices(indices: &[usize]) -> Option<Vec<usize>> {
     let mut new_indices = indices.to_vec();
     *new_indices.last_mut()? = last - 1;
     Some(new_indices)
+}
+
+/// Recursively find all markdown files under a directory.
+///
+/// Returns a vector of relative paths (as strings) to all `.md` files found
+/// under the given directory, recursively traversing subdirectories.
+pub fn find_markdown_files(dir: &Path) -> Vec<String> {
+    find_markdown_files_recursive(dir, dir)
+}
+
+/// Recursive helper for `find_markdown_files`.
+fn find_markdown_files_recursive(root: &Path, dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(find_markdown_files_recursive(root, &path));
+            } else if path.extension().is_some_and(|ext| ext == "md")
+                && let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str())
+            {
+                files.push(relative.to_string());
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 #[cfg(test)]
