@@ -149,6 +149,76 @@ impl Repl {
         self.documents.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Edits a document in place by applying a transform expression.
+    ///
+    /// The transform is an s-expression that takes the document as its first argument
+    /// (thread-first style). The result of the transform replaces the document in
+    /// the REPL state.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename` - The name of the loaded document to edit.
+    /// * `transform` - An s-expression string representing the transform to apply.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// :edit readme.md (prune "1.2")
+    /// :edit readme.md (replace-at "1" (h1 "New Title"))
+    /// ```
+    pub fn edit_document(&mut self, filename: &str, transform: &str) -> SResult<()> {
+        let doc = self.documents.get(filename).ok_or_else(|| {
+            SError::new("repl")
+                .with_code("not-loaded")
+                .with_message("Document not loaded")
+                .with_string_field("filename", filename)
+        })?;
+
+        // Parse the transform expression
+        let mut parser = Parser::new(transform);
+        let transform_expr = parser.parse()?;
+
+        // Build the expression with document as first argument (thread-first style)
+        // (prune "1.2") becomes (prune doc "1.2")
+        let expr = match transform_expr {
+            SExpr::List(items) if !items.is_empty() => {
+                // Insert the document as the first argument after the function name
+                let mut new_items = Vec::with_capacity(items.len() + 1);
+                new_items.push(items[0].clone()); // function name
+                new_items.push(SExpr::List(vec![
+                    SExpr::Atom("quote".to_string()),
+                    doc.clone(),
+                ]));
+                new_items.extend(items[1..].iter().cloned()); // remaining args
+                SExpr::List(new_items)
+            }
+            SExpr::Atom(func_name) => {
+                // Single function name: (func doc)
+                SExpr::List(vec![
+                    SExpr::Atom(func_name),
+                    SExpr::List(vec![SExpr::Atom("quote".to_string()), doc.clone()]),
+                ])
+            }
+            _ => {
+                return Err(SError::new("repl")
+                    .with_code("invalid-transform")
+                    .with_message("Transform must be a function call or function name")
+                    .with_field("transform", transform_expr));
+            }
+        };
+
+        // Create evaluation environment with document bindings
+        let mut eval_env = self.env.clone();
+        for (name, d) in &self.documents {
+            eval_env.bind(name, d.clone());
+        }
+
+        // Evaluate and update the document
+        let result = super::eval::eval(&expr, &eval_env)?;
+        self.documents.insert(filename.to_string(), result);
+        Ok(())
+    }
+
     /// Evaluates an s-expression string in the REPL environment.
     ///
     /// Loaded documents are available as variables using their filename.
@@ -348,6 +418,19 @@ impl Repl {
                 print_functions();
             }
 
+            ":edit" | ":e" => {
+                if parts.len() < 3 {
+                    return Err(SError::new("repl")
+                        .with_code("missing-argument")
+                        .with_message("Usage: :edit <filename> <transform>"));
+                }
+                let filename = parts[1];
+                // Reconstruct the transform expression from the remaining parts
+                let transform = parts[2..].join(" ");
+                self.edit_document(filename, &transform)?;
+                println!("Edited: {}", filename);
+            }
+
             _ => {
                 println!("Unknown command: {}. Type :help for commands.", parts[0]);
             }
@@ -366,6 +449,7 @@ fn print_help() {
   :ls, :list        List markdown files in directory
   :load <file>      Load a markdown file
   :save <file>      Save a loaded document
+  :edit <file> <transform>  Edit document in place
   :show <file>      Show document as s-expression
   :md <file>        Show document as markdown
   :annotate <file>  Show document with path/content IDs
@@ -381,7 +465,8 @@ Examples:
   :load docs/readme.md
   (get-by-path docs/readme.md \"1\")
   (generate-toc docs/readme.md)
-  (->> docs/readme.md (generate-toc))"
+  (->> docs/readme.md (generate-toc))
+  :edit docs/readme.md (prune \"1.2\")"
     );
 }
 
@@ -1111,5 +1196,65 @@ mod tests {
         let expr = result.unwrap();
         assert!(expr.to_string().contains("(@"));
         println!("DEBUG pipeline: {}", expr);
+    }
+
+    #[test]
+    fn edit_document_prune() {
+        let dir = env::current_dir().unwrap();
+        let mut repl = Repl::new(&dir).unwrap();
+        // Manually set a document (simulating :load)
+        let doc = markdown_to_sexpr("# Title\n\n## Section\n\nParagraph").unwrap();
+        repl.set("test.md", doc);
+
+        // Edit to prune the paragraph at path "3"
+        let result = repl.edit_document("test.md", "(prune \"3\")");
+        assert!(result.is_ok(), "Edit should succeed: {:?}", result);
+
+        // Verify the paragraph was removed
+        let edited = repl.get("test.md").unwrap();
+        let edited_str = edited.to_string();
+        assert!(
+            !edited_str.contains("Paragraph"),
+            "Paragraph should be removed: {}",
+            edited_str
+        );
+        println!("DEBUG: edited document: {}", edited_str);
+    }
+
+    #[test]
+    fn edit_document_not_loaded() {
+        let dir = env::current_dir().unwrap();
+        let mut repl = Repl::new(&dir).unwrap();
+
+        let result = repl.edit_document("nonexistent.md", "(prune \"1\")");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not-loaded"),
+            "Error should mention not-loaded: {}",
+            err
+        );
+        println!("DEBUG: expected error: {}", err);
+    }
+
+    #[test]
+    fn edit_document_with_single_function() {
+        let dir = env::current_dir().unwrap();
+        let mut repl = Repl::new(&dir).unwrap();
+        let doc = markdown_to_sexpr("# Title\n\n## Section").unwrap();
+        repl.set("test.md", doc);
+
+        // Use a single function name (annotate)
+        let result = repl.edit_document("test.md", "annotate");
+        assert!(result.is_ok(), "Edit with single function should succeed");
+
+        let edited = repl.get("test.md").unwrap();
+        let edited_str = edited.to_string();
+        assert!(
+            edited_str.contains("(@"),
+            "Document should be annotated: {}",
+            edited_str
+        );
+        println!("DEBUG: annotated document: {}", edited_str);
     }
 }

@@ -2,7 +2,9 @@
 //!
 //! This binary provides an interactive command-line interface for running the AgentKB
 //! agent against a filesystem path.  The agent is equipped with text editing tools
-//! and operates in a chrooted environment restricted to the specified directory.
+//! and an s-expression evaluator, operating in a chrooted environment restricted to
+//! the specified directory.  All markdown files (*.md) under the path are automatically
+//! discovered and loaded as variables in the eval tool.
 //!
 //! # Usage
 //!
@@ -15,6 +17,16 @@
 //! # Environment
 //!
 //! Requires `ANTHROPIC_API_KEY` to be set.
+//!
+//! # Examples
+//!
+//! ```text
+//! # Run in current directory
+//! agentkb
+//!
+//! # Run in a specific directory
+//! agentkb /path/to/wiki
+//! ```
 
 use std::env;
 use std::io::Write;
@@ -35,7 +47,7 @@ use utf8path::Path;
 async fn run_agent(path: &Path<'_>) -> Result<(), claudius::Error> {
     let client = Anthropic::new(None)?;
     let mut agent = AgentKB::new(path);
-    let budget = Arc::new(Budget::from_dollars_flat_rate(1.0, 1000));
+    let budget = Arc::new(Budget::from_dollars_with_rates(1.0, 500, 2500, 625, 50));
     let mut messages: Vec<MessageParam> = Vec::new();
 
     let stdin = std::io::stdin();
