@@ -63,8 +63,15 @@ A new list containing only elements where the predicate returned truthy.
 | `type-error` | Second argument is not a list |
 | `function-not-found` | Named function doesn't exist in environment |
 
+## Notes
+
+Unlike some languages, `filter` cannot currently use inline lambda expressions.
+The predicate must be defined separately or be a builtin like `list?` or `atom?`.
+
 ## See Also
 
 - [`map`](map.md) - Transform elements
 - [`reduce`](reduce.md) - Fold a list to a single value
 - [`->>`](thread-last.md) - Build transformation pipelines
+- [`list?`](list-p.md) - Common predicate for filtering
+- [`empty?`](empty-p.md) - Test if filter result is empty

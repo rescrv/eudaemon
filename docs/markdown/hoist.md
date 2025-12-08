@@ -62,7 +62,15 @@ A new document with the heading level adjusted.
 | `path-not-found` | Path doesn't exist in document |
 | `not-a-heading` | Node at path is not a heading |
 
+## Notes
+
+This function only affects heading level, not heading content or structure.
+To change the heading text, use `replace-at` with a new heading node.
+
+The delta is applied directly: `h2 + delta(-1) = h1`, `h2 + delta(2) = h4`.
+
 ## See Also
 
 - [`replace-at`](replace-at.md) - General node replacement
 - [`normalize-headers`](normalize-headers.md) - Batch heading adjustments
+- [`annotate`](annotate.md) - Find heading paths

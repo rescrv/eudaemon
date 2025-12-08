@@ -51,6 +51,10 @@ A new document with path annotations on all nodes.
 The annotated form is for inspection only.  Use the original paths with
 mutation functions like `replace-at`, `prune`, `insert-before`, etc.
 
+Path annotations use the `@` prefix (e.g., `@1`, `@1.2`) to distinguish them
+from regular content.  Children are numbered starting at 1, since index 0 in
+the s-expression is the tag name.
+
 ## Errors
 
 | Code | Condition |

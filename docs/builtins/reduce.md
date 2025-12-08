@@ -75,6 +75,9 @@ The final accumulated value after processing all elements.
 The order of arguments to the folding function is `(func accumulator element)`,
 which is the fold-left convention.  The accumulator is always the first argument.
 
+For right-to-left processing, reverse the list first or structure your
+accumulator accordingly.
+
 ## See Also
 
 - [`map`](map.md) - Transform each element

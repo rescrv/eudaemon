@@ -52,4 +52,7 @@ An s-expression of the form `(obj ("key1" value1) ...)`.
 - [`arr`](arr.md) - Construct JSON arrays
 - [`get`](get.md) - Access object fields
 - [`assoc`](assoc.md) - Add or update fields
+- [`dissoc`](dissoc.md) - Remove fields
 - [`keys`](keys.md) - Extract object keys
+- [`values`](values.md) - Extract object values
+- [`merge`](merge.md) - Combine objects

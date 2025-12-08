@@ -68,4 +68,6 @@ Paths are dot-separated sequences of indices:
 
 - [`get-node`](get-node.md) - Get by path or content ID
 - [`get-parent`](get-parent.md) - Get parent of a node
+- [`get-siblings`](get-siblings.md) - Get sibling nodes
 - [`annotate`](annotate.md) - See all paths in document
+- [`replace-at`](replace-at.md) - Modify node at path

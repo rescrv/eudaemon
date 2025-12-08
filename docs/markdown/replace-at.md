@@ -58,8 +58,16 @@ A new document with the replacement made.
 | `wrong-argument-count` | Not exactly three arguments |
 | `path-not-found` | Path doesn't exist in document |
 
+## Notes
+
+The new node completely replaces the old one—there is no merging of attributes
+or children.  Use `get-by-path` first if you need to read the existing node
+before constructing the replacement.
+
 ## See Also
 
 - [`prune`](prune.md) - Remove without replacement
 - [`insert-before`](insert-before.md) - Add adjacent node
+- [`insert-after`](insert-after.md) - Add node after
 - [`hoist`](hoist.md) - Change heading level
+- [`get-by-path`](get-by-path.md) - Read node before replacing

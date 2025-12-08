@@ -60,8 +60,14 @@ A new list containing the results of applying the function to each element.
 | `type-error` | Second argument is not a list |
 | `function-not-found` | Named function doesn't exist in environment |
 
+## Notes
+
+Unlike some languages, `map` cannot currently use inline lambda expressions.
+The function must be defined separately or be a builtin.
+
 ## See Also
 
 - [`filter`](filter.md) - Select elements matching a predicate
 - [`reduce`](reduce.md) - Fold a list to a single value
 - [`->>`](thread-last.md) - Build transformation pipelines
+- [`first`](first.md) - Often used with map for extracting fields

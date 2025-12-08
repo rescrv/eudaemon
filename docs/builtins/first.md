@@ -64,3 +64,4 @@ The first element of the list.
 - [`rest`](rest.md) - Get all but first element
 - [`nth`](nth.md) - Get element at specific index
 - [`cons`](cons.md) - Prepend element to list
+- [`empty?`](empty-p.md) - Check before calling first

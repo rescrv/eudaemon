@@ -44,6 +44,11 @@ A new document with the node moved.
 ;; Move section into blockquote
 (graft doc "3" "2" 1)
 ;; Node at path 3 becomes first child of node at path 2
+
+;; Reorder document sections
+(->> doc
+     (graft "4" "" 2)   ;; Move section 4 to position 2
+     (sexpr-to-markdown))
 ```
 
 ## Errors
@@ -63,3 +68,5 @@ creating circular structures.
 
 - [`prune`](prune.md) - Remove without moving
 - [`insert-before`](insert-before.md) - Insert at specific position
+- [`insert-after`](insert-after.md) - Insert after a sibling
+- [`annotate`](annotate.md) - Find paths for source and target

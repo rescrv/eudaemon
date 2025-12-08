@@ -63,3 +63,6 @@ An s-expression representing a nested unordered list (table of contents).
 ## See Also
 
 - [`normalize-headers`](normalize-headers.md) - Fix heading structure first
+- [`insert-after`](insert-after.md) - Insert TOC into document
+- [`prepend-child`](prepend-child.md) - Add TOC at start of section
+- [`sexpr-to-markdown`](sexpr-to-markdown.md) - Render TOC as markdown

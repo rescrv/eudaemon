@@ -63,3 +63,4 @@ A list containing all elements except the first.
 - [`first`](first.md) - Get first element
 - [`nth`](nth.md) - Get element at specific index
 - [`cons`](cons.md) - Reconstruct list with element prepended
+- [`empty?`](empty-p.md) - Check before calling rest

@@ -59,6 +59,16 @@ A string containing the rendered markdown.
 |------|-----------|
 | `wrong-argument-count` | Not exactly one argument |
 
+## Notes
+
+The renderer produces clean, consistent markdown output.  Some formatting
+choices (like ATX-style headings with `#`) are fixed regardless of the
+original input format.
+
+Whitespace and blank lines are normalized.  If you need exact round-trip
+preservation of formatting, consider storing the original text.
+
 ## See Also
 
 - [`markdown-to-sexpr`](markdown-to-sexpr.md) - Parse markdown to AST
+- [`annotate`](annotate.md) - Inspect structure before rendering

@@ -84,3 +84,4 @@ The result of the last body expression.
 
 - [`begin`](begin.md) - Sequence expressions without bindings
 - [`if`](if.md) - Conditional with let-bound variables
+- [`->>`](thread-last.md) - Alternative for chained transformations

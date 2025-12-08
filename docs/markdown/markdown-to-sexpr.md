@@ -73,7 +73,16 @@ An s-expression AST with `doc` as the root tag.
 |------|-----------|
 | `wrong-argument-count` | Not exactly one argument |
 
+## Notes
+
+The parser handles CommonMark syntax.  Some extended syntax (like tables or
+footnotes) may have limited support depending on the underlying parser.
+
+Inline elements like `strong`, `em`, `code`, and `link` appear as children of
+block elements like `p` or `li`.
+
 ## See Also
 
 - [`sexpr-to-markdown`](sexpr-to-markdown.md) - Convert AST back to markdown
 - [`annotate`](annotate.md) - Add path IDs to nodes
+- [`get-by-path`](get-by-path.md) - Navigate the parsed tree

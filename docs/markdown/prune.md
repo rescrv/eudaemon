@@ -51,7 +51,15 @@ A new document with the node removed.
 | `wrong-argument-count` | Not exactly two arguments |
 | `path-not-found` | Path doesn't exist in document |
 
+## Notes
+
+Pruning a node causes all subsequent siblings to shift their path indices.
+For example, if you prune path "2", the former path "3" becomes the new "2".
+When pruning multiple nodes, work from highest path to lowest to avoid
+invalidating paths.
+
 ## See Also
 
 - [`replace-at`](replace-at.md) - Replace instead of remove
 - [`graft`](graft.md) - Move instead of remove
+- [`annotate`](annotate.md) - Find paths before pruning

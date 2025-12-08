@@ -63,3 +63,5 @@ The value associated with the key, or `null` if not found.
 - [`assoc`](assoc.md) - Add or update a key
 - [`dissoc`](dissoc.md) - Remove a key
 - [`keys`](keys.md) - List all keys
+- [`values`](values.md) - List all values
+- [`obj`](obj.md) - Construct objects
