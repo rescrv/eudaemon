@@ -104,9 +104,7 @@ impl ToolEval {
             if let Ok(content) = fs::read_to_string(full_path.as_str())
                 && let Ok(sexpr) = markdown_to_sexpr(&content)
             {
-                let path_ref = Path::new(path);
-                let name = path_ref.basename().to_string();
-                env.bind(&name, sexpr);
+                env.bind(path, sexpr);
             }
         }
 

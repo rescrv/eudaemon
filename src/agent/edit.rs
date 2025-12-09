@@ -99,9 +99,7 @@ impl ToolEdit {
             if let Ok(c) = fs::read_to_string(path_full.as_str())
                 && let Ok(sexpr) = markdown_to_sexpr(&c)
             {
-                let path_ref = Path::new(path);
-                let name = path_ref.basename().to_string();
-                env.bind(&name, sexpr);
+                env.bind(path, sexpr);
             }
         }
 
