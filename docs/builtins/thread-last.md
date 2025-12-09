@@ -79,12 +79,13 @@ The result of threading the initial value through all forms.
 ## Notes
 
 The thread-last macro is ideal for collection-processing pipelines where
-functions expect the collection as their last argument.  For functions that
-expect the primary argument first, consider structuring your functions
-accordingly.
+functions expect the collection as their last argument.  For object-centric
+pipelines where the primary subject is the first argument, use
+[`->`](thread-first.md) (thread-first) instead.
 
 ## See Also
 
+- [`->`](thread-first.md) - Thread as first argument (for object pipelines)
 - [`begin`](begin.md) - Sequence without threading
 - [`map`](map.md) - Transform each element
 - [`filter`](filter.md) - Select elements

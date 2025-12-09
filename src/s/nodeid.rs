@@ -2,12 +2,11 @@
 //!
 //! Provides two complementary addressing schemes:
 //! - **Path-based IDs**: Positional path from root (e.g., "0.2.1" means root's child 0, its child 2, its child 1)
-//! - **Content-hash IDs**: SHA-256 hash of node content for content-addressable references
+//! - **Content-hash IDs**: SHA3-256 hash of node content for content-addressable references
 //!
 //! Both ID types are printed when annotating nodes. Either can be used for selection.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha3::{Digest, Sha3_256};
 
 use super::error::{SError, SResult};
 use super::expr::SExpr;
@@ -87,29 +86,40 @@ impl std::fmt::Display for PathId {
     }
 }
 
+/// Number of bytes used for content ID (12 hex chars = 6 bytes).
+const CONTENT_ID_BYTES: usize = 6;
+
+/// Number of hex characters in a content ID.
+const CONTENT_ID_HEX_LEN: usize = CONTENT_ID_BYTES * 2;
+
 /// A content-hash node identifier.
-/// Uses a hash of the node's content for content-addressable references.
+/// Uses the first 6 bytes (12 hex chars) of a SHA3-256 hash of the node's content.
+/// The hash is stable across Rust versions and platforms.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ContentId(u64);
+pub struct ContentId([u8; CONTENT_ID_BYTES]);
 
 impl ContentId {
-    /// Computes the content hash of an S-expression.
+    /// Computes the SHA3-256 content hash of an S-expression, keeping the first bytes.
     pub fn compute(expr: &SExpr) -> Self {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = Sha3_256::new();
         Self::hash_expr(expr, &mut hasher);
-        ContentId(hasher.finish())
+        let result = hasher.finalize();
+        let mut bytes = [0u8; CONTENT_ID_BYTES];
+        bytes.copy_from_slice(&result[..CONTENT_ID_BYTES]);
+        ContentId(bytes)
     }
 
-    /// Recursively hashes an S-expression.
-    fn hash_expr(expr: &SExpr, hasher: &mut DefaultHasher) {
+    /// Recursively hashes an S-expression into the SHA3 hasher.
+    fn hash_expr(expr: &SExpr, hasher: &mut Sha3_256) {
         match expr {
             SExpr::Atom(s) => {
-                0u8.hash(hasher); // Type discriminant
-                s.hash(hasher);
+                hasher.update([0u8]); // Type discriminant
+                hasher.update((s.len() as u64).to_le_bytes());
+                hasher.update(s.as_bytes());
             }
             SExpr::List(items) => {
-                1u8.hash(hasher); // Type discriminant
-                items.len().hash(hasher);
+                hasher.update([1u8]); // Type discriminant
+                hasher.update((items.len() as u64).to_le_bytes());
                 for item in items {
                     Self::hash_expr(item, hasher);
                 }
@@ -128,19 +138,44 @@ impl ContentId {
         }
 
         let hex = &s[1..];
-        u64::from_str_radix(hex, 16).map(ContentId).map_err(|e| {
-            SError::new("nodeid")
+        if hex.len() != CONTENT_ID_HEX_LEN {
+            return Err(SError::new("nodeid")
                 .with_code("invalid-content-id")
-                .with_message("Failed to parse content ID hex value")
+                .with_message(&format!(
+                    "Content ID must be {} hex characters",
+                    CONTENT_ID_HEX_LEN
+                ))
                 .with_string_field("input", s)
-                .with_string_field("parse_error", &e.to_string())
-        })
+                .with_atom_field("length", hex.len()));
+        }
+
+        let mut bytes = [0u8; CONTENT_ID_BYTES];
+        for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+            let hex_str = std::str::from_utf8(chunk).map_err(|e| {
+                SError::new("nodeid")
+                    .with_code("invalid-content-id")
+                    .with_message("Invalid UTF-8 in hex string")
+                    .with_string_field("parse_error", &e.to_string())
+            })?;
+            bytes[i] = u8::from_str_radix(hex_str, 16).map_err(|e| {
+                SError::new("nodeid")
+                    .with_code("invalid-content-id")
+                    .with_message("Failed to parse content ID hex value")
+                    .with_string_field("input", s)
+                    .with_string_field("parse_error", &e.to_string())
+            })?;
+        }
+        Ok(ContentId(bytes))
     }
 }
 
 impl std::fmt::Display for ContentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{:016x}", self.0)
+        write!(f, "#")?;
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
     }
 }
 
@@ -400,7 +435,7 @@ mod tests {
         let path = NodeId::parse("0.2.1").unwrap();
         assert!(matches!(path, NodeId::Path(_)));
 
-        let content = NodeId::parse("#0123456789abcdef").unwrap();
+        let content = NodeId::parse("#012345678901").unwrap();
         assert!(matches!(content, NodeId::Content(_)));
     }
 

@@ -111,6 +111,7 @@ fn eval_impl(expr: &SExpr, env: &mut Env) -> SResult<SExpr> {
                 "if" => eval_if(list, env),
                 "let" => eval_let(list, env),
                 "begin" => eval_begin(list, env),
+                "->" => eval_thread_first(list, env),
                 "->>" => eval_thread_last(list, env),
                 "map" => eval_map(list, env),
                 "filter" => eval_filter(list, env),
@@ -375,6 +376,53 @@ fn eval_reduce(list: &[SExpr], env: &mut Env) -> SResult<SExpr> {
     }
 
     Ok(acc)
+}
+
+/// Evaluates (-> initial (f1 args...) (f2 args...) ...) - thread-first macro.
+/// Each form has the result of the previous expression inserted as its first argument.
+fn eval_thread_first(list: &[SExpr], env: &mut Env) -> SResult<SExpr> {
+    if list.len() < 2 {
+        return Err(SError::new("eval")
+            .with_code("wrong-argument-count")
+            .with_message("-> requires at least an initial value")
+            .with_atom_field("minimum_args", 1)
+            .with_atom_field("received", list.len() - 1));
+    }
+
+    // Evaluate initial value
+    let mut result = eval_impl(&list[1], env)?;
+
+    // Thread through remaining forms
+    for form in list.iter().skip(2) {
+        match form {
+            SExpr::List(items) if !items.is_empty() => {
+                // Insert result as first argument (after function name)
+                let mut new_items = vec![items[0].clone()];
+                new_items.push(SExpr::List(vec![
+                    SExpr::Atom("quote".to_string()),
+                    result.clone(),
+                ]));
+                new_items.extend(items.iter().skip(1).cloned());
+                result = eval_impl(&SExpr::List(new_items), env)?;
+            }
+            SExpr::Atom(func_name) => {
+                // Single function name: (func result)
+                let call = SExpr::List(vec![
+                    SExpr::Atom(func_name.clone()),
+                    SExpr::List(vec![SExpr::Atom("quote".to_string()), result.clone()]),
+                ]);
+                result = eval_impl(&call, env)?;
+            }
+            _ => {
+                return Err(SError::new("eval")
+                    .with_code("invalid-thread-form")
+                    .with_message("Thread form must be a function call or function name")
+                    .with_field("form", form.clone()));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Evaluates (->> initial (f1 args...) (f2 args...) ...) - thread-last macro.
@@ -1630,6 +1678,76 @@ mod tests {
         let mut parser = Parser::new("(->> 5 double)");
         let expr = parser.parse().unwrap();
         assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("10".to_string())));
+    }
+
+    #[test]
+    fn eval_thread_first_simple() {
+        let mut env = Env::new();
+        env.def_fn("+", add);
+        env.def_fn("*", multiply);
+
+        // (-> 5 (+ 3)) == (+ 5 3) == 8
+        let mut parser = Parser::new("(-> 5 (+ 3))");
+        let expr = parser.parse().unwrap();
+
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("8".to_string())));
+    }
+
+    #[test]
+    fn eval_thread_first_chain() {
+        let mut env = Env::new();
+        env.def_fn("+", add);
+        env.def_fn("*", multiply);
+
+        // (-> 5 (+ 3) (* 2)) == (* (+ 5 3) 2) == (* 8 2) == 16
+        let mut parser = Parser::new("(-> 5 (+ 3) (* 2))");
+        let expr = parser.parse().unwrap();
+
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("16".to_string())));
+    }
+
+    #[test]
+    fn eval_thread_first_empty_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(->)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn eval_thread_first_invalid_form_error() {
+        let env = Env::new();
+        let mut parser = Parser::new("(-> 5 ())");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("invalid-thread-form"));
+    }
+
+    #[test]
+    fn eval_thread_first_with_atom_func() {
+        let mut env = Env::new();
+        env.def_fn("double", double);
+        let mut parser = Parser::new("(-> 5 double)");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("10".to_string())));
+    }
+
+    #[test]
+    fn eval_thread_first_vs_thread_last() {
+        // Demonstrate the difference between -> and ->>
+        let mut env = Env::new();
+        env.def_fn("-", subtract);
+
+        // (-> 10 (- 3)) == (- 10 3) == 7
+        let mut parser = Parser::new("(-> 10 (- 3))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("7".to_string())));
+
+        // (->> 10 (- 3)) == (- 3 10) == -7
+        let mut parser = Parser::new("(->> 10 (- 3))");
+        let expr = parser.parse().unwrap();
+        assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("-7".to_string())));
     }
 
     #[test]

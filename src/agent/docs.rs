@@ -135,6 +135,12 @@ pub const BUILTINS_REST: (&str, &str) = (
     include_str!("../../docs/builtins/rest.md"),
 );
 
+/// Documentation for the `thread-first` builtin macro.
+pub const BUILTINS_THREAD_FIRST: (&str, &str) = (
+    "docs/builtins/thread-first.md",
+    include_str!("../../docs/builtins/thread-first.md"),
+);
+
 /// Documentation for the `thread-last` builtin macro.
 pub const BUILTINS_THREAD_LAST: (&str, &str) = (
     "docs/builtins/thread-last.md",
@@ -406,7 +412,7 @@ pub const MARKDOWN_WRAP_IN_DETAILS: (&str, &str) = (
 // =============================================================================
 
 /// All builtin documentation files as (path, contents) tuples.
-pub const BUILTINS_DOCS: [(&str, &str); 20] = [
+pub const BUILTINS_DOCS: [(&str, &str); 21] = [
     BUILTINS_APPEND,
     BUILTINS_ATOM_P,
     BUILTINS_BEGIN,
@@ -426,6 +432,7 @@ pub const BUILTINS_DOCS: [(&str, &str); 20] = [
     BUILTINS_QUOTE,
     BUILTINS_REDUCE,
     BUILTINS_REST,
+    BUILTINS_THREAD_FIRST,
     BUILTINS_THREAD_LAST,
 ];
 
@@ -485,8 +492,8 @@ pub const MARKDOWN_DOCS: [(&str, &str); 36] = [
 ///
 /// This array contains every embedded documentation file, suitable for populating
 /// a virtual file system overlay.  Paths are relative to the crate root.
-pub const ALL_DOCS: [(&str, &str); 64] = [
-    // Builtins (20)
+pub const ALL_DOCS: [(&str, &str); 65] = [
+    // Builtins (21)
     BUILTINS_APPEND,
     BUILTINS_ATOM_P,
     BUILTINS_BEGIN,
@@ -506,6 +513,7 @@ pub const ALL_DOCS: [(&str, &str); 64] = [
     BUILTINS_QUOTE,
     BUILTINS_REDUCE,
     BUILTINS_REST,
+    BUILTINS_THREAD_FIRST,
     BUILTINS_THREAD_LAST,
     // JSON (8)
     JSON_ARR,
