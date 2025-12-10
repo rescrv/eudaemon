@@ -74,6 +74,7 @@ mod object;
 mod repl;
 mod selector;
 mod util;
+mod vm;
 
 pub use error::{SError, SResult};
 pub use eval::{
@@ -117,10 +118,11 @@ pub use nodeid::{
     get_context, get_node, get_parent, get_siblings, to_annotated_sexpr,
 };
 pub use object::{assoc, dissoc, get, keys, merge, register_json_builtins, values};
-pub use repl::{Repl, register_markdown_builtins};
+pub use repl::{Repl, register_markdown_builtins, register_markdown_builtins_vm};
 pub use selector::{
     AttributePredicate, Combinator, CompareOp, Selector, SelectorPart, SimpleSelector, query,
     query_one, select,
 };
+pub use vm::{BuiltinFn, Condition, Restart, Vm, VmState};
 
 pub use docs::{ALL_DOCS, BUILTINS_DOCS, JSON_DOCS, MARKDOWN_DOCS, get_help};

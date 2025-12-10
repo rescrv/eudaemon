@@ -8,17 +8,14 @@
 
 use std::io::{self, BufRead, Write};
 
-use agentkb::{
-    Env, Parser, SError, SExpr, eval, register_builtins, register_json_builtins,
-    register_markdown_builtins,
-};
+use agentkb::{Parser, SError, SExpr, Vm, register_markdown_builtins_vm};
 
-fn setup_env() -> Env {
-    let mut env = Env::new();
-    register_builtins(&mut env);
-    register_json_builtins(&mut env);
-    register_markdown_builtins(&mut env);
-    env
+fn setup_vm() -> Vm {
+    let mut vm = Vm::new();
+    vm.register_builtins();
+    vm.register_json_builtins();
+    register_markdown_builtins_vm(&mut vm);
+    vm
 }
 
 fn main() {
@@ -53,7 +50,7 @@ fn main() {
         }
     };
 
-    let env = setup_env();
+    let mut vm = setup_vm();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
@@ -101,7 +98,7 @@ fn main() {
                             }
                         };
 
-                        match eval(&expr_with_input, &env) {
+                        match vm.eval(&expr_with_input) {
                             Ok(result) => {
                                 if let Err(e) = writeln!(stdout, "{}", result) {
                                     let io_error = SError::new("sexpr-transform")

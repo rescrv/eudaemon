@@ -34,6 +34,7 @@ use super::nodeid::{
     to_annotated_sexpr,
 };
 use super::util::{extract_string, find_markdown_files, string_atom};
+use super::vm::Vm;
 
 /// REPL state containing the working directory.
 ///
@@ -494,6 +495,57 @@ pub fn register_markdown_builtins(env: &mut Env) {
     env.def_fn("scan-link-defs", builtin_scan_link_defs);
     env.def_fn("find-undef-refs", builtin_find_undef_refs);
     env.def_fn("update-link", builtin_update_link);
+}
+
+/// Registers all markdown-related functions in the VM.
+pub fn register_markdown_builtins_vm(vm: &mut Vm) {
+    // Conversion
+    vm.def_fn("markdown-to-sexpr", builtin_markdown_to_sexpr);
+    vm.def_fn("sexpr-to-markdown", builtin_sexpr_to_markdown);
+
+    // Frontmatter
+    vm.def_fn("get-frontmatter", builtin_get_frontmatter);
+    vm.def_fn("get-frontmatter-content", builtin_get_frontmatter_content);
+    vm.def_fn("set-frontmatter", builtin_set_frontmatter);
+    vm.def_fn("remove-frontmatter", builtin_remove_frontmatter);
+    vm.def_fn("parse-yaml-frontmatter", builtin_parse_yaml_frontmatter);
+    vm.def_fn("get-fm-field", builtin_get_fm_field);
+    vm.def_fn("upsert-fm-field", builtin_upsert_fm_field);
+    vm.def_fn("remove-fm-field", builtin_remove_fm_field);
+
+    // Node navigation
+    vm.def_fn("get-by-path", builtin_get_by_path);
+    vm.def_fn("get-node", builtin_get_node);
+    vm.def_fn("get-parent", builtin_get_parent);
+    vm.def_fn("get-siblings", builtin_get_siblings);
+    vm.def_fn("get-context", builtin_get_context);
+    vm.def_fn("annotate", builtin_annotate);
+
+    // Mutations
+    vm.def_fn("replace-at", builtin_replace_at);
+    vm.def_fn("prune", builtin_prune);
+    vm.def_fn("insert-before", builtin_insert_before);
+    vm.def_fn("insert-after", builtin_insert_after);
+    vm.def_fn("append-child", builtin_append_child);
+    vm.def_fn("prepend-child", builtin_prepend_child);
+    vm.def_fn("hoist", builtin_hoist);
+    vm.def_fn("graft", builtin_graft);
+
+    // Curation
+    vm.def_fn("wrap-in-callout", builtin_wrap_in_callout);
+    vm.def_fn("wrap-in-details", builtin_wrap_in_details);
+    vm.def_fn("normalize-headers", builtin_normalize_headers);
+    vm.def_fn("mark-deprecated", builtin_mark_deprecated);
+    vm.def_fn("generate-toc", builtin_generate_toc);
+
+    // Links
+    vm.def_fn("scan-links", builtin_scan_links);
+    vm.def_fn("get-internal-links", builtin_get_internal_links);
+    vm.def_fn("get-external-links", builtin_get_external_links);
+    vm.def_fn("get-image-links", builtin_get_image_links);
+    vm.def_fn("scan-link-defs", builtin_scan_link_defs);
+    vm.def_fn("find-undef-refs", builtin_find_undef_refs);
+    vm.def_fn("update-link", builtin_update_link);
 }
 
 // Conversion functions
