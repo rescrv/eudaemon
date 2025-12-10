@@ -107,7 +107,7 @@ pub use s::nodeid::{
     AnnotatedNode, ContentId, NodeId, PathId, annotate_document, get_by_content, get_by_path,
     get_context, get_node, get_parent, get_siblings, to_annotated_sexpr,
 };
-pub use s::object::{assoc, dissoc, get, keys, merge, values};
+pub use s::object::{assoc, dissoc, get, keys, merge, register_json_builtins, values};
 pub use s::repl::{Repl, register_markdown_builtins};
 pub use s::selector::{
     AttributePredicate, Combinator, CompareOp, Selector, SelectorPart, SimpleSelector, query,
