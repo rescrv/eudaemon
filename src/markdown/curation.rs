@@ -3,10 +3,10 @@
 //! These functions encapsulate common multi-step operations that agents
 //! frequently need when curating knowledge bases.
 
-use crate::s::error::{SError, SResult};
-use crate::s::expr::SExpr;
-use crate::s::nodeid::{PathId, get_by_path};
-use crate::s::util::{
+use crate::error::{SError, SResult};
+use crate::expr::SExpr;
+use crate::nodeid::{PathId, get_by_path};
+use crate::util::{
     extract_string, extract_text_content, get_previous_sibling_indices, is_internal_url,
     string_atom,
 };
@@ -1310,7 +1310,7 @@ pub fn skeleton_summary_to_sexpr(summary: &SkeletonSummary) -> SExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn parse(s: &str) -> SExpr {
         Parser::new(s).parse().unwrap()

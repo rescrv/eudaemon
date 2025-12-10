@@ -961,7 +961,7 @@ pub fn remove_frontmatter_field(content: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::util::escape_string;
+    use crate::util::escape_string;
 
     #[test]
     fn parse_simple_paragraph() {

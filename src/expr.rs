@@ -1,6 +1,6 @@
 //! s-expression parser and AST
 
-use crate::s::error::{SError, SResult};
+use crate::error::{SError, SResult};
 
 /// A symbolic expression: the fundamental data structure for representing structured data.
 ///

@@ -8,12 +8,12 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::s::expr::{Parser, SExpr};
-use crate::s::markdown::mutations::{
+use crate::expr::{Parser, SExpr};
+use crate::markdown::mutations::{
     append_child, graft, hoist, insert_after, insert_before, prepend_child, prune, replace_at,
 };
-use crate::s::markdown::{markdown_to_sexpr, sexpr_to_markdown};
-use crate::s::nodeid::PathId;
+use crate::markdown::{markdown_to_sexpr, sexpr_to_markdown};
+use crate::nodeid::PathId;
 
 /// Result of running a single test case.
 #[derive(Debug)]

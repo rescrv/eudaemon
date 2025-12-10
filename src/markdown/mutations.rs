@@ -5,9 +5,9 @@
 //! - Standard: Returns `Err` on failure (abort semantics)
 //! - `_lenient`: Returns the original document unchanged on failure (continue semantics)
 
-use crate::s::error::{SError, SResult};
-use crate::s::expr::SExpr;
-use crate::s::nodeid::PathId;
+use crate::error::{SError, SResult};
+use crate::expr::SExpr;
+use crate::nodeid::PathId;
 
 /// Replaces a node at the given path with a new node.
 /// Returns the modified document.
@@ -290,7 +290,7 @@ fn prepend_child_impl(expr: &SExpr, indices: &[usize], child: SExpr) -> SResult<
 /// delta > 0 demotes (h1 -> h2), delta < 0 promotes (h2 -> h1).
 /// Clamps to h1-h6 range.
 pub fn hoist(doc: &SExpr, path: &PathId, delta: i32) -> SResult<SExpr> {
-    let node = crate::s::nodeid::get_by_path(doc, path).ok_or_else(|| {
+    let node = crate::nodeid::get_by_path(doc, path).ok_or_else(|| {
         SError::new("mutations")
             .with_code("node-not-found")
             .with_message("No node at the specified path")
@@ -350,7 +350,7 @@ pub fn graft(
     target_index: usize,
 ) -> SResult<SExpr> {
     // Get the node to move
-    let node = crate::s::nodeid::get_by_path(doc, source_path).ok_or_else(|| {
+    let node = crate::nodeid::get_by_path(doc, source_path).ok_or_else(|| {
         SError::new("mutations")
             .with_code("source-not-found")
             .with_message("No node at the source path")
@@ -467,7 +467,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn parse(s: &str) -> SExpr {
         Parser::new(s).parse().unwrap()

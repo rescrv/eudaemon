@@ -1,8 +1,8 @@
 //! JSON to S-expression conversion and vice versa
 
-use crate::s::error::{SError, SResult};
-use crate::s::expr::{Parser, SExpr};
-use crate::s::util::escape_string;
+use crate::error::{SError, SResult};
+use crate::expr::{Parser, SExpr};
+use crate::util::escape_string;
 use serde_json::Value;
 
 /// Converts JSON string to S-expression string representation.

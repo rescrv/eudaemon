@@ -371,7 +371,7 @@ fn annotate_sexpr_recursive(expr: &SExpr, path: PathId) -> SExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn parse(s: &str) -> SExpr {
         Parser::new(s).parse().unwrap()

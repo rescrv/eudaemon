@@ -848,7 +848,7 @@ pub fn query_one(doc: &SExpr, selector_str: &str) -> SResult<Option<(PathId, SEx
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn parse_doc(s: &str) -> SExpr {
         Parser::new(s).parse().unwrap()

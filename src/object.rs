@@ -1,7 +1,7 @@
-use crate::s::error::{SError, SResult};
-use crate::s::eval::Env;
-use crate::s::expr::SExpr;
-use crate::s::json::unescape_string;
+use crate::error::{SError, SResult};
+use crate::eval::Env;
+use crate::expr::SExpr;
+use crate::json::unescape_string;
 
 /// Extract string content from a quoted atom like `"hello"` -> `hello`
 /// and unescape any escape sequences
@@ -352,7 +352,7 @@ pub fn register_json_builtins(env: &mut Env) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn parse(s: &str) -> SExpr {
         let mut parser = Parser::new(s);

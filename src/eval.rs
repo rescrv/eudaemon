@@ -741,7 +741,7 @@ fn eval_function_call(func_name: &str, list: &[SExpr], env: &mut Env) -> SResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn add(args: &[SExpr]) -> SResult<SExpr> {
         let mut sum = 0;

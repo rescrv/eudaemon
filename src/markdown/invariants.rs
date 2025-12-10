@@ -4,9 +4,9 @@
 //! enabling "unit tests for documentation structure." Invariants can verify
 //! that documents follow consistent patterns and catch regressions.
 
-use crate::s::expr::SExpr;
-use crate::s::nodeid::PathId;
-use crate::s::selector::{Selector, query};
+use crate::expr::SExpr;
+use crate::nodeid::PathId;
+use crate::selector::{Selector, query};
 
 /// Result of validating an invariant.
 #[derive(Debug, Clone)]
@@ -311,7 +311,7 @@ fn get_siblings_for_path(doc: &SExpr, path: &PathId) -> Vec<(PathId, SExpr)> {
         None => return vec![],
     };
 
-    let parent = match crate::s::nodeid::get_by_path(doc, &parent_path) {
+    let parent = match crate::nodeid::get_by_path(doc, &parent_path) {
         Some(p) => p,
         None => return vec![],
     };
@@ -444,7 +444,7 @@ fn validate_requires_tag(doc: &SExpr, selector: &str, tag_key: &str) -> Validati
         }
     };
 
-    let tagged = crate::s::markdown::curation::get_tagged_nodes(doc, tag_key);
+    let tagged = crate::markdown::curation::get_tagged_nodes(doc, tag_key);
     let tagged_paths: std::collections::HashSet<_> = tagged.into_iter().map(|t| t.path).collect();
 
     let violations: Vec<Violation> = matches
@@ -567,7 +567,7 @@ pub fn all_pass(doc: &SExpr, invariants: &[Invariant]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s::expr::Parser;
+    use crate::expr::Parser;
 
     fn parse(s: &str) -> SExpr {
         Parser::new(s).parse().unwrap()
