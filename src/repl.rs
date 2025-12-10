@@ -5,16 +5,26 @@
 //! - Parsing markdown to s-expressions
 //! - Evaluating s-expressions with registered markdown functions
 //! - Converting s-expressions back to markdown
+//!
+//! The REPL uses a stackless VM for evaluation, enabling:
+//! - Steppable execution for debugging
+//! - Restarts for error recovery without unwinding
+//! - Multi-line s-expression input with parenthesis validation
 
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rustyline::completion::{Completer, Pair};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, EditMode};
+use rustyline::highlight::{CmdKind, Highlighter};
+use rustyline::hint::Hinter;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{Context, Editor, Helper};
+use rustyline::EditMode;
 
 use super::error::{SError, SResult};
-use super::eval::{Env, register_builtins};
 use super::expr::{Parser, SExpr};
 use super::markdown::curation::{
     LinkInfo, find_undefined_references, generate_toc, get_external_links, get_image_links,
@@ -34,17 +44,138 @@ use super::nodeid::{
     to_annotated_sexpr,
 };
 use super::util::{extract_string, find_markdown_files, string_atom};
-use super::vm::Vm;
+use super::eval::Env;
+use super::vm::{Restart, Vm, VmState};
+
+// ============================================================================
+// LispHelper - rustyline integration for multi-line input and autocomplete
+// ============================================================================
+
+/// Helper struct for rustyline that provides:
+/// - Multi-line s-expression input via parenthesis validation
+/// - Contextual autocomplete for function names
+#[derive(Default)]
+pub struct LispHelper {
+    /// Known function names for autocomplete.
+    function_names: Vec<String>,
+}
+
+impl LispHelper {
+    /// Creates a new helper with the given function names for autocomplete.
+    pub fn new(function_names: Vec<String>) -> Self {
+        LispHelper { function_names }
+    }
+}
+
+impl Validator for LispHelper {
+    fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult, ReadlineError> {
+        let input = ctx.input();
+        if is_balanced(input) {
+            Ok(ValidationResult::Valid(None))
+        } else {
+            Ok(ValidationResult::Incomplete)
+        }
+    }
+}
+
+impl Completer for LispHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
+        // Find the start of the current word
+        let start = line[..pos]
+            .rfind(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let prefix = &line[start..pos];
+
+        if prefix.is_empty() {
+            return Ok((pos, Vec::new()));
+        }
+
+        let matches: Vec<Pair> = self
+            .function_names
+            .iter()
+            .filter(|name| name.starts_with(prefix))
+            .map(|name| Pair {
+                display: name.clone(),
+                replacement: name.clone(),
+            })
+            .collect();
+
+        Ok((start, matches))
+    }
+}
+
+impl Hinter for LispHelper {
+    type Hint = String;
+
+    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        None
+    }
+}
+
+impl Highlighter for LispHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        Cow::Borrowed(line)
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _kind: CmdKind) -> bool {
+        false
+    }
+}
+
+impl Helper for LispHelper {}
+
+/// Checks if parentheses are balanced in the input string.
+/// Returns true if balanced, false if more closing parens are needed.
+fn is_balanced(input: &str) -> bool {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for c in input.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        match c {
+            '\\' if in_string => {
+                escape_next = true;
+            }
+            '"' => {
+                in_string = !in_string;
+            }
+            '(' if !in_string => {
+                depth += 1;
+            }
+            ')' if !in_string => {
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+
+    depth <= 0 && !in_string
+}
+
+// ============================================================================
+// Repl
+// ============================================================================
 
 /// REPL state containing the working directory.
 ///
-/// Documents are read from and written to the filesystem on each operation,
-/// rather than being cached in memory.
+/// Uses a stackless VM for evaluation, enabling steppable execution and restarts.
+/// Documents are read from and written to the filesystem on each operation.
 pub struct Repl {
     /// Current working directory.
     working_dir: PathBuf,
-    /// Evaluation environment with registered functions.
-    env: Env,
 }
 
 impl Repl {
@@ -58,11 +189,58 @@ impl Repl {
                 .with_string_field("path", &working_dir.display().to_string()));
         }
 
-        let mut env = Env::new();
-        register_builtins(&mut env);
-        register_markdown_builtins(&mut env);
+        Ok(Repl { working_dir })
+    }
 
-        Ok(Repl { working_dir, env })
+    /// Creates a new VM with all builtins registered.
+    fn create_vm(&self) -> Vm {
+        let mut vm = Vm::new();
+        vm.register_builtins();
+        vm.register_json_builtins();
+        register_markdown_builtins_vm(&mut vm);
+        vm
+    }
+
+    /// Creates a VM with all markdown files bound as variables.
+    fn create_vm_with_files(&self) -> SResult<Vm> {
+        let mut vm = self.create_vm();
+
+        // Load all markdown files from filesystem and bind as variables
+        let files = self.list_files()?;
+        for file in &files {
+            let path = self.working_dir.join(file);
+            if let Ok(content) = fs::read_to_string(&path)
+                && let Ok(sexpr) = markdown_to_sexpr(&content)
+            {
+                // Bind by full filename (e.g., "readme.md", "docs/guide.md")
+                vm.bind_global(file, sexpr);
+            }
+        }
+
+        Ok(vm)
+    }
+
+    /// Returns the list of known function names for autocomplete.
+    fn get_function_names(&self) -> Vec<String> {
+        // Core builtins
+        let names = vec![
+            "null?", "list?", "atom?", "empty?", "eq?",
+            "first", "rest", "cons", "append", "length", "nth", "list", "help",
+            "quote", "if", "let", "begin", "->", "->>", "map", "filter", "reduce",
+            "obj", "arr", "get", "keys", "values", "assoc", "dissoc", "merge",
+            "markdown-to-sexpr", "sexpr-to-markdown",
+            "get-frontmatter", "get-frontmatter-content", "set-frontmatter",
+            "remove-frontmatter", "parse-yaml-frontmatter", "get-fm-field",
+            "upsert-fm-field", "remove-fm-field",
+            "get-by-path", "get-node", "get-parent", "get-siblings", "get-context", "annotate",
+            "replace-at", "prune", "insert-before", "insert-after",
+            "append-child", "prepend-child", "hoist", "graft",
+            "wrap-in-callout", "wrap-in-details", "normalize-headers",
+            "mark-deprecated", "generate-toc",
+            "scan-links", "get-internal-links", "get-external-links",
+            "get-image-links", "scan-link-defs", "find-undef-refs", "update-link",
+        ];
+        names.iter().map(|s| s.to_string()).collect()
     }
 
     /// Returns the current working directory.
@@ -155,11 +333,9 @@ impl Repl {
             }
         };
 
-        // Create evaluation environment with all document bindings from filesystem
-        let eval_env = self.create_eval_env()?;
-
-        // Evaluate the transform
-        let result = super::eval::eval(&expr, &eval_env)?;
+        // Create VM with file bindings and evaluate
+        let mut vm = self.create_vm_with_files()?;
+        let result = vm.eval(&expr)?;
 
         // Write result back to disk
         self.write_file(filename, &result)
@@ -168,48 +344,32 @@ impl Repl {
     /// Evaluates an s-expression string in the REPL environment.
     ///
     /// All markdown files in the working directory are available as variables
-    /// using their filename (basename only).
+    /// using their full filename (e.g., "readme.md", "docs/guide.md").
     pub fn eval(&self, input: &str) -> SResult<SExpr> {
         let mut parser = Parser::new(input);
         let expr = parser.parse()?;
 
-        let eval_env = self.create_eval_env()?;
-        super::eval::eval(&expr, &eval_env)
-    }
-
-    /// Creates an evaluation environment with all markdown files bound as variables.
-    fn create_eval_env(&self) -> SResult<Env> {
-        let mut eval_env = self.env.clone();
-
-        // Load all markdown files from filesystem
-        let files = self.list_files()?;
-        for file in &files {
-            let path = self.working_dir.join(file);
-            if let Ok(content) = fs::read_to_string(&path)
-                && let Ok(sexpr) = markdown_to_sexpr(&content)
-            {
-                // Bind by basename
-                let basename = Path::new(file)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(file);
-                eval_env.bind(basename, sexpr);
-            }
-        }
-
-        Ok(eval_env)
+        let mut vm = self.create_vm_with_files()?;
+        vm.eval(&expr)
     }
 
     /// Runs the interactive REPL loop using rustyline with vim keybindings.
+    ///
+    /// Features:
+    /// - Multi-line s-expression input (continues prompting until parens are balanced)
+    /// - Tab completion for function names
+    /// - Steppable VM with restart support for error recovery
     pub fn run_interactive(&self) -> SResult<()> {
-        let mut rl = DefaultEditor::new().map_err(|e| {
-            SError::new("repl")
-                .with_code("readline-error")
-                .with_message("Failed to initialize readline")
-                .with_string_field("error", &e.to_string())
-        })?;
+        let helper = LispHelper::new(self.get_function_names());
+        let mut rl: Editor<LispHelper, rustyline::history::DefaultHistory> =
+            Editor::new().map_err(|e| {
+                SError::new("repl")
+                    .with_code("readline-error")
+                    .with_message("Failed to initialize readline")
+                    .with_string_field("error", &e.to_string())
+            })?;
 
-        // Configure vim keybindings
+        rl.set_helper(Some(helper));
         rl.set_edit_mode(EditMode::Vi);
 
         // Load history from file if it exists
@@ -221,7 +381,7 @@ impl Repl {
         println!("Type :help for commands, :quit to exit\n");
 
         loop {
-            match rl.readline("agentkb> ") {
+            match rl.readline("λ> ") {
                 Ok(line) => {
                     let input = line.trim();
                     if input.is_empty() {
@@ -243,11 +403,8 @@ impl Repl {
                         }
                     }
 
-                    // Evaluate as s-expression
-                    match self.eval(input) {
-                        Ok(result) => println!("{}", result),
-                        Err(e) => println!("Error: {}", e),
-                    }
+                    // Evaluate with VM, supporting restarts
+                    self.eval_with_restarts(input, &mut rl);
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("^C");
@@ -268,6 +425,108 @@ impl Repl {
         let _ = rl.save_history(&history_path);
 
         Ok(())
+    }
+
+    /// Evaluates input with VM restart support.
+    fn eval_with_restarts(
+        &self,
+        input: &str,
+        rl: &mut Editor<LispHelper, rustyline::history::DefaultHistory>,
+    ) {
+        let mut parser = Parser::new(input);
+        let expr = match parser.parse() {
+            Ok(e) => e,
+            Err(e) => {
+                println!("Parse error: {}", e);
+                return;
+            }
+        };
+
+        let mut vm = match self.create_vm_with_files() {
+            Ok(vm) => vm,
+            Err(e) => {
+                println!("Error loading files: {}", e);
+                return;
+            }
+        };
+
+        vm.load(expr);
+
+        loop {
+            match vm.run() {
+                VmState::Finished(result) => {
+                    println!("{}", result);
+                    break;
+                }
+                VmState::Suspended(condition) => {
+                    println!("Condition: {:?}", condition);
+                    println!("Restarts:");
+                    println!("  [1] abort - abandon computation");
+                    println!("  [2] use <expr> - supply a replacement value");
+
+                    // Loop until user provides a valid restart choice
+                    loop {
+                        match rl.readline("restart> ") {
+                            Ok(choice) => {
+                                let choice = choice.trim();
+                                if choice == "1" || choice == "abort" {
+                                    vm.reset();
+                                    println!("Aborted.");
+                                    return;
+                                } else if choice == "2" || choice.starts_with("use ") {
+                                    let val_input = if choice.starts_with("use ") {
+                                        choice.strip_prefix("use ").unwrap().to_string()
+                                    } else {
+                                        // Prompt for value
+                                        match rl.readline("value> ") {
+                                            Ok(v) => v.trim().to_string(),
+                                            Err(ReadlineError::Interrupted) => {
+                                                println!("^C - still in restart loop");
+                                                continue;
+                                            }
+                                            Err(ReadlineError::Eof) => {
+                                                vm.reset();
+                                                println!("Aborted.");
+                                                return;
+                                            }
+                                            Err(_) => continue,
+                                        }
+                                    };
+
+                                    let mut val_parser = Parser::new(&val_input);
+                                    match val_parser.parse() {
+                                        Ok(val) => {
+                                            vm.apply_restart(Restart::UseValue(val));
+                                            break; // Exit restart loop, continue VM execution
+                                        }
+                                        Err(e) => {
+                                            println!("Parse error: {} - try again", e);
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    println!("Invalid choice. Enter 1, abort, 2, or use <expr>");
+                                    continue;
+                                }
+                            }
+                            Err(ReadlineError::Interrupted) => {
+                                println!("^C - still in restart loop (use 'abort' to exit)");
+                                continue;
+                            }
+                            Err(ReadlineError::Eof) => {
+                                vm.reset();
+                                println!("Aborted.");
+                                return;
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                }
+                VmState::Running => {
+                    unreachable!("run() should not return Running");
+                }
+            }
+        }
     }
 
     /// Handles a REPL command (lines starting with ':').

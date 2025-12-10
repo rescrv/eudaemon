@@ -7,6 +7,13 @@
 //!
 //! The VM stores functions in an arena and uses `FunctionId` references, allowing
 //! function redefinition to affect all existing references.
+//!
+//! TODO(claude): Per PLAN.md section 4, implement the "Inspector" (Reflection):
+//! - Create an `Inspectable` trait with `children(&self) -> Vec<(String, ValueId)>`
+//!   and `label(&self) -> String` methods
+//! - Implement `,inspect <obj>` command in the REPL
+//! - Create a sub-loop inspector mode where commands like `cd 0`, `ls` navigate
+//!   the arena/memory graph
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,7 +30,7 @@ pub struct FunctionId(usize);
 
 /// A runtime value in the VM.
 ///
-/// TODO(user): This type is scaffolding for first-class functions. Currently unused because
+/// TODO(claude): This type is scaffolding for first-class functions. Currently unused because
 /// the VM only passes SExpr values. When implementing user-defined lambdas (defun), this
 /// type will be needed to distinguish between S-expression data and function references.
 #[derive(Debug, Clone)]
@@ -75,7 +82,7 @@ pub enum FunctionObj {
     },
     /// A user-defined lambda (future extension).
     ///
-    /// TODO(user): Implement `(lambda (params) body)` or `(defun name (params) body)` special
+    /// TODO(claude): Implement `(lambda (params) body)` or `(defun name (params) body)` special
     /// forms in the VM to construct this variant. The scaffolding for evaluation exists in
     /// `step_call` but no syntax currently produces lambdas.
     #[allow(dead_code)]
@@ -222,7 +229,7 @@ impl Environment {
 
     /// Creates a child environment with this as parent.
     ///
-    /// TODO(user): This method will be used when implementing user-defined lambdas that
+    /// TODO(claude): This method will be used when implementing user-defined lambdas that
     /// capture their lexical environment.
     #[allow(dead_code)]
     pub fn child(self: &Arc<Self>) -> Self {
@@ -247,6 +254,10 @@ impl Environment {
 }
 
 /// The stackless virtual machine.
+///
+/// TODO(claude): Per PLAN.md summary, make the entire VM state serializable with serde
+/// to enable "Save/Load Image" functionality. Add `#[derive(serde::Serialize, serde::Deserialize)]`
+/// to Vm, Frame, FrameOp, SpecialFormState, FunctionObj, and related types.
 pub struct Vm {
     /// The explicit call stack.
     frames: Vec<Frame>,
@@ -258,6 +269,8 @@ pub struct Vm {
     next_func_id: usize,
     /// The current result (set when a frame completes).
     current_result: Option<SExpr>,
+    /// Global variable bindings (for REPL file bindings).
+    globals: HashMap<String, SExpr>,
 }
 
 impl Default for Vm {
@@ -275,7 +288,18 @@ impl Vm {
             function_names: HashMap::new(),
             next_func_id: 0,
             current_result: None,
+            globals: HashMap::new(),
         }
+    }
+
+    /// Binds a global variable.
+    pub fn bind_global(&mut self, name: &str, value: SExpr) {
+        self.globals.insert(name.to_string(), value);
+    }
+
+    /// Looks up a global variable.
+    fn lookup_global(&self, name: &str) -> Option<&SExpr> {
+        self.globals.get(name)
     }
 
     /// Defines a built-in function.
@@ -346,6 +370,22 @@ impl Vm {
         self.current_result = Some(value);
     }
 
+    /// Applies a restart to recover from a suspended condition.
+    pub fn apply_restart(&mut self, restart: Restart) {
+        match restart {
+            Restart::Abort => {
+                self.reset();
+            }
+            Restart::UseValue(value) => {
+                // Push the replacement value as the result and continue
+                self.current_result = Some(value);
+            }
+            Restart::Retry => {
+                // Re-execute the current frame (already on stack, nothing to do)
+            }
+        }
+    }
+
     /// Advances the VM by one step.
     pub fn step(&mut self) -> VmState {
         if let Some(frame) = self.frames.pop() {
@@ -404,8 +444,13 @@ impl Vm {
     ) -> Result<VmState, Condition> {
         match expr {
             SExpr::Atom(ref s) => {
-                // Check for variable binding
+                // Check for local variable binding first
                 if let Some(value) = locals.get(s) {
+                    self.current_result = Some(value.clone());
+                    return Ok(VmState::Running);
+                }
+                // Check for global variable binding
+                if let Some(value) = self.lookup_global(s) {
                     self.current_result = Some(value.clone());
                     return Ok(VmState::Running);
                 }
@@ -434,7 +479,7 @@ impl Vm {
                 // Check for special forms
                 match func_name.as_str() {
                     "quote" | "if" | "let" | "begin" | "->" | "->>" | "map" | "filter"
-                    | "reduce" => {
+                    | "reduce" | "lambda" | "defun" => {
                         self.frames.push(Frame::with_locals(
                             FrameOp::SpecialForm {
                                 name: func_name,
@@ -471,10 +516,10 @@ impl Vm {
         locals: HashMap<String, SExpr>,
     ) -> Result<VmState, Condition> {
         // If we have a result from a previous step, store it
-        if let Some(result) = self.current_result.take() {
-            if evaluated_count > 0 {
-                args[evaluated_count - 1] = result;
-            }
+        if let Some(result) = self.current_result.take()
+            && evaluated_count > 0
+        {
+            args[evaluated_count - 1] = result;
         }
 
         // If there are more arguments to evaluate
@@ -499,7 +544,13 @@ impl Vm {
         }
 
         // All arguments evaluated - call the function
-        let func = self.lookup_fn(&func_name).cloned();
+        // First check if func_name is a local binding pointing to a lambda
+        let resolved_name = if let Some(SExpr::Atom(name)) = locals.get(&func_name) {
+            name.clone()
+        } else {
+            func_name.clone()
+        };
+        let func = self.lookup_fn(&resolved_name).cloned();
         match func {
             Some(FunctionObj::Builtin { func, .. }) => match func(&args) {
                 Ok(result) => {
@@ -511,12 +562,33 @@ impl Vm {
                     message: e.to_string(),
                 }),
             },
-            Some(FunctionObj::Lambda { .. }) => {
-                // TODO(user): Implement lambda invocation
-                Err(Condition::Custom {
-                    code: "not-implemented".to_string(),
-                    message: "Lambda invocation not yet implemented".to_string(),
-                })
+            Some(FunctionObj::Lambda { params, body, env }) => {
+                // Check argument count
+                if args.len() != params.len() {
+                    return Err(Condition::WrongArgumentCount {
+                        function: func_name,
+                        expected: params.len(),
+                        actual: args.len(),
+                    });
+                }
+
+                // Create new locals by binding params to args, starting with captured env
+                let mut new_locals = HashMap::new();
+                // Copy bindings from captured environment
+                for (k, v) in &env.bindings {
+                    new_locals.insert(k.clone(), v.clone());
+                }
+                // Bind parameters to arguments
+                for (param, arg) in params.iter().zip(args.iter()) {
+                    new_locals.insert(param.clone(), arg.clone());
+                }
+
+                // Push a frame to evaluate the body in the new environment
+                self.frames.push(Frame::with_locals(
+                    FrameOp::Eval(body.clone()),
+                    new_locals,
+                ));
+                Ok(VmState::Running)
             }
             None => Err(Condition::FunctionNotFound { name: func_name }),
         }
@@ -540,11 +612,155 @@ impl Vm {
             "map" => self.step_map(args, state, locals),
             "filter" => self.step_filter(args, state, locals),
             "reduce" => self.step_reduce(args, state, locals),
+            "lambda" => self.step_lambda(args, locals),
+            "defun" => self.step_defun(args, locals),
             _ => Err(Condition::Custom {
                 code: "unknown-special-form".to_string(),
                 message: format!("Unknown special form: {}", name),
             }),
         }
+    }
+
+    /// Handles (lambda (params...) body).
+    fn step_lambda(
+        &mut self,
+        args: Vec<SExpr>,
+        locals: HashMap<String, SExpr>,
+    ) -> Result<VmState, Condition> {
+        if args.len() != 2 {
+            return Err(Condition::WrongArgumentCount {
+                function: "lambda".to_string(),
+                expected: 2,
+                actual: args.len(),
+            });
+        }
+
+        // Extract parameter names
+        let params = match &args[0] {
+            SExpr::List(items) => {
+                let mut param_names = Vec::new();
+                for item in items {
+                    match item {
+                        SExpr::Atom(name) => param_names.push(name.clone()),
+                        _ => {
+                            return Err(Condition::TypeError {
+                                expected: "atom".to_string(),
+                                actual: item.clone(),
+                            });
+                        }
+                    }
+                }
+                param_names
+            }
+            _ => {
+                return Err(Condition::TypeError {
+                    expected: "list of parameters".to_string(),
+                    actual: args[0].clone(),
+                });
+            }
+        };
+
+        let body = args[1].clone();
+
+        // Capture the current environment
+        let env = Arc::new(Environment {
+            bindings: locals,
+            parent: None,
+        });
+
+        // Create the lambda function object
+        let lambda = FunctionObj::Lambda { params, body, env };
+
+        // Register it in the arena with a generated name
+        let id = FunctionId(self.next_func_id);
+        self.next_func_id += 1;
+        let lambda_name = format!("__lambda_{}", id.0);
+        self.functions.insert(id, lambda);
+        self.function_names.insert(lambda_name.clone(), id);
+
+        // Return the lambda name as an atom so it can be called
+        self.current_result = Some(SExpr::Atom(lambda_name));
+        Ok(VmState::Running)
+    }
+
+    /// Handles (defun name (params...) body).
+    fn step_defun(
+        &mut self,
+        args: Vec<SExpr>,
+        locals: HashMap<String, SExpr>,
+    ) -> Result<VmState, Condition> {
+        if args.len() != 3 {
+            return Err(Condition::WrongArgumentCount {
+                function: "defun".to_string(),
+                expected: 3,
+                actual: args.len(),
+            });
+        }
+
+        // Extract function name
+        let func_name = match &args[0] {
+            SExpr::Atom(name) => name.clone(),
+            _ => {
+                return Err(Condition::TypeError {
+                    expected: "atom (function name)".to_string(),
+                    actual: args[0].clone(),
+                });
+            }
+        };
+
+        // Extract parameter names
+        let params = match &args[1] {
+            SExpr::List(items) => {
+                let mut param_names = Vec::new();
+                for item in items {
+                    match item {
+                        SExpr::Atom(name) => param_names.push(name.clone()),
+                        _ => {
+                            return Err(Condition::TypeError {
+                                expected: "atom".to_string(),
+                                actual: item.clone(),
+                            });
+                        }
+                    }
+                }
+                param_names
+            }
+            _ => {
+                return Err(Condition::TypeError {
+                    expected: "list of parameters".to_string(),
+                    actual: args[1].clone(),
+                });
+            }
+        };
+
+        let body = args[2].clone();
+
+        // Capture the current environment
+        let env = Arc::new(Environment {
+            bindings: locals,
+            parent: None,
+        });
+
+        // Create the lambda function object
+        let lambda = FunctionObj::Lambda { params, body, env };
+
+        // Register it in the arena with the given name (or update if it exists)
+        let id = if let Some(&existing_id) = self.function_names.get(&func_name) {
+            // Hot-swap: reuse the existing ID
+            self.functions.insert(existing_id, lambda);
+            existing_id
+        } else {
+            let id = FunctionId(self.next_func_id);
+            self.next_func_id += 1;
+            self.functions.insert(id, lambda);
+            self.function_names.insert(func_name.clone(), id);
+            id
+        };
+
+        // Return the function name
+        let _ = id; // Silence unused warning
+        self.current_result = Some(SExpr::Atom(func_name));
+        Ok(VmState::Running)
     }
 
     /// Handles (quote expr).
@@ -578,6 +794,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the condition
+                let first_arg = args[0].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "if".to_string(),
@@ -587,7 +804,7 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[0].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -674,43 +891,42 @@ impl Vm {
             }
             SpecialFormState::Index(idx) => {
                 // Store the evaluated value
-                if idx < bindings.len() {
-                    if let Some(result) = self.current_result.take() {
-                        if let SExpr::List(pair) = &bindings[idx] {
-                            if let SExpr::Atom(var_name) = &pair[0] {
-                                locals.insert(var_name.clone(), result);
-                            } else {
-                                return Err(Condition::Custom {
-                                    code: "invalid-binding-name".to_string(),
-                                    message: "Binding name must be an atom".to_string(),
-                                });
-                            }
-                        }
+                if idx < bindings.len()
+                    && let Some(result) = self.current_result.take()
+                    && let SExpr::List(pair) = &bindings[idx]
+                {
+                    if let SExpr::Atom(var_name) = &pair[0] {
+                        locals.insert(var_name.clone(), result);
+                    } else {
+                        return Err(Condition::Custom {
+                            code: "invalid-binding-name".to_string(),
+                            message: "Binding name must be an atom".to_string(),
+                        });
                     }
+                }
 
-                    // Check if there are more bindings
-                    if idx + 1 < bindings.len() {
-                        let next_binding = &bindings[idx + 1];
-                        if let SExpr::List(pair) = next_binding {
-                            if pair.len() != 2 {
-                                return Err(Condition::Custom {
-                                    code: "invalid-binding".to_string(),
-                                    message: "Each binding must be (var value)".to_string(),
-                                });
-                            }
-                            self.frames.push(Frame::with_locals(
-                                FrameOp::SpecialForm {
-                                    name: "let".to_string(),
-                                    args,
-                                    state: SpecialFormState::Index(idx + 1),
-                                },
-                                locals.clone(),
-                            ));
-                            self.frames
-                                .push(Frame::with_locals(FrameOp::Eval(pair[1].clone()), locals));
+                // Check if there are more bindings
+                if idx + 1 < bindings.len() {
+                    let next_binding = &bindings[idx + 1];
+                    if let SExpr::List(pair) = next_binding {
+                        if pair.len() != 2 {
+                            return Err(Condition::Custom {
+                                code: "invalid-binding".to_string(),
+                                message: "Each binding must be (var value)".to_string(),
+                            });
                         }
-                        return Ok(VmState::Running);
+                        self.frames.push(Frame::with_locals(
+                            FrameOp::SpecialForm {
+                                name: "let".to_string(),
+                                args,
+                                state: SpecialFormState::Index(idx + 1),
+                            },
+                            locals.clone(),
+                        ));
+                        self.frames
+                            .push(Frame::with_locals(FrameOp::Eval(pair[1].clone()), locals));
                     }
+                    return Ok(VmState::Running);
                 }
 
                 // All bindings processed, evaluate body expressions
@@ -756,6 +972,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Start evaluating first expression
+                let first_arg = args[0].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "begin".to_string(),
@@ -765,12 +982,13 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[0].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
                 if idx + 1 < args.len() {
                     // More expressions to evaluate
+                    let next_arg = args[idx + 1].clone();
                     self.frames.push(Frame::with_locals(
                         FrameOp::SpecialForm {
                             name: "begin".to_string(),
@@ -779,10 +997,8 @@ impl Vm {
                         },
                         locals.clone(),
                     ));
-                    self.frames.push(Frame::with_locals(
-                        FrameOp::Eval(args[idx + 1].clone()),
-                        locals,
-                    ));
+                    self.frames
+                        .push(Frame::with_locals(FrameOp::Eval(next_arg), locals));
                 }
                 // Last expression's result is already in current_result
                 Ok(VmState::Running)
@@ -808,6 +1024,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the initial value
+                let first_arg = args[0].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "->".to_string(),
@@ -817,7 +1034,7 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[0].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
@@ -866,6 +1083,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the initial value
+                let first_arg = args[0].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "->>".to_string(),
@@ -875,7 +1093,7 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[0].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
@@ -934,6 +1152,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the list argument
+                let second_arg = args[1].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "map".to_string(),
@@ -943,7 +1162,7 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[1].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(second_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -1017,6 +1236,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the list argument
+                let second_arg = args[1].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "filter".to_string(),
@@ -1026,7 +1246,7 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[1].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(second_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -1053,7 +1273,7 @@ impl Vm {
                     Some(FunctionObj::Builtin { func, .. }) => {
                         let mut result = Vec::new();
                         for item in items {
-                            match func(&[item.clone()]) {
+                            match func(std::slice::from_ref(&item)) {
                                 Ok(pred_result) => {
                                     if is_truthy(&pred_result) {
                                         result.push(item);
@@ -1105,6 +1325,7 @@ impl Vm {
         match state {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the initial value
+                let second_arg = args[1].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "reduce".to_string(),
@@ -1114,7 +1335,7 @@ impl Vm {
                     locals.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(args[1].clone()), locals));
+                    .push(Frame::with_locals(FrameOp::Eval(second_arg), locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -1124,6 +1345,7 @@ impl Vm {
                 let mut new_locals = locals.clone();
                 new_locals.insert("__reduce_acc__".to_string(), init);
 
+                let third_arg = args[2].clone();
                 self.frames.push(Frame::with_locals(
                     FrameOp::SpecialForm {
                         name: "reduce".to_string(),
@@ -1132,10 +1354,8 @@ impl Vm {
                     },
                     new_locals.clone(),
                 ));
-                self.frames.push(Frame::with_locals(
-                    FrameOp::Eval(args[2].clone()),
-                    new_locals,
-                ));
+                self.frames
+                    .push(Frame::with_locals(FrameOp::Eval(third_arg), new_locals));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(1) => {
@@ -1433,7 +1653,7 @@ fn help(args: &[SExpr]) -> SResult<SExpr> {
         }
     };
     match get_help(&name) {
-        Some(help_text) => Ok(SExpr::Atom(string_atom(&help_text).to_string())),
+        Some(help_text) => Ok(SExpr::Atom(string_atom(help_text).to_string())),
         None => Ok(SExpr::Atom(format!("\"No help available for '{}'\"", name))),
     }
 }
@@ -1499,7 +1719,15 @@ fn builtin_assoc(args: &[SExpr]) -> SResult<SExpr> {
             .with_code("wrong-argument-count")
             .with_message("assoc requires exactly three arguments"));
     }
-    Ok(assoc(&args[0], &args[1], &args[2]))
+    let key = match &args[1] {
+        SExpr::Atom(s) => extract_string_key(s),
+        _ => {
+            return Err(SError::new("vm")
+                .with_code("type-error")
+                .with_message("assoc key must be a string"));
+        }
+    };
+    Ok(assoc(&args[0], &key, args[2].clone()))
 }
 
 fn builtin_dissoc(args: &[SExpr]) -> SResult<SExpr> {
@@ -1508,16 +1736,33 @@ fn builtin_dissoc(args: &[SExpr]) -> SResult<SExpr> {
             .with_code("wrong-argument-count")
             .with_message("dissoc requires exactly two arguments"));
     }
-    Ok(dissoc(&args[0], &args[1]))
+    let key = match &args[1] {
+        SExpr::Atom(s) => extract_string_key(s),
+        _ => {
+            return Err(SError::new("vm")
+                .with_code("type-error")
+                .with_message("dissoc key must be a string"));
+        }
+    };
+    Ok(dissoc(&args[0], &key))
 }
 
 fn builtin_merge(args: &[SExpr]) -> SResult<SExpr> {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
-            .with_message("merge requires exactly two arguments"));
+            .with_message("merge requires at least two arguments"));
     }
-    Ok(merge(&args[0], &args[1]))
+    Ok(merge(args))
+}
+
+/// Extract a string key from an atom, handling quoted strings.
+fn extract_string_key(s: &str) -> String {
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -2629,5 +2874,1404 @@ mod tests {
         assert!(debug_str.contains("Suspended"));
         assert!(debug_str.contains("FunctionNotFound"));
         println!("DEBUG: VmState::Suspended debug format works");
+    }
+
+    // ========================================================================
+    // Value type tests
+    // ========================================================================
+
+    #[test]
+    fn value_from_sexpr() {
+        let expr = SExpr::Atom("test".to_string());
+        let value: Value = expr.clone().into();
+        match value {
+            Value::SExpr(e) => assert_eq!(e, expr),
+            Value::Function(_) => panic!("Expected SExpr variant"),
+        }
+        println!("DEBUG: Value::from(SExpr) works correctly");
+    }
+
+    #[test]
+    fn value_into_sexpr_success() {
+        let expr = SExpr::Atom("42".to_string());
+        let value = Value::SExpr(expr.clone());
+        let result = value.into_sexpr();
+        assert_eq!(result, expr);
+        println!("DEBUG: Value::into_sexpr converts SExpr correctly");
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot convert FunctionId")]
+    fn value_into_sexpr_panic_on_function() {
+        let value = Value::Function(FunctionId(0));
+        let _ = value.into_sexpr();
+    }
+
+    #[test]
+    fn value_as_sexpr_some() {
+        let expr = SExpr::List(vec![SExpr::Atom("a".to_string())]);
+        let value = Value::SExpr(expr.clone());
+        let result = value.as_sexpr();
+        assert_eq!(result, Some(&expr));
+        println!("DEBUG: Value::as_sexpr returns Some for SExpr variant");
+    }
+
+    #[test]
+    fn value_as_sexpr_none() {
+        let value = Value::Function(FunctionId(42));
+        let result = value.as_sexpr();
+        assert_eq!(result, None);
+        println!("DEBUG: Value::as_sexpr returns None for Function variant");
+    }
+
+    // ========================================================================
+    // FunctionId tests
+    // ========================================================================
+
+    #[test]
+    fn function_id_equality() {
+        let id1 = FunctionId(0);
+        let id2 = FunctionId(0);
+        let id3 = FunctionId(1);
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+        println!("DEBUG: FunctionId equality works correctly");
+    }
+
+    #[test]
+    fn function_id_copy() {
+        let id1 = FunctionId(42);
+        let id2 = id1;
+        assert_eq!(id1, id2);
+        println!("DEBUG: FunctionId is Copy");
+    }
+
+    #[test]
+    fn function_id_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(FunctionId(0));
+        set.insert(FunctionId(1));
+        set.insert(FunctionId(0));
+        assert_eq!(set.len(), 2);
+        println!("DEBUG: FunctionId Hash works correctly");
+    }
+
+    #[test]
+    fn function_id_debug() {
+        let id = FunctionId(123);
+        let debug_str = format!("{:?}", id);
+        assert!(debug_str.contains("FunctionId"));
+        assert!(debug_str.contains("123"));
+        println!("DEBUG: FunctionId debug format: {}", debug_str);
+    }
+
+    // ========================================================================
+    // Condition enum tests
+    // ========================================================================
+
+    #[test]
+    fn condition_function_not_found_debug() {
+        let cond = Condition::FunctionNotFound {
+            name: "foo".to_string(),
+        };
+        let debug_str = format!("{:?}", cond);
+        assert!(debug_str.contains("FunctionNotFound"));
+        assert!(debug_str.contains("foo"));
+        println!("DEBUG: Condition::FunctionNotFound debug: {}", debug_str);
+    }
+
+    #[test]
+    fn condition_type_error_debug() {
+        let cond = Condition::TypeError {
+            expected: "list".to_string(),
+            actual: SExpr::Atom("not-list".to_string()),
+        };
+        let debug_str = format!("{:?}", cond);
+        assert!(debug_str.contains("TypeError"));
+        assert!(debug_str.contains("list"));
+        assert!(debug_str.contains("not-list"));
+        println!("DEBUG: Condition::TypeError debug: {}", debug_str);
+    }
+
+    #[test]
+    fn condition_wrong_argument_count_debug() {
+        let cond = Condition::WrongArgumentCount {
+            function: "cons".to_string(),
+            expected: 2,
+            actual: 3,
+        };
+        let debug_str = format!("{:?}", cond);
+        assert!(debug_str.contains("WrongArgumentCount"));
+        assert!(debug_str.contains("cons"));
+        assert!(debug_str.contains("2"));
+        assert!(debug_str.contains("3"));
+        println!("DEBUG: Condition::WrongArgumentCount debug: {}", debug_str);
+    }
+
+    #[test]
+    fn condition_custom_debug() {
+        let cond = Condition::Custom {
+            code: "test-code".to_string(),
+            message: "test message".to_string(),
+        };
+        let debug_str = format!("{:?}", cond);
+        assert!(debug_str.contains("Custom"));
+        assert!(debug_str.contains("test-code"));
+        assert!(debug_str.contains("test message"));
+        println!("DEBUG: Condition::Custom debug: {}", debug_str);
+    }
+
+    #[test]
+    fn condition_clone() {
+        let cond1 = Condition::FunctionNotFound {
+            name: "bar".to_string(),
+        };
+        let cond2 = cond1.clone();
+        match (cond1, cond2) {
+            (
+                Condition::FunctionNotFound { name: n1 },
+                Condition::FunctionNotFound { name: n2 },
+            ) => {
+                assert_eq!(n1, n2);
+            }
+            _ => panic!("Clone did not preserve variant"),
+        }
+        println!("DEBUG: Condition clone works correctly");
+    }
+
+    // ========================================================================
+    // condition_to_error tests
+    // ========================================================================
+
+    #[test]
+    fn condition_to_error_function_not_found() {
+        let cond = Condition::FunctionNotFound {
+            name: "missing-fn".to_string(),
+        };
+        let err = condition_to_error(cond);
+        let err_str = err.to_string();
+        assert!(err_str.contains("function-not-found"));
+        assert!(err_str.contains("missing-fn"));
+        println!("DEBUG: condition_to_error FunctionNotFound: {}", err_str);
+    }
+
+    #[test]
+    fn condition_to_error_type_error() {
+        let cond = Condition::TypeError {
+            expected: "number".to_string(),
+            actual: SExpr::Atom("string".to_string()),
+        };
+        let err = condition_to_error(cond);
+        let err_str = err.to_string();
+        assert!(err_str.contains("type-error"));
+        assert!(err_str.contains("number"));
+        println!("DEBUG: condition_to_error TypeError: {}", err_str);
+    }
+
+    #[test]
+    fn condition_to_error_wrong_argument_count() {
+        let cond = Condition::WrongArgumentCount {
+            function: "test-fn".to_string(),
+            expected: 2,
+            actual: 5,
+        };
+        let err = condition_to_error(cond);
+        let err_str = err.to_string();
+        assert!(err_str.contains("wrong-argument-count"));
+        assert!(err_str.contains("test-fn"));
+        println!("DEBUG: condition_to_error WrongArgumentCount: {}", err_str);
+    }
+
+    #[test]
+    fn condition_to_error_custom() {
+        let cond = Condition::Custom {
+            code: "my-code".to_string(),
+            message: "my message".to_string(),
+        };
+        let err = condition_to_error(cond);
+        let err_str = err.to_string();
+        assert!(err_str.contains("my-code"));
+        assert!(err_str.contains("my message"));
+        println!("DEBUG: condition_to_error Custom: {}", err_str);
+    }
+
+    // ========================================================================
+    // thread_into helper tests
+    // ========================================================================
+
+    #[test]
+    fn thread_into_bare_atom_first() {
+        let form = SExpr::Atom("func".to_string());
+        let value = SExpr::Atom("val".to_string());
+        let result = thread_into(&form, value, true);
+        match result {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], SExpr::Atom("func".to_string()));
+                match &items[1] {
+                    SExpr::List(quoted) => {
+                        assert_eq!(quoted.len(), 2);
+                        assert_eq!(quoted[0], SExpr::Atom("quote".to_string()));
+                        assert_eq!(quoted[1], SExpr::Atom("val".to_string()));
+                    }
+                    _ => panic!("Expected quoted value"),
+                }
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: thread_into with bare atom first position works");
+    }
+
+    #[test]
+    fn thread_into_bare_atom_last() {
+        let form = SExpr::Atom("func".to_string());
+        let value = SExpr::Atom("val".to_string());
+        let result = thread_into(&form, value, false);
+        match result {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], SExpr::Atom("func".to_string()));
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: thread_into with bare atom last position works");
+    }
+
+    #[test]
+    fn thread_into_list_first() {
+        let form = SExpr::List(vec![
+            SExpr::Atom("func".to_string()),
+            SExpr::Atom("arg1".to_string()),
+        ]);
+        let value = SExpr::Atom("val".to_string());
+        let result = thread_into(&form, value, true);
+        match result {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], SExpr::Atom("func".to_string()));
+                match &items[1] {
+                    SExpr::List(quoted) => {
+                        assert_eq!(quoted[0], SExpr::Atom("quote".to_string()));
+                        assert_eq!(quoted[1], SExpr::Atom("val".to_string()));
+                    }
+                    _ => panic!("Expected quoted value in first position"),
+                }
+                assert_eq!(items[2], SExpr::Atom("arg1".to_string()));
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: thread_into list first position inserts after func");
+    }
+
+    #[test]
+    fn thread_into_list_last() {
+        let form = SExpr::List(vec![
+            SExpr::Atom("func".to_string()),
+            SExpr::Atom("arg1".to_string()),
+        ]);
+        let value = SExpr::Atom("val".to_string());
+        let result = thread_into(&form, value, false);
+        match result {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], SExpr::Atom("func".to_string()));
+                assert_eq!(items[1], SExpr::Atom("arg1".to_string()));
+                match &items[2] {
+                    SExpr::List(quoted) => {
+                        assert_eq!(quoted[0], SExpr::Atom("quote".to_string()));
+                        assert_eq!(quoted[1], SExpr::Atom("val".to_string()));
+                    }
+                    _ => panic!("Expected quoted value in last position"),
+                }
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: thread_into list last position appends");
+    }
+
+    #[test]
+    fn thread_into_empty_list_returns_clone() {
+        let form = SExpr::List(vec![]);
+        let value = SExpr::Atom("val".to_string());
+        let result = thread_into(&form, value, true);
+        assert_eq!(result, SExpr::List(vec![]));
+        println!("DEBUG: thread_into with empty list returns clone");
+    }
+
+    // ========================================================================
+    // extract_string_key helper tests
+    // ========================================================================
+
+    #[test]
+    fn extract_string_key_quoted() {
+        let result = extract_string_key("\"hello\"");
+        assert_eq!(result, "hello");
+        println!("DEBUG: extract_string_key removes quotes");
+    }
+
+    #[test]
+    fn extract_string_key_unquoted() {
+        let result = extract_string_key("hello");
+        assert_eq!(result, "hello");
+        println!("DEBUG: extract_string_key preserves unquoted");
+    }
+
+    #[test]
+    fn extract_string_key_single_char_quoted() {
+        let result = extract_string_key("\"x\"");
+        assert_eq!(result, "x");
+        println!("DEBUG: extract_string_key handles single char");
+    }
+
+    #[test]
+    fn extract_string_key_empty_quoted() {
+        let result = extract_string_key("\"\"");
+        assert_eq!(result, "");
+        println!("DEBUG: extract_string_key handles empty quoted string");
+    }
+
+    #[test]
+    fn extract_string_key_only_start_quote() {
+        let result = extract_string_key("\"hello");
+        assert_eq!(result, "\"hello");
+        println!("DEBUG: extract_string_key preserves if only start quote");
+    }
+
+    #[test]
+    fn extract_string_key_only_end_quote() {
+        let result = extract_string_key("hello\"");
+        assert_eq!(result, "hello\"");
+        println!("DEBUG: extract_string_key preserves if only end quote");
+    }
+
+    // ========================================================================
+    // Builtin error condition tests
+    // ========================================================================
+
+    #[test]
+    fn builtin_null_p_wrong_arg_count() {
+        let result = null_p(&[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!("DEBUG: null? with no args returns error");
+    }
+
+    #[test]
+    fn builtin_null_p_too_many_args() {
+        let result = null_p(&[SExpr::Atom("a".to_string()), SExpr::Atom("b".to_string())]);
+        assert!(result.is_err());
+        println!("DEBUG: null? with too many args returns error");
+    }
+
+    #[test]
+    fn builtin_list_p_wrong_arg_count() {
+        let result = list_p(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: list? with no args returns error");
+    }
+
+    #[test]
+    fn builtin_atom_p_wrong_arg_count() {
+        let result = atom_p(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: atom? with no args returns error");
+    }
+
+    #[test]
+    fn builtin_empty_p_wrong_arg_count() {
+        let result = empty_p(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: empty? with no args returns error");
+    }
+
+    #[test]
+    fn builtin_eq_p_wrong_arg_count_zero() {
+        let result = eq_p(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: eq? with no args returns error");
+    }
+
+    #[test]
+    fn builtin_eq_p_wrong_arg_count_one() {
+        let result = eq_p(&[SExpr::Atom("a".to_string())]);
+        assert!(result.is_err());
+        println!("DEBUG: eq? with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_first_wrong_arg_count() {
+        let result = first(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: first with no args returns error");
+    }
+
+    #[test]
+    fn builtin_first_non_list() {
+        let result = first(&[SExpr::Atom("not-a-list".to_string())]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: first on non-list returns type error");
+    }
+
+    #[test]
+    fn builtin_first_empty_list() {
+        let result = first(&[SExpr::List(vec![])]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SExpr::Atom("null".to_string()));
+        println!("DEBUG: first on empty list returns null");
+    }
+
+    #[test]
+    fn builtin_rest_wrong_arg_count() {
+        let result = rest(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: rest with no args returns error");
+    }
+
+    #[test]
+    fn builtin_rest_non_list() {
+        let result = rest(&[SExpr::Atom("not-a-list".to_string())]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: rest on non-list returns type error");
+    }
+
+    #[test]
+    fn builtin_rest_empty_list() {
+        let result = rest(&[SExpr::List(vec![])]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SExpr::List(vec![]));
+        println!("DEBUG: rest on empty list returns empty list");
+    }
+
+    #[test]
+    fn builtin_cons_wrong_arg_count() {
+        let result = cons(&[SExpr::Atom("a".to_string())]);
+        assert!(result.is_err());
+        println!("DEBUG: cons with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_cons_second_not_list() {
+        let result = cons(&[
+            SExpr::Atom("a".to_string()),
+            SExpr::Atom("not-a-list".to_string()),
+        ]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: cons with non-list second arg returns type error");
+    }
+
+    #[test]
+    fn builtin_append_wrong_arg_count() {
+        let result = append(&[SExpr::List(vec![])]);
+        assert!(result.is_err());
+        println!("DEBUG: append with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_append_first_not_list() {
+        let result = append(&[SExpr::Atom("not-a-list".to_string()), SExpr::List(vec![])]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: append with non-list first arg returns type error");
+    }
+
+    #[test]
+    fn builtin_append_second_not_list() {
+        let result = append(&[SExpr::List(vec![]), SExpr::Atom("not-a-list".to_string())]);
+        assert!(result.is_err());
+        println!("DEBUG: append with non-list second arg returns type error");
+    }
+
+    #[test]
+    fn builtin_length_wrong_arg_count() {
+        let result = length(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: length with no args returns error");
+    }
+
+    #[test]
+    fn builtin_length_non_list() {
+        let result = length(&[SExpr::Atom("not-a-list".to_string())]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: length on non-list returns type error");
+    }
+
+    #[test]
+    fn builtin_nth_wrong_arg_count() {
+        let result = nth(&[SExpr::Atom("0".to_string())]);
+        assert!(result.is_err());
+        println!("DEBUG: nth with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_nth_non_integer_index() {
+        let result = nth(&[
+            SExpr::Atom("not-a-number".to_string()),
+            SExpr::List(vec![SExpr::Atom("a".to_string())]),
+        ]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: nth with non-integer index returns type error");
+    }
+
+    #[test]
+    fn builtin_nth_list_index() {
+        let result = nth(&[
+            SExpr::List(vec![]),
+            SExpr::List(vec![SExpr::Atom("a".to_string())]),
+        ]);
+        assert!(result.is_err());
+        println!("DEBUG: nth with list as index returns type error");
+    }
+
+    #[test]
+    fn builtin_nth_non_list_second_arg() {
+        let result = nth(&[
+            SExpr::Atom("0".to_string()),
+            SExpr::Atom("not-a-list".to_string()),
+        ]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: nth with non-list second arg returns type error");
+    }
+
+    #[test]
+    fn builtin_nth_out_of_bounds() {
+        let result = nth(&[
+            SExpr::Atom("10".to_string()),
+            SExpr::List(vec![SExpr::Atom("a".to_string())]),
+        ]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SExpr::Atom("null".to_string()));
+        println!("DEBUG: nth out of bounds returns null");
+    }
+
+    #[test]
+    fn builtin_list_creates_list() {
+        let result = list(&[SExpr::Atom("a".to_string()), SExpr::Atom("b".to_string())]);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            SExpr::List(vec![
+                SExpr::Atom("a".to_string()),
+                SExpr::Atom("b".to_string()),
+            ])
+        );
+        println!("DEBUG: list creates list from args");
+    }
+
+    #[test]
+    fn builtin_list_empty() {
+        let result = list(&[]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SExpr::List(vec![]));
+        println!("DEBUG: list with no args creates empty list");
+    }
+
+    // ========================================================================
+    // Help builtin tests
+    // ========================================================================
+
+    #[test]
+    fn builtin_help_wrong_arg_count() {
+        let result = help(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: help with no args returns error");
+    }
+
+    #[test]
+    fn builtin_help_non_atom_arg() {
+        let result = help(&[SExpr::List(vec![])]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: help with non-atom arg returns type error");
+    }
+
+    #[test]
+    fn builtin_help_not_found() {
+        let result = help(&[SExpr::Atom("nonexistent-function-xyz".to_string())]);
+        assert!(result.is_ok());
+        let help_text = result.unwrap();
+        match help_text {
+            SExpr::Atom(s) => {
+                assert!(s.contains("No help available"));
+            }
+            _ => panic!("Expected atom result"),
+        }
+        println!("DEBUG: help for unknown function returns no help message");
+    }
+
+    // ========================================================================
+    // JSON builtin tests
+    // ========================================================================
+
+    #[test]
+    fn builtin_obj_creates_object() {
+        let result = obj(&[
+            SExpr::Atom("\"key\"".to_string()),
+            SExpr::Atom("value".to_string()),
+        ]);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            SExpr::List(items) => {
+                assert_eq!(items[0], SExpr::Atom("obj".to_string()));
+                assert_eq!(items.len(), 3);
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: obj creates object list");
+    }
+
+    #[test]
+    fn builtin_obj_empty() {
+        let result = obj(&[]);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0], SExpr::Atom("obj".to_string()));
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: obj with no args creates empty object");
+    }
+
+    #[test]
+    fn builtin_arr_creates_array() {
+        let result = arr(&[SExpr::Atom("1".to_string()), SExpr::Atom("2".to_string())]);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            SExpr::List(items) => {
+                assert_eq!(items[0], SExpr::Atom("arr".to_string()));
+                assert_eq!(items.len(), 3);
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: arr creates array list");
+    }
+
+    #[test]
+    fn builtin_arr_empty() {
+        let result = arr(&[]);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            SExpr::List(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0], SExpr::Atom("arr".to_string()));
+            }
+            _ => panic!("Expected list result"),
+        }
+        println!("DEBUG: arr with no args creates empty array");
+    }
+
+    #[test]
+    fn builtin_get_wrong_arg_count() {
+        let result = builtin_get(&[SExpr::Atom("key".to_string())]);
+        assert!(result.is_err());
+        println!("DEBUG: get with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_get_non_atom_key() {
+        let result = builtin_get(&[
+            SExpr::List(vec![]),
+            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+        ]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: get with non-atom key returns type error");
+    }
+
+    #[test]
+    fn builtin_get_quoted_key() {
+        let obj = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"key\"".to_string()),
+            SExpr::Atom("value".to_string()),
+        ]);
+        let result = builtin_get(&[SExpr::Atom("\"key\"".to_string()), obj]);
+        assert!(result.is_ok());
+        println!("DEBUG: get with quoted key works");
+    }
+
+    #[test]
+    fn builtin_get_unquoted_key() {
+        let obj = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"key\"".to_string()),
+            SExpr::Atom("value".to_string()),
+        ]);
+        let result = builtin_get(&[SExpr::Atom("key".to_string()), obj]);
+        assert!(result.is_ok());
+        println!("DEBUG: get with unquoted key works");
+    }
+
+    #[test]
+    fn builtin_keys_wrong_arg_count() {
+        let result = builtin_keys(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: keys with no args returns error");
+    }
+
+    #[test]
+    fn builtin_keys_on_object() {
+        let obj = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"a\"".to_string()),
+            SExpr::Atom("1".to_string()),
+            SExpr::Atom("\"b\"".to_string()),
+            SExpr::Atom("2".to_string()),
+        ]);
+        let result = builtin_keys(&[obj]);
+        assert!(result.is_ok());
+        println!("DEBUG: keys on object works");
+    }
+
+    #[test]
+    fn builtin_values_wrong_arg_count() {
+        let result = builtin_values(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: values with no args returns error");
+    }
+
+    #[test]
+    fn builtin_values_on_object() {
+        let obj = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"a\"".to_string()),
+            SExpr::Atom("1".to_string()),
+        ]);
+        let result = builtin_values(&[obj]);
+        assert!(result.is_ok());
+        println!("DEBUG: values on object works");
+    }
+
+    #[test]
+    fn builtin_assoc_wrong_arg_count() {
+        let result = builtin_assoc(&[
+            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+            SExpr::Atom("key".to_string()),
+        ]);
+        assert!(result.is_err());
+        println!("DEBUG: assoc with two args returns error");
+    }
+
+    #[test]
+    fn builtin_assoc_non_atom_key() {
+        let result = builtin_assoc(&[
+            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+            SExpr::List(vec![]),
+            SExpr::Atom("value".to_string()),
+        ]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: assoc with non-atom key returns type error");
+    }
+
+    #[test]
+    fn builtin_assoc_quoted_key() {
+        let obj = SExpr::List(vec![SExpr::Atom("obj".to_string())]);
+        let result = builtin_assoc(&[
+            obj,
+            SExpr::Atom("\"key\"".to_string()),
+            SExpr::Atom("value".to_string()),
+        ]);
+        assert!(result.is_ok());
+        println!("DEBUG: assoc with quoted key works");
+    }
+
+    #[test]
+    fn builtin_dissoc_wrong_arg_count() {
+        let result = builtin_dissoc(&[SExpr::List(vec![SExpr::Atom("obj".to_string())])]);
+        assert!(result.is_err());
+        println!("DEBUG: dissoc with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_dissoc_non_atom_key() {
+        let result = builtin_dissoc(&[
+            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+            SExpr::List(vec![]),
+        ]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: dissoc with non-atom key returns type error");
+    }
+
+    #[test]
+    fn builtin_dissoc_quoted_key() {
+        let obj = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"key\"".to_string()),
+            SExpr::Atom("value".to_string()),
+        ]);
+        let result = builtin_dissoc(&[obj, SExpr::Atom("\"key\"".to_string())]);
+        assert!(result.is_ok());
+        println!("DEBUG: dissoc with quoted key works");
+    }
+
+    #[test]
+    fn builtin_merge_wrong_arg_count_zero() {
+        let result = builtin_merge(&[]);
+        assert!(result.is_err());
+        println!("DEBUG: merge with no args returns error");
+    }
+
+    #[test]
+    fn builtin_merge_wrong_arg_count_one() {
+        let result = builtin_merge(&[SExpr::List(vec![SExpr::Atom("obj".to_string())])]);
+        assert!(result.is_err());
+        println!("DEBUG: merge with one arg returns error");
+    }
+
+    #[test]
+    fn builtin_merge_two_objects() {
+        let obj1 = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"a\"".to_string()),
+            SExpr::Atom("1".to_string()),
+        ]);
+        let obj2 = SExpr::List(vec![
+            SExpr::Atom("obj".to_string()),
+            SExpr::Atom("\"b\"".to_string()),
+            SExpr::Atom("2".to_string()),
+        ]);
+        let result = builtin_merge(&[obj1, obj2]);
+        assert!(result.is_ok());
+        println!("DEBUG: merge two objects works");
+    }
+
+    // ========================================================================
+    // VM run and step tests
+    // ========================================================================
+
+    #[test]
+    fn vm_run_returns_finished_for_atom() {
+        let mut vm = setup_vm();
+        vm.load(SExpr::Atom("hello".to_string()));
+        let state = vm.run();
+        match state {
+            VmState::Finished(result) => {
+                assert_eq!(result, SExpr::Atom("hello".to_string()));
+            }
+            other => panic!("Expected Finished, got {:?}", other),
+        }
+        println!("DEBUG: run returns Finished for atom");
+    }
+
+    #[test]
+    fn vm_run_returns_finished_for_empty_list() {
+        let mut vm = setup_vm();
+        vm.load(SExpr::List(vec![]));
+        let state = vm.run();
+        match state {
+            VmState::Finished(result) => {
+                assert_eq!(result, SExpr::List(vec![]));
+            }
+            other => panic!("Expected Finished, got {:?}", other),
+        }
+        println!("DEBUG: run returns Finished with empty list for empty list input");
+    }
+
+    #[test]
+    fn vm_lookup_fn_returns_none_for_unknown() {
+        let vm = setup_vm();
+        assert!(vm.lookup_fn("nonexistent").is_none());
+        println!("DEBUG: lookup_fn returns None for unknown function");
+    }
+
+    #[test]
+    fn vm_lookup_fn_returns_some_for_registered() {
+        let vm = setup_vm();
+        assert!(vm.lookup_fn("first").is_some());
+        println!("DEBUG: lookup_fn returns Some for registered function");
+    }
+
+    // ========================================================================
+    // Filter function error handling
+    // ========================================================================
+
+    #[test]
+    fn vm_filter_unknown_function() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(filter unknown-pred (quote (1 2 3)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("function-not-found"));
+        println!("DEBUG: filter with unknown function returns error: {}", err);
+    }
+
+    // ========================================================================
+    // Reduce function error handling
+    // ========================================================================
+
+    #[test]
+    fn vm_reduce_unknown_function() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(reduce unknown-fn 0 (quote (1 2 3)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("function-not-found"));
+        println!("DEBUG: reduce with unknown function returns error: {}", err);
+    }
+
+    // ========================================================================
+    // Restart clone test
+    // ========================================================================
+
+    #[test]
+    fn restart_clone() {
+        let r1 = Restart::UseValue(SExpr::Atom("42".to_string()));
+        let r2 = r1.clone();
+        match (r1, r2) {
+            (Restart::UseValue(v1), Restart::UseValue(v2)) => {
+                assert_eq!(v1, v2);
+            }
+            _ => panic!("Clone did not preserve variant"),
+        }
+        println!("DEBUG: Restart clone works correctly");
+    }
+
+    // ========================================================================
+    // VmState clone test
+    // ========================================================================
+
+    #[test]
+    fn vm_state_clone() {
+        let s1 = VmState::Finished(SExpr::Atom("done".to_string()));
+        let s2 = s1.clone();
+        match (s1, s2) {
+            (VmState::Finished(v1), VmState::Finished(v2)) => {
+                assert_eq!(v1, v2);
+            }
+            _ => panic!("Clone did not preserve variant"),
+        }
+        println!("DEBUG: VmState clone works correctly");
+    }
+
+    // ========================================================================
+    // FunctionObj clone test
+    // ========================================================================
+
+    #[test]
+    fn function_obj_builtin_clone() {
+        let f1 = FunctionObj::Builtin {
+            name: "test".to_string(),
+            func: add,
+        };
+        let f2 = f1.clone();
+        match (f1, f2) {
+            (FunctionObj::Builtin { name: n1, .. }, FunctionObj::Builtin { name: n2, .. }) => {
+                assert_eq!(n1, n2);
+            }
+            _ => panic!("Clone did not preserve variant"),
+        }
+        println!("DEBUG: FunctionObj::Builtin clone works correctly");
+    }
+
+    #[test]
+    fn function_obj_lambda_clone() {
+        let env = Arc::new(Environment::new());
+        let f1 = FunctionObj::Lambda {
+            params: vec!["x".to_string()],
+            body: SExpr::Atom("x".to_string()),
+            env: Arc::clone(&env),
+        };
+        let f2 = f1.clone();
+        match (f1, f2) {
+            (
+                FunctionObj::Lambda {
+                    params: p1,
+                    body: b1,
+                    ..
+                },
+                FunctionObj::Lambda {
+                    params: p2,
+                    body: b2,
+                    ..
+                },
+            ) => {
+                assert_eq!(p1, p2);
+                assert_eq!(b1, b2);
+            }
+            _ => panic!("Clone did not preserve variant"),
+        }
+        println!("DEBUG: FunctionObj::Lambda clone works correctly");
+    }
+
+    // ========================================================================
+    // Value debug test
+    // ========================================================================
+
+    #[test]
+    fn value_debug() {
+        let v1 = Value::SExpr(SExpr::Atom("test".to_string()));
+        let v2 = Value::Function(FunctionId(42));
+        let debug1 = format!("{:?}", v1);
+        let debug2 = format!("{:?}", v2);
+        assert!(debug1.contains("SExpr"));
+        assert!(debug1.contains("test"));
+        assert!(debug2.contains("Function"));
+        assert!(debug2.contains("42"));
+        println!("DEBUG: Value debug format works: {} / {}", debug1, debug2);
+    }
+
+    // ========================================================================
+    // VM with nested function calls
+    // ========================================================================
+
+    #[test]
+    fn vm_nested_function_calls() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        vm.def_fn("double", double);
+        let mut parser = Parser::new("(+ (double 5) (double 3))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("16".to_string()));
+        println!("DEBUG: nested function calls evaluate correctly");
+    }
+
+    #[test]
+    fn vm_deeply_nested_function_calls() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(+ (+ (+ 1 2) 3) 4)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("10".to_string()));
+        println!("DEBUG: deeply nested function calls work");
+    }
+
+    // ========================================================================
+    // Variable binding edge cases
+    // ========================================================================
+
+    #[test]
+    fn vm_variable_lookup_in_eval() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((x 42)) x)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("42".to_string()));
+        println!("DEBUG: variable lookup in let body works");
+    }
+
+    #[test]
+    fn vm_unbound_variable_evaluates_to_itself() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("unbound-var");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("unbound-var".to_string()));
+        println!("DEBUG: unbound variable evaluates to itself");
+    }
+
+    // ========================================================================
+    // JSON builtins in VM context
+    // ========================================================================
+
+    #[test]
+    fn vm_json_obj_creation() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(obj \"name\" \"alice\")");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        match result {
+            SExpr::List(items) => {
+                assert_eq!(items[0], SExpr::Atom("obj".to_string()));
+            }
+            _ => panic!("Expected list"),
+        }
+        println!("DEBUG: obj builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_arr_creation() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(arr 1 2 3)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        match result {
+            SExpr::List(items) => {
+                assert_eq!(items[0], SExpr::Atom("arr".to_string()));
+                assert_eq!(items.len(), 4);
+            }
+            _ => panic!("Expected list"),
+        }
+        println!("DEBUG: arr builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_get_value() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(get \"key\" (obj \"key\" \"value\"))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_ok());
+        println!("DEBUG: get builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_keys() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(keys (obj \"a\" 1 \"b\" 2))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_ok());
+        println!("DEBUG: keys builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_values() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(values (obj \"a\" 1 \"b\" 2))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_ok());
+        println!("DEBUG: values builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_assoc() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(assoc (obj) \"key\" \"value\")");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_ok());
+        println!("DEBUG: assoc builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_dissoc() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(dissoc (obj \"key\" \"value\") \"key\")");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_ok());
+        println!("DEBUG: dissoc builtin works in VM context");
+    }
+
+    #[test]
+    fn vm_json_merge() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(merge (obj \"a\" 1) (obj \"b\" 2))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_ok());
+        println!("DEBUG: merge builtin works in VM context");
+    }
+
+    // ========================================================================
+    // Lambda tests
+    // ========================================================================
+
+    #[test]
+    fn vm_lambda_creates_callable() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Create a lambda and immediately call it
+        let mut parser = Parser::new("(let ((f (lambda (x) (+ x 1)))) (f 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("6".to_string()));
+        println!("DEBUG: lambda creates callable function: {}", result);
+    }
+
+    #[test]
+    fn vm_lambda_multiple_params() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x y) (+ x y)))) (f 3 4))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("7".to_string()));
+        println!("DEBUG: lambda with multiple params: {}", result);
+    }
+
+    #[test]
+    fn vm_lambda_zero_params() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda () (quote hello)))) (f))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("hello".to_string()));
+        println!("DEBUG: lambda with zero params: {}", result);
+    }
+
+    #[test]
+    fn vm_lambda_closure_captures_env() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // y is captured from the let binding
+        let mut parser = Parser::new("(let ((y 10)) (let ((f (lambda (x) (+ x y)))) (f 5)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: lambda captures environment: {}", result);
+    }
+
+    #[test]
+    fn vm_lambda_wrong_arg_count_syntax() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda (x))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        println!("DEBUG: lambda with wrong syntax returns error: {:?}", result);
+    }
+
+    #[test]
+    fn vm_lambda_wrong_arg_count_call() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Lambda expects 2 args, but we call with 1
+        let mut parser = Parser::new("(let ((f (lambda (x y) (+ x y)))) (f 3))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!("DEBUG: lambda call with wrong arg count: {}", err);
+    }
+
+    // ========================================================================
+    // Defun tests
+    // ========================================================================
+
+    #[test]
+    fn vm_defun_defines_function() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Define add-one and call it
+        let mut parser = Parser::new("(begin (defun add-one (x) (+ x 1)) (add-one 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("6".to_string()));
+        println!("DEBUG: defun defines callable function: {}", result);
+    }
+
+    #[test]
+    fn vm_defun_returns_name() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(defun my-func (x) (+ x 1))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("my-func".to_string()));
+        println!("DEBUG: defun returns function name: {}", result);
+    }
+
+    #[test]
+    fn vm_defun_hot_swap() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Define a function, call it, redefine it, call again
+        let mut parser = Parser::new(
+            "(begin (defun f (x) (+ x 1)) (let ((r1 (f 5))) (defun f (x) (+ x 10)) (+ r1 (f 5))))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // r1 = 6, f(5) after redefine = 15, total = 21
+        assert_eq!(result, SExpr::Atom("21".to_string()));
+        println!("DEBUG: defun hot-swap works: {}", result);
+    }
+
+    #[test]
+    fn vm_defun_wrong_arg_count() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(defun (x))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        println!("DEBUG: defun with wrong syntax returns error: {:?}", result);
+    }
+
+    #[test]
+    fn vm_defun_non_atom_name() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(defun (a b) (x) x)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: defun with non-atom name: {}", err);
+    }
+
+    #[test]
+    fn vm_defun_non_list_params() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(defun f x x)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!("DEBUG: defun with non-list params: {}", err);
+    }
+
+    #[test]
+    fn vm_defun_recursive() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+
+        fn sub(args: &[SExpr]) -> SResult<SExpr> {
+            let mut result = 0i64;
+            for (i, arg) in args.iter().enumerate() {
+                if let SExpr::Atom(s) = arg {
+                    let n = s.parse::<i64>().unwrap_or(0);
+                    if i == 0 {
+                        result = n;
+                    } else {
+                        result -= n;
+                    }
+                }
+            }
+            Ok(SExpr::Atom(result.to_string()))
+        }
+
+        fn eq(args: &[SExpr]) -> SResult<SExpr> {
+            if args.len() != 2 {
+                return Ok(SExpr::Atom("#f".to_string()));
+            }
+            let result = args[0] == args[1];
+            Ok(SExpr::Atom(if result { "#t" } else { "#f" }.to_string()))
+        }
+
+        vm.def_fn("-", sub);
+        vm.def_fn("=", eq);
+
+        // Factorial: (defun fact (n) (if (= n 0) 1 (* n (fact (- n 1)))))
+        // Use a simpler recursive function: sum from n to 0
+        // (defun sum-to (n) (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+        let mut parser = Parser::new(
+            "(begin (defun sum-to (n) (if (= n 0) 0 (+ n (sum-to (- n 1))))) (sum-to 5))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // sum-to(5) = 5 + 4 + 3 + 2 + 1 + 0 = 15
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: recursive defun works: {}", result);
     }
 }
