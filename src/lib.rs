@@ -63,6 +63,7 @@
 
 #![deny(missing_docs)]
 
+mod docs;
 mod error;
 mod eval;
 mod expr;
@@ -121,3 +122,5 @@ pub use selector::{
     AttributePredicate, Combinator, CompareOp, Selector, SelectorPart, SimpleSelector, query,
     query_one, select,
 };
+
+pub use docs::{ALL_DOCS, BUILTINS_DOCS, JSON_DOCS, MARKDOWN_DOCS};
