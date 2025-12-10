@@ -78,8 +78,8 @@ mod util;
 pub use error::{SError, SResult};
 pub use eval::{
     Env, SExprFn, builtin_append, builtin_atom_p, builtin_cons, builtin_empty_p, builtin_eq_p,
-    builtin_first, builtin_length, builtin_list, builtin_list_p, builtin_nth, builtin_null_p,
-    builtin_rest, eval, register_builtins,
+    builtin_first, builtin_help, builtin_length, builtin_list, builtin_list_p, builtin_nth,
+    builtin_null_p, builtin_rest, eval, register_builtins,
 };
 pub use expr::{Parser, SExpr};
 pub use json::{
@@ -123,4 +123,4 @@ pub use selector::{
     query_one, select,
 };
 
-pub use docs::{ALL_DOCS, BUILTINS_DOCS, JSON_DOCS, MARKDOWN_DOCS};
+pub use docs::{ALL_DOCS, BUILTINS_DOCS, JSON_DOCS, MARKDOWN_DOCS, get_help};

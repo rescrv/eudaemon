@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use super::docs::get_help;
 use super::error::{SError, SResult};
 use super::expr::SExpr;
 
@@ -701,6 +702,37 @@ pub fn builtin_list(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(args.to_vec()))
 }
 
+// ============================================================================
+// Help
+// ============================================================================
+
+/// Returns documentation for the named command.
+pub fn builtin_help(args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("help")
+            .with_code("wrong-argument-count")
+            .with_message("help requires exactly one argument: the command name")
+            .with_atom_field("expected", 1)
+            .with_atom_field("received", args.len()));
+    }
+    let name = match &args[0] {
+        SExpr::Atom(s) => s,
+        _ => {
+            return Err(SError::new("help")
+                .with_code("type-error")
+                .with_message("help requires a command name (atom)")
+                .with_field("argument", args[0].clone()));
+        }
+    };
+    match get_help(name) {
+        Some(content) => Ok(SExpr::Atom(content.to_string())),
+        None => Err(SError::new("help")
+            .with_code("command-not-found")
+            .with_message("No documentation found for the specified command")
+            .with_string_field("command", name)),
+    }
+}
+
 /// Registers all standard built-in functions in the environment.
 pub fn register_builtins(env: &mut Env) {
     // Predicates
@@ -717,6 +749,8 @@ pub fn register_builtins(env: &mut Env) {
     env.def_fn("length", builtin_length);
     env.def_fn("nth", builtin_nth);
     env.def_fn("list", builtin_list);
+    // Help
+    env.def_fn("help", builtin_help);
 }
 
 /// Evaluates a regular function call.
@@ -1911,5 +1945,94 @@ mod tests {
         let mut parser = Parser::new("(let ((x 5)) (+ x 3))");
         let expr = parser.parse().unwrap();
         assert_eq!(eval(&expr, &env), Ok(SExpr::Atom("8".to_string())));
+    }
+
+    // Tests for help builtin
+
+    #[test]
+    fn builtin_help_returns_documentation() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(help first)");
+        let expr = parser.parse().unwrap();
+        let result = eval(&expr, &env).unwrap();
+        if let SExpr::Atom(content) = result {
+            assert!(content.contains("# first"), "Help should contain title");
+            assert!(
+                content.contains("first element"),
+                "Help should describe the function"
+            );
+        } else {
+            panic!("Expected atom result from help");
+        }
+    }
+
+    #[test]
+    fn builtin_help_predicate_with_question_mark() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(help null?)");
+        let expr = parser.parse().unwrap();
+        let result = eval(&expr, &env).unwrap();
+        if let SExpr::Atom(content) = result {
+            assert!(content.contains("# null?"), "Help should contain title");
+        } else {
+            panic!("Expected atom result from help");
+        }
+    }
+
+    #[test]
+    fn builtin_help_thread_first() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(help ->)");
+        let expr = parser.parse().unwrap();
+        let result = eval(&expr, &env).unwrap();
+        if let SExpr::Atom(content) = result {
+            assert!(
+                content.contains("thread") || content.contains("->"),
+                "Help should document thread-first. Content: {}",
+                &content[..200.min(content.len())]
+            );
+        } else {
+            panic!("Expected atom result from help");
+        }
+    }
+
+    #[test]
+    fn builtin_help_command_not_found() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(help nonexistent-command)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(
+            err.to_string().contains("command-not-found"),
+            "Error should be command-not-found"
+        );
+        assert!(
+            err.to_string().contains("nonexistent-command"),
+            "Error should mention the command name"
+        );
+    }
+
+    #[test]
+    fn builtin_help_wrong_arg_count() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(help)");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+    }
+
+    #[test]
+    fn builtin_help_non_atom_arg_error() {
+        let mut env = Env::new();
+        register_builtins(&mut env);
+        let mut parser = Parser::new("(help (quote (not an atom)))");
+        let expr = parser.parse().unwrap();
+        let err = eval(&expr, &env).unwrap_err();
+        assert!(err.to_string().contains("type-error"));
     }
 }

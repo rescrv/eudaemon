@@ -557,6 +557,53 @@ pub const ALL_DOCS: [(&str, &str); 65] = [
     MARKDOWN_WRAP_IN_DETAILS,
 ];
 
+/// Looks up documentation for a command by name.
+///
+/// This function searches through all documentation categories (builtins, JSON, markdown)
+/// to find help for the given command name. Command names are matched against the filename
+/// stem of each documentation file, with special handling for:
+/// - Predicate names ending in `?` (e.g., `null?` matches `null-p.md`)
+/// - Threading macros `->` and `->>` (match `thread-first.md` and `thread-last.md`)
+///
+/// # Arguments
+///
+/// * `name` - The command name to look up (e.g., "first", "null?", "->")
+///
+/// # Returns
+///
+/// `Some(content)` with the documentation markdown if found, `None` otherwise.
+pub fn get_help(name: &str) -> Option<&'static str> {
+    // Normalize name to match file naming convention
+    let normalized = match name {
+        "->" => "thread-first",
+        "->>" => "thread-last",
+        n if n.ends_with('?') => {
+            // Predicates like null? -> null-p
+            return get_help_by_stem(&format!("{}-p", &n[..n.len() - 1]));
+        }
+        n => n,
+    };
+    get_help_by_stem(normalized)
+}
+
+/// Looks up documentation by the normalized filename stem.
+fn get_help_by_stem(stem: &str) -> Option<&'static str> {
+    for (path, content) in ALL_DOCS {
+        // Extract filename without extension from path
+        // e.g., "docs/builtins/first.md" -> "first"
+        let Some(filename) = path.strip_suffix(".md") else {
+            continue;
+        };
+        let Some(name) = filename.rsplit('/').next() else {
+            continue;
+        };
+        if name == stem {
+            return Some(content);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +675,60 @@ mod tests {
                 path
             );
         }
+    }
+
+    #[test]
+    fn get_help_finds_simple_command() {
+        let help = get_help("first");
+        assert!(help.is_some(), "Should find help for 'first'");
+        assert!(
+            help.unwrap().contains("# first"),
+            "Help should contain title"
+        );
+    }
+
+    #[test]
+    fn get_help_finds_predicate_with_question_mark() {
+        let help = get_help("null?");
+        assert!(help.is_some(), "Should find help for 'null?'");
+        assert!(
+            help.unwrap().contains("# null?"),
+            "Help should contain title"
+        );
+    }
+
+    #[test]
+    fn get_help_finds_thread_first() {
+        let help = get_help("->");
+        assert!(help.is_some(), "Should find help for '->'");
+    }
+
+    #[test]
+    fn get_help_finds_thread_last() {
+        let help = get_help("->>");
+        assert!(help.is_some(), "Should find help for '->>'");
+    }
+
+    #[test]
+    fn get_help_returns_none_for_unknown() {
+        let help = get_help("nonexistent-command");
+        assert!(help.is_none(), "Should return None for unknown command");
+    }
+
+    #[test]
+    fn get_help_finds_json_command() {
+        let help = get_help("get");
+        assert!(help.is_some(), "Should find help for 'get'");
+        assert!(help.unwrap().contains("# get"), "Help should contain title");
+    }
+
+    #[test]
+    fn get_help_finds_markdown_command() {
+        let help = get_help("prune");
+        assert!(help.is_some(), "Should find help for 'prune'");
+        assert!(
+            help.unwrap().contains("# prune"),
+            "Help should contain title"
+        );
     }
 }
