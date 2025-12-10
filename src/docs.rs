@@ -69,6 +69,12 @@ pub const BUILTINS_FIRST: (&str, &str) = (
     include_str!("../docs/builtins/first.md"),
 );
 
+/// Documentation for the `help` builtin function.
+pub const BUILTINS_HELP: (&str, &str) = (
+    "docs/builtins/help.md",
+    include_str!("../docs/builtins/help.md"),
+);
+
 /// Documentation for the `if` builtin form.
 pub const BUILTINS_IF: (&str, &str) = (
     "docs/builtins/if.md",
@@ -406,7 +412,7 @@ pub const MARKDOWN_WRAP_IN_DETAILS: (&str, &str) = (
 // =============================================================================
 
 /// All builtin documentation files as (path, contents) tuples.
-pub const BUILTINS_DOCS: [(&str, &str); 21] = [
+pub const BUILTINS_DOCS: [(&str, &str); 22] = [
     BUILTINS_APPEND,
     BUILTINS_ATOM_P,
     BUILTINS_BEGIN,
@@ -415,6 +421,7 @@ pub const BUILTINS_DOCS: [(&str, &str); 21] = [
     BUILTINS_EQ_P,
     BUILTINS_FILTER,
     BUILTINS_FIRST,
+    BUILTINS_HELP,
     BUILTINS_IF,
     BUILTINS_LENGTH,
     BUILTINS_LET,
@@ -486,8 +493,8 @@ pub const MARKDOWN_DOCS: [(&str, &str); 36] = [
 ///
 /// This array contains every embedded documentation file, suitable for populating
 /// a virtual file system overlay.  Paths are relative to the crate root.
-pub const ALL_DOCS: [(&str, &str); 65] = [
-    // Builtins (21)
+pub const ALL_DOCS: [(&str, &str); 66] = [
+    // Builtins (22)
     BUILTINS_APPEND,
     BUILTINS_ATOM_P,
     BUILTINS_BEGIN,
@@ -496,6 +503,7 @@ pub const ALL_DOCS: [(&str, &str); 65] = [
     BUILTINS_EQ_P,
     BUILTINS_FILTER,
     BUILTINS_FIRST,
+    BUILTINS_HELP,
     BUILTINS_IF,
     BUILTINS_LENGTH,
     BUILTINS_LET,
@@ -728,6 +736,16 @@ mod tests {
         assert!(help.is_some(), "Should find help for 'prune'");
         assert!(
             help.unwrap().contains("# prune"),
+            "Help should contain title"
+        );
+    }
+
+    #[test]
+    fn get_help_can_document_itself() {
+        let help = get_help("help");
+        assert!(help.is_some(), "Should find help for 'help'");
+        assert!(
+            help.unwrap().contains("# help"),
             "Help should contain title"
         );
     }
