@@ -4,6 +4,7 @@ pub(crate) mod expr;
 pub(crate) mod json;
 pub(crate) mod markdown;
 pub(crate) mod nodeid;
+pub(crate) mod object;
 pub(crate) mod repl;
 pub(crate) mod selector;
 pub(crate) mod util;

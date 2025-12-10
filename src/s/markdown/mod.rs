@@ -315,7 +315,13 @@ fn node_to_sexpr(node: &Node) -> SResult<SExpr> {
 pub fn sexpr_to_markdown(expr: &SExpr) -> SResult<String> {
     let mut output = String::new();
     sexpr_to_markdown_impl(expr, &mut output, 0)?;
-    Ok(output)
+    // Trim trailing whitespace but preserve a single trailing newline
+    let trimmed = output.trim_end();
+    if trimmed.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!("{}\n", trimmed))
+    }
 }
 
 /// Internal implementation for markdown generation with context tracking.
@@ -347,10 +353,7 @@ fn sexpr_to_markdown_impl(expr: &SExpr, output: &mut String, depth: usize) -> SR
 
             match tag {
                 "doc" => {
-                    for (i, child) in items.iter().skip(1).enumerate() {
-                        if i > 0 {
-                            output.push('\n');
-                        }
+                    for child in items.iter().skip(1) {
                         sexpr_to_markdown_impl(child, output, depth)?;
                     }
                 }
