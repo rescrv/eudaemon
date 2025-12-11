@@ -8,13 +8,13 @@
 
 use std::io::{self, BufRead, Write};
 
-use agentkb::{Parser, SError, SExpr, Vm, register_markdown_builtins_vm};
+use agentkb::{Parser, SError, SExpr, Vm, register_markdown_builtins};
 
 fn setup_vm() -> Vm {
     let mut vm = Vm::new();
     vm.register_builtins();
     vm.register_json_builtins();
-    register_markdown_builtins_vm(&mut vm);
+    register_markdown_builtins(&mut vm);
     vm
 }
 

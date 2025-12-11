@@ -25,7 +25,6 @@ use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context, Editor, Helper};
 
 use super::error::{SError, SResult};
-use super::eval::Env;
 use super::expr::{Parser, SExpr};
 use super::markdown::curation::{
     LinkInfo, extract_sections, find_undefined_references, generate_toc, get_external_links,
@@ -47,6 +46,9 @@ use super::nodeid::{
 };
 use super::util::{extract_string, find_markdown_files, string_atom};
 use super::vm::{Restart, Vm, VmState};
+
+// NOTE: All builtin functions take `_vm: &Vm` as the first parameter but don't use it.
+// This is because the BuiltinFn signature requires it for filesystem access in other builtins.
 
 // ============================================================================
 // LispHelper - rustyline integration for multi-line input and autocomplete
@@ -198,7 +200,7 @@ impl Repl {
         let mut vm = Vm::new();
         vm.register_builtins();
         vm.register_json_builtins();
-        register_markdown_builtins_vm(&mut vm);
+        register_markdown_builtins(&mut vm);
         vm
     }
 
@@ -760,64 +762,8 @@ Standard builtins: first, rest, cons, append, length, nth, list,
 // Markdown builtin functions
 // ============================================================================
 
-/// Registers all markdown-related functions in the environment.
-pub fn register_markdown_builtins(env: &mut Env) {
-    // Conversion
-    env.def_fn("markdown-to-sexpr", builtin_markdown_to_sexpr);
-    env.def_fn("sexpr-to-markdown", builtin_sexpr_to_markdown);
-
-    // Frontmatter
-    env.def_fn("get-frontmatter", builtin_get_frontmatter);
-    env.def_fn("get-frontmatter-content", builtin_get_frontmatter_content);
-    env.def_fn("set-frontmatter", builtin_set_frontmatter);
-    env.def_fn("remove-frontmatter", builtin_remove_frontmatter);
-    env.def_fn("parse-yaml-frontmatter", builtin_parse_yaml_frontmatter);
-    env.def_fn("get-fm-field", builtin_get_fm_field);
-    env.def_fn("upsert-fm-field", builtin_upsert_fm_field);
-    env.def_fn("remove-fm-field", builtin_remove_fm_field);
-
-    // Node navigation
-    env.def_fn("get-by-path", builtin_get_by_path);
-    env.def_fn("get-node", builtin_get_node);
-    env.def_fn("get-parent", builtin_get_parent);
-    env.def_fn("get-siblings", builtin_get_siblings);
-    env.def_fn("get-context", builtin_get_context);
-    env.def_fn("annotate", builtin_annotate);
-
-    // Mutations
-    env.def_fn("replace-at", builtin_replace_at);
-    env.def_fn("prune", builtin_prune);
-    env.def_fn("insert-before", builtin_insert_before);
-    env.def_fn("insert-after", builtin_insert_after);
-    env.def_fn("append-child", builtin_append_child);
-    env.def_fn("prepend-child", builtin_prepend_child);
-    env.def_fn("hoist", builtin_hoist);
-    env.def_fn("graft", builtin_graft);
-
-    // Curation
-    env.def_fn("wrap-in-callout", builtin_wrap_in_callout);
-    env.def_fn("wrap-in-details", builtin_wrap_in_details);
-    env.def_fn("normalize-headers", builtin_normalize_headers);
-    env.def_fn("mark-deprecated", builtin_mark_deprecated);
-    env.def_fn("generate-toc", builtin_generate_toc);
-
-    // Links
-    env.def_fn("scan-links", builtin_scan_links);
-    env.def_fn("get-internal-links", builtin_get_internal_links);
-    env.def_fn("get-external-links", builtin_get_external_links);
-    env.def_fn("get-image-links", builtin_get_image_links);
-    env.def_fn("scan-link-defs", builtin_scan_link_defs);
-    env.def_fn("find-undef-refs", builtin_find_undef_refs);
-    env.def_fn("update-link", builtin_update_link);
-
-    // Sectioning
-    env.def_fn("extract-sections", builtin_extract_sections);
-    env.def_fn("section-to-doc", builtin_section_to_doc);
-    env.def_fn("slugify", builtin_slugify);
-}
-
 /// Registers all markdown-related functions in the VM.
-pub fn register_markdown_builtins_vm(vm: &mut Vm) {
+pub fn register_markdown_builtins(vm: &mut Vm) {
     // Conversion
     vm.def_fn("markdown-to-sexpr", builtin_markdown_to_sexpr);
     vm.def_fn("sexpr-to-markdown", builtin_sexpr_to_markdown);
@@ -874,7 +820,7 @@ pub fn register_markdown_builtins_vm(vm: &mut Vm) {
 
 // Conversion functions
 
-fn builtin_markdown_to_sexpr(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_markdown_to_sexpr(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("markdown-to-sexpr")
             .with_code("wrong-argument-count")
@@ -885,7 +831,7 @@ fn builtin_markdown_to_sexpr(args: &[SExpr]) -> SResult<SExpr> {
     markdown_to_sexpr(&md)
 }
 
-fn builtin_sexpr_to_markdown(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_sexpr_to_markdown(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("sexpr-to-markdown")
             .with_code("wrong-argument-count")
@@ -898,7 +844,7 @@ fn builtin_sexpr_to_markdown(args: &[SExpr]) -> SResult<SExpr> {
 
 // Frontmatter functions
 
-fn builtin_get_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_frontmatter(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("get-frontmatter")
             .with_code("wrong-argument-count")
@@ -911,7 +857,7 @@ fn builtin_get_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn builtin_get_frontmatter_content(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_frontmatter_content(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("get-frontmatter-content")
             .with_code("wrong-argument-count")
@@ -924,7 +870,7 @@ fn builtin_get_frontmatter_content(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn builtin_set_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_set_frontmatter(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("set-frontmatter")
             .with_code("wrong-argument-count")
@@ -936,7 +882,7 @@ fn builtin_set_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
     set_frontmatter(&args[0], &format, &content)
 }
 
-fn builtin_remove_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_remove_frontmatter(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("remove-frontmatter")
             .with_code("wrong-argument-count")
@@ -946,7 +892,7 @@ fn builtin_remove_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
     Ok(remove_frontmatter(&args[0]))
 }
 
-fn builtin_parse_yaml_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_parse_yaml_frontmatter(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("parse-yaml-frontmatter")
             .with_code("wrong-argument-count")
@@ -957,7 +903,7 @@ fn builtin_parse_yaml_frontmatter(args: &[SExpr]) -> SResult<SExpr> {
     Ok(parse_yaml_frontmatter(&content))
 }
 
-fn builtin_get_fm_field(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_fm_field(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("get-fm-field")
             .with_code("wrong-argument-count")
@@ -971,7 +917,7 @@ fn builtin_get_fm_field(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn builtin_upsert_fm_field(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_upsert_fm_field(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("upsert-fm-field")
             .with_code("wrong-argument-count")
@@ -985,7 +931,7 @@ fn builtin_upsert_fm_field(args: &[SExpr]) -> SResult<SExpr> {
     Ok(string_atom(&result))
 }
 
-fn builtin_remove_fm_field(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_remove_fm_field(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("remove-fm-field")
             .with_code("wrong-argument-count")
@@ -1000,7 +946,7 @@ fn builtin_remove_fm_field(args: &[SExpr]) -> SResult<SExpr> {
 
 // Node navigation functions
 
-fn builtin_get_by_path(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_by_path(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("get-by-path")
             .with_code("wrong-argument-count")
@@ -1015,7 +961,7 @@ fn builtin_get_by_path(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn builtin_get_node(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_node(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("get-node")
             .with_code("wrong-argument-count")
@@ -1030,7 +976,7 @@ fn builtin_get_node(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn builtin_get_parent(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_parent(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("get-parent")
             .with_code("wrong-argument-count")
@@ -1045,7 +991,7 @@ fn builtin_get_parent(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn builtin_get_siblings(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_siblings(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("get-siblings")
             .with_code("wrong-argument-count")
@@ -1058,7 +1004,7 @@ fn builtin_get_siblings(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(siblings.into_iter().map(|(_, n)| n).collect()))
 }
 
-fn builtin_get_context(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_context(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("get-context")
             .with_code("wrong-argument-count")
@@ -1076,7 +1022,7 @@ fn builtin_get_context(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(context.into_iter().map(|(_, n)| n).collect()))
 }
 
-fn builtin_annotate(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_annotate(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("annotate")
             .with_code("wrong-argument-count")
@@ -1088,7 +1034,7 @@ fn builtin_annotate(args: &[SExpr]) -> SResult<SExpr> {
 
 // Mutation functions
 
-fn builtin_replace_at(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_replace_at(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("replace-at")
             .with_code("wrong-argument-count")
@@ -1100,7 +1046,7 @@ fn builtin_replace_at(args: &[SExpr]) -> SResult<SExpr> {
     replace_at(&args[0], &path, args[2].clone())
 }
 
-fn builtin_prune(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_prune(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("prune")
             .with_code("wrong-argument-count")
@@ -1112,7 +1058,7 @@ fn builtin_prune(args: &[SExpr]) -> SResult<SExpr> {
     prune(&args[0], &path)
 }
 
-fn builtin_insert_before(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_insert_before(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("insert-before")
             .with_code("wrong-argument-count")
@@ -1124,7 +1070,7 @@ fn builtin_insert_before(args: &[SExpr]) -> SResult<SExpr> {
     insert_before(&args[0], &path, args[2].clone())
 }
 
-fn builtin_insert_after(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_insert_after(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("insert-after")
             .with_code("wrong-argument-count")
@@ -1136,7 +1082,7 @@ fn builtin_insert_after(args: &[SExpr]) -> SResult<SExpr> {
     insert_after(&args[0], &path, args[2].clone())
 }
 
-fn builtin_append_child(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_append_child(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("append-child")
             .with_code("wrong-argument-count")
@@ -1148,7 +1094,7 @@ fn builtin_append_child(args: &[SExpr]) -> SResult<SExpr> {
     append_child(&args[0], &path, args[2].clone())
 }
 
-fn builtin_prepend_child(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_prepend_child(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("prepend-child")
             .with_code("wrong-argument-count")
@@ -1160,7 +1106,7 @@ fn builtin_prepend_child(args: &[SExpr]) -> SResult<SExpr> {
     prepend_child(&args[0], &path, args[2].clone())
 }
 
-fn builtin_hoist(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_hoist(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("hoist")
             .with_code("wrong-argument-count")
@@ -1177,7 +1123,7 @@ fn builtin_hoist(args: &[SExpr]) -> SResult<SExpr> {
     hoist(&args[0], &path, delta)
 }
 
-fn builtin_graft(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_graft(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 4 {
         return Err(SError::new("graft")
             .with_code("wrong-argument-count")
@@ -1198,7 +1144,7 @@ fn builtin_graft(args: &[SExpr]) -> SResult<SExpr> {
 
 // Curation functions
 
-fn builtin_wrap_in_callout(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_wrap_in_callout(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 4 {
         return Err(SError::new("wrap-in-callout")
             .with_code("wrong-argument-count")
@@ -1216,7 +1162,7 @@ fn builtin_wrap_in_callout(args: &[SExpr]) -> SResult<SExpr> {
     wrap_in_callout(&args[0], &paths, &callout_type, title_opt)
 }
 
-fn builtin_wrap_in_details(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_wrap_in_details(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("wrap-in-details")
             .with_code("wrong-argument-count")
@@ -1228,7 +1174,7 @@ fn builtin_wrap_in_details(args: &[SExpr]) -> SResult<SExpr> {
     wrap_in_details(&args[0], &paths, &summary)
 }
 
-fn builtin_normalize_headers(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_normalize_headers(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("normalize-headers")
             .with_code("wrong-argument-count")
@@ -1265,7 +1211,7 @@ fn parse_depth_map(expr: &SExpr) -> SResult<Vec<(u8, u8)>> {
     Ok(map)
 }
 
-fn builtin_mark_deprecated(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_mark_deprecated(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 4 {
         return Err(SError::new("mark-deprecated")
             .with_code("wrong-argument-count")
@@ -1288,7 +1234,7 @@ fn builtin_mark_deprecated(args: &[SExpr]) -> SResult<SExpr> {
     mark_deprecated(&args[0], &paths, reason_opt, link_opt)
 }
 
-fn builtin_generate_toc(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_generate_toc(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("generate-toc")
             .with_code("wrong-argument-count")
@@ -1300,7 +1246,7 @@ fn builtin_generate_toc(args: &[SExpr]) -> SResult<SExpr> {
 
 // Link functions
 
-fn builtin_scan_links(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_scan_links(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("scan-links")
             .with_code("wrong-argument-count")
@@ -1310,7 +1256,7 @@ fn builtin_scan_links(args: &[SExpr]) -> SResult<SExpr> {
     Ok(scan_links_to_sexpr(&args[0]))
 }
 
-fn builtin_get_internal_links(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_internal_links(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("get-internal-links")
             .with_code("wrong-argument-count")
@@ -1321,7 +1267,7 @@ fn builtin_get_internal_links(args: &[SExpr]) -> SResult<SExpr> {
     Ok(links_to_sexpr(&links))
 }
 
-fn builtin_get_external_links(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_external_links(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("get-external-links")
             .with_code("wrong-argument-count")
@@ -1332,7 +1278,7 @@ fn builtin_get_external_links(args: &[SExpr]) -> SResult<SExpr> {
     Ok(links_to_sexpr(&links))
 }
 
-fn builtin_get_image_links(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get_image_links(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("get-image-links")
             .with_code("wrong-argument-count")
@@ -1343,7 +1289,7 @@ fn builtin_get_image_links(args: &[SExpr]) -> SResult<SExpr> {
     Ok(links_to_sexpr(&links))
 }
 
-fn builtin_scan_link_defs(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_scan_link_defs(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("scan-link-defs")
             .with_code("wrong-argument-count")
@@ -1366,7 +1312,7 @@ fn builtin_scan_link_defs(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(list))
 }
 
-fn builtin_find_undef_refs(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_find_undef_refs(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("find-undef-refs")
             .with_code("wrong-argument-count")
@@ -1377,7 +1323,7 @@ fn builtin_find_undef_refs(args: &[SExpr]) -> SResult<SExpr> {
     Ok(links_to_sexpr(&refs))
 }
 
-fn builtin_update_link(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_update_link(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("update-link")
             .with_code("wrong-argument-count")
@@ -1392,7 +1338,7 @@ fn builtin_update_link(args: &[SExpr]) -> SResult<SExpr> {
 
 // Sectioning functions
 
-fn builtin_extract_sections(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_extract_sections(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("extract-sections")
             .with_code("wrong-argument-count")
@@ -1402,7 +1348,7 @@ fn builtin_extract_sections(args: &[SExpr]) -> SResult<SExpr> {
     Ok(extract_sections(&args[0]))
 }
 
-fn builtin_section_to_doc(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_section_to_doc(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("section-to-doc")
             .with_code("wrong-argument-count")
@@ -1412,7 +1358,7 @@ fn builtin_section_to_doc(args: &[SExpr]) -> SResult<SExpr> {
     section_to_doc(&args[0])
 }
 
-fn builtin_slugify(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_slugify(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("slugify")
             .with_code("wrong-argument-count")

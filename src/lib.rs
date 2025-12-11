@@ -35,7 +35,7 @@
 //! # Example
 //!
 //! ```rust
-//! use agentkb::{markdown_to_sexpr, sexpr_to_markdown, Parser, eval, Env, register_builtins};
+//! use agentkb::{markdown_to_sexpr, sexpr_to_markdown, Parser, Vm};
 //!
 //! // Parse markdown to S-expression
 //! let doc = markdown_to_sexpr("# Hello\n\nWorld!").unwrap();
@@ -44,6 +44,10 @@
 //! // Convert back to markdown
 //! let md = sexpr_to_markdown(&doc).unwrap();
 //! assert!(md.contains("# Hello"));
+//!
+//! // Use the VM for evaluation
+//! let mut vm = Vm::new();
+//! vm.register_builtins();
 //! ```
 //!
 //! # Modules
@@ -51,7 +55,7 @@
 //! The crate re-exports types from internal modules:
 //!
 //! - **Core S-expression types**: [`SExpr`], [`Parser`], [`SError`], [`SResult`]
-//! - **Evaluation**: [`Env`], [`eval`], [`register_builtins`], and built-in functions
+//! - **VM**: [`Vm`], [`BuiltinFn`], [`VmState`], [`Condition`], [`Restart`]
 //! - **JSON conversion**: [`json_to_sexpr`], [`sexpr_to_json`]
 //! - **Markdown conversion**: [`markdown_to_sexpr`], [`sexpr_to_markdown`]
 //! - **Node navigation**: [`PathId`], [`ContentId`], [`NodeId`], [`get_by_path`]
@@ -65,7 +69,6 @@
 
 mod docs;
 mod error;
-mod eval;
 mod expr;
 mod json;
 pub mod markdown;
@@ -77,11 +80,6 @@ mod util;
 mod vm;
 
 pub use error::{SError, SResult};
-pub use eval::{
-    Env, SExprFn, builtin_append, builtin_atom_p, builtin_cons, builtin_empty_p, builtin_eq_p,
-    builtin_first, builtin_help, builtin_length, builtin_list, builtin_list_p, builtin_nth,
-    builtin_null_p, builtin_rest, eval, register_builtins,
-};
 pub use expr::{Parser, SExpr};
 pub use json::{
     json_to_sexpr, json_value_to_sexpr, sexpr_to_json, sexpr_to_json_value, unescape_string,
@@ -116,8 +114,8 @@ pub use nodeid::{
     AnnotatedNode, ContentId, NodeId, PathId, annotate_document, get_by_content, get_by_path,
     get_context, get_node, get_parent, get_siblings, to_annotated_sexpr,
 };
-pub use object::{assoc, dissoc, get, keys, merge, register_json_builtins, values};
-pub use repl::{Repl, register_markdown_builtins, register_markdown_builtins_vm};
+pub use object::{assoc, dissoc, get, keys, merge, values};
+pub use repl::{Repl, register_markdown_builtins};
 pub use selector::{
     AttributePredicate, Combinator, CompareOp, Selector, SelectorPart, SimpleSelector, query,
     query_one, select,

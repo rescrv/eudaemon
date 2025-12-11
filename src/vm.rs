@@ -61,7 +61,10 @@ impl Value {
 }
 
 /// Function signature for built-in functions.
-pub type BuiltinFn = fn(&[SExpr]) -> SResult<SExpr>;
+///
+/// Built-in functions receive a reference to the VM for access to filesystem
+/// and other VM state, plus the evaluated arguments.
+pub type BuiltinFn = fn(&Vm, &[SExpr]) -> SResult<SExpr>;
 
 /// A function stored in the arena.
 #[derive(Clone)]
@@ -537,7 +540,7 @@ impl Vm {
         };
         let func = self.lookup_fn(&resolved_name).cloned();
         match func {
-            Some(FunctionObj::Builtin { name, func }) => match func(&args) {
+            Some(FunctionObj::Builtin { name, func }) => match func(self, &args) {
                 Ok(result) => {
                     self.current_result = Some(result);
                     Ok(VmState::Running)
@@ -1249,7 +1252,7 @@ impl Vm {
                     Some(FunctionObj::Builtin { func, .. }) => {
                         let mut result = Vec::new();
                         for item in items {
-                            match func(std::slice::from_ref(&item)) {
+                            match func(self, std::slice::from_ref(&item)) {
                                 Ok(pred_result) => {
                                     if is_truthy(&pred_result) {
                                         result.push(item);
@@ -1361,7 +1364,7 @@ impl Vm {
                     Some(FunctionObj::Builtin { func, .. }) => {
                         let mut acc = init;
                         for item in items {
-                            match func(&[acc, item]) {
+                            match func(self, &[acc, item]) {
                                 Ok(result) => acc = result,
                                 Err(e) => {
                                     return Err(Condition::Custom {
@@ -1447,7 +1450,7 @@ fn condition_to_error(condition: Condition) -> SError {
 // Built-in functions
 // ============================================================================
 
-fn null_p(args: &[SExpr]) -> SResult<SExpr> {
+fn null_p(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1457,7 +1460,7 @@ fn null_p(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::Atom(if result { "#t" } else { "#f" }.to_string()))
 }
 
-fn list_p(args: &[SExpr]) -> SResult<SExpr> {
+fn list_p(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1467,7 +1470,7 @@ fn list_p(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::Atom(if result { "#t" } else { "#f" }.to_string()))
 }
 
-fn atom_p(args: &[SExpr]) -> SResult<SExpr> {
+fn atom_p(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1477,7 +1480,7 @@ fn atom_p(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::Atom(if result { "#t" } else { "#f" }.to_string()))
 }
 
-fn empty_p(args: &[SExpr]) -> SResult<SExpr> {
+fn empty_p(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1487,7 +1490,7 @@ fn empty_p(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::Atom(if result { "#t" } else { "#f" }.to_string()))
 }
 
-fn eq_p(args: &[SExpr]) -> SResult<SExpr> {
+fn eq_p(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1497,7 +1500,7 @@ fn eq_p(args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::Atom(if result { "#t" } else { "#f" }.to_string()))
 }
 
-fn first(args: &[SExpr]) -> SResult<SExpr> {
+fn first(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1512,7 +1515,7 @@ fn first(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn rest(args: &[SExpr]) -> SResult<SExpr> {
+fn rest(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1527,7 +1530,7 @@ fn rest(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn cons(args: &[SExpr]) -> SResult<SExpr> {
+fn cons(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1545,7 +1548,7 @@ fn cons(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn append(args: &[SExpr]) -> SResult<SExpr> {
+fn append(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1563,7 +1566,7 @@ fn append(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn length(args: &[SExpr]) -> SResult<SExpr> {
+fn length(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1577,7 +1580,7 @@ fn length(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn nth(args: &[SExpr]) -> SResult<SExpr> {
+fn nth(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1609,11 +1612,11 @@ fn nth(args: &[SExpr]) -> SResult<SExpr> {
     }
 }
 
-fn list(args: &[SExpr]) -> SResult<SExpr> {
+fn list(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(args.to_vec()))
 }
 
-fn help(args: &[SExpr]) -> SResult<SExpr> {
+fn help(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1635,19 +1638,19 @@ fn help(args: &[SExpr]) -> SResult<SExpr> {
 
 // JSON builtins wrappers
 
-fn obj(args: &[SExpr]) -> SResult<SExpr> {
+fn obj(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     let mut items = vec![SExpr::Atom("obj".to_string())];
     items.extend(args.iter().cloned());
     Ok(SExpr::List(items))
 }
 
-fn arr(args: &[SExpr]) -> SResult<SExpr> {
+fn arr(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     let mut items = vec![SExpr::Atom("arr".to_string())];
     items.extend(args.iter().cloned());
     Ok(SExpr::List(items))
 }
 
-fn builtin_get(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_get(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1670,7 +1673,7 @@ fn builtin_get(args: &[SExpr]) -> SResult<SExpr> {
     Ok(get(&args[1], &key))
 }
 
-fn builtin_keys(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_keys(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1679,7 +1682,7 @@ fn builtin_keys(args: &[SExpr]) -> SResult<SExpr> {
     Ok(keys(&args[0]))
 }
 
-fn builtin_values(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_values(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1688,7 +1691,7 @@ fn builtin_values(args: &[SExpr]) -> SResult<SExpr> {
     Ok(values(&args[0]))
 }
 
-fn builtin_assoc(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_assoc(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 3 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1705,7 +1708,7 @@ fn builtin_assoc(args: &[SExpr]) -> SResult<SExpr> {
     Ok(assoc(&args[0], &key, args[2].clone()))
 }
 
-fn builtin_dissoc(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_dissoc(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() != 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1722,7 +1725,7 @@ fn builtin_dissoc(args: &[SExpr]) -> SResult<SExpr> {
     Ok(dissoc(&args[0], &key))
 }
 
-fn builtin_merge(args: &[SExpr]) -> SResult<SExpr> {
+fn builtin_merge(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     if args.len() < 2 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
@@ -1752,7 +1755,7 @@ mod tests {
         vm
     }
 
-    fn add(args: &[SExpr]) -> SResult<SExpr> {
+    fn add(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
         let mut sum = 0i64;
         for arg in args {
             if let SExpr::Atom(s) = arg {
@@ -1762,7 +1765,7 @@ mod tests {
         Ok(SExpr::Atom(sum.to_string()))
     }
 
-    fn double(args: &[SExpr]) -> SResult<SExpr> {
+    fn double(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
         if let Some(SExpr::Atom(s)) = args.first() {
             let n: i64 = s.parse().unwrap_or(0);
             Ok(SExpr::Atom((n * 2).to_string()))
@@ -1771,7 +1774,7 @@ mod tests {
         }
     }
 
-    fn is_even(args: &[SExpr]) -> SResult<SExpr> {
+    fn is_even(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
         if let Some(SExpr::Atom(s)) = args.first() {
             let n: i64 = s.parse().unwrap_or(0);
             Ok(SExpr::Atom(
@@ -3226,7 +3229,8 @@ mod tests {
 
     #[test]
     fn builtin_null_p_wrong_arg_count() {
-        let result = null_p(&[]);
+        let vm = Vm::new();
+        let result = null_p(&vm, &[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("wrong-argument-count"));
@@ -3235,56 +3239,67 @@ mod tests {
 
     #[test]
     fn builtin_null_p_too_many_args() {
-        let result = null_p(&[SExpr::Atom("a".to_string()), SExpr::Atom("b".to_string())]);
+        let vm = Vm::new();
+        let result = null_p(
+            &vm,
+            &[SExpr::Atom("a".to_string()), SExpr::Atom("b".to_string())],
+        );
         assert!(result.is_err());
         println!("DEBUG: null? with too many args returns error");
     }
 
     #[test]
     fn builtin_list_p_wrong_arg_count() {
-        let result = list_p(&[]);
+        let vm = Vm::new();
+        let result = list_p(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: list? with no args returns error");
     }
 
     #[test]
     fn builtin_atom_p_wrong_arg_count() {
-        let result = atom_p(&[]);
+        let vm = Vm::new();
+        let result = atom_p(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: atom? with no args returns error");
     }
 
     #[test]
     fn builtin_empty_p_wrong_arg_count() {
-        let result = empty_p(&[]);
+        let vm = Vm::new();
+        let result = empty_p(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: empty? with no args returns error");
     }
 
     #[test]
     fn builtin_eq_p_wrong_arg_count_zero() {
-        let result = eq_p(&[]);
+        let vm = Vm::new();
+        let result = eq_p(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: eq? with no args returns error");
     }
 
     #[test]
     fn builtin_eq_p_wrong_arg_count_one() {
-        let result = eq_p(&[SExpr::Atom("a".to_string())]);
+        let vm = Vm::new();
+        let result = eq_p(&vm, &[SExpr::Atom("a".to_string())]);
         assert!(result.is_err());
         println!("DEBUG: eq? with one arg returns error");
     }
 
     #[test]
     fn builtin_first_wrong_arg_count() {
-        let result = first(&[]);
+        let vm = Vm::new();
+        let result = first(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: first with no args returns error");
     }
 
     #[test]
     fn builtin_first_non_list() {
-        let result = first(&[SExpr::Atom("not-a-list".to_string())]);
+        let vm = Vm::new();
+        let result = first(&vm, &[SExpr::Atom("not-a-list".to_string())]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3293,7 +3308,8 @@ mod tests {
 
     #[test]
     fn builtin_first_empty_list() {
-        let result = first(&[SExpr::List(vec![])]);
+        let vm = Vm::new();
+        let result = first(&vm, &[SExpr::List(vec![])]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SExpr::Atom("null".to_string()));
         println!("DEBUG: first on empty list returns null");
@@ -3301,14 +3317,16 @@ mod tests {
 
     #[test]
     fn builtin_rest_wrong_arg_count() {
-        let result = rest(&[]);
+        let vm = Vm::new();
+        let result = rest(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: rest with no args returns error");
     }
 
     #[test]
     fn builtin_rest_non_list() {
-        let result = rest(&[SExpr::Atom("not-a-list".to_string())]);
+        let vm = Vm::new();
+        let result = rest(&vm, &[SExpr::Atom("not-a-list".to_string())]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3317,7 +3335,8 @@ mod tests {
 
     #[test]
     fn builtin_rest_empty_list() {
-        let result = rest(&[SExpr::List(vec![])]);
+        let vm = Vm::new();
+        let result = rest(&vm, &[SExpr::List(vec![])]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SExpr::List(vec![]));
         println!("DEBUG: rest on empty list returns empty list");
@@ -3325,17 +3344,22 @@ mod tests {
 
     #[test]
     fn builtin_cons_wrong_arg_count() {
-        let result = cons(&[SExpr::Atom("a".to_string())]);
+        let vm = Vm::new();
+        let result = cons(&vm, &[SExpr::Atom("a".to_string())]);
         assert!(result.is_err());
         println!("DEBUG: cons with one arg returns error");
     }
 
     #[test]
     fn builtin_cons_second_not_list() {
-        let result = cons(&[
-            SExpr::Atom("a".to_string()),
-            SExpr::Atom("not-a-list".to_string()),
-        ]);
+        let vm = Vm::new();
+        let result = cons(
+            &vm,
+            &[
+                SExpr::Atom("a".to_string()),
+                SExpr::Atom("not-a-list".to_string()),
+            ],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3344,14 +3368,19 @@ mod tests {
 
     #[test]
     fn builtin_append_wrong_arg_count() {
-        let result = append(&[SExpr::List(vec![])]);
+        let vm = Vm::new();
+        let result = append(&vm, &[SExpr::List(vec![])]);
         assert!(result.is_err());
         println!("DEBUG: append with one arg returns error");
     }
 
     #[test]
     fn builtin_append_first_not_list() {
-        let result = append(&[SExpr::Atom("not-a-list".to_string()), SExpr::List(vec![])]);
+        let vm = Vm::new();
+        let result = append(
+            &vm,
+            &[SExpr::Atom("not-a-list".to_string()), SExpr::List(vec![])],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3360,21 +3389,27 @@ mod tests {
 
     #[test]
     fn builtin_append_second_not_list() {
-        let result = append(&[SExpr::List(vec![]), SExpr::Atom("not-a-list".to_string())]);
+        let vm = Vm::new();
+        let result = append(
+            &vm,
+            &[SExpr::List(vec![]), SExpr::Atom("not-a-list".to_string())],
+        );
         assert!(result.is_err());
         println!("DEBUG: append with non-list second arg returns type error");
     }
 
     #[test]
     fn builtin_length_wrong_arg_count() {
-        let result = length(&[]);
+        let vm = Vm::new();
+        let result = length(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: length with no args returns error");
     }
 
     #[test]
     fn builtin_length_non_list() {
-        let result = length(&[SExpr::Atom("not-a-list".to_string())]);
+        let vm = Vm::new();
+        let result = length(&vm, &[SExpr::Atom("not-a-list".to_string())]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3383,17 +3418,22 @@ mod tests {
 
     #[test]
     fn builtin_nth_wrong_arg_count() {
-        let result = nth(&[SExpr::Atom("0".to_string())]);
+        let vm = Vm::new();
+        let result = nth(&vm, &[SExpr::Atom("0".to_string())]);
         assert!(result.is_err());
         println!("DEBUG: nth with one arg returns error");
     }
 
     #[test]
     fn builtin_nth_non_integer_index() {
-        let result = nth(&[
-            SExpr::Atom("not-a-number".to_string()),
-            SExpr::List(vec![SExpr::Atom("a".to_string())]),
-        ]);
+        let vm = Vm::new();
+        let result = nth(
+            &vm,
+            &[
+                SExpr::Atom("not-a-number".to_string()),
+                SExpr::List(vec![SExpr::Atom("a".to_string())]),
+            ],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3402,20 +3442,28 @@ mod tests {
 
     #[test]
     fn builtin_nth_list_index() {
-        let result = nth(&[
-            SExpr::List(vec![]),
-            SExpr::List(vec![SExpr::Atom("a".to_string())]),
-        ]);
+        let vm = Vm::new();
+        let result = nth(
+            &vm,
+            &[
+                SExpr::List(vec![]),
+                SExpr::List(vec![SExpr::Atom("a".to_string())]),
+            ],
+        );
         assert!(result.is_err());
         println!("DEBUG: nth with list as index returns type error");
     }
 
     #[test]
     fn builtin_nth_non_list_second_arg() {
-        let result = nth(&[
-            SExpr::Atom("0".to_string()),
-            SExpr::Atom("not-a-list".to_string()),
-        ]);
+        let vm = Vm::new();
+        let result = nth(
+            &vm,
+            &[
+                SExpr::Atom("0".to_string()),
+                SExpr::Atom("not-a-list".to_string()),
+            ],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3424,10 +3472,14 @@ mod tests {
 
     #[test]
     fn builtin_nth_out_of_bounds() {
-        let result = nth(&[
-            SExpr::Atom("10".to_string()),
-            SExpr::List(vec![SExpr::Atom("a".to_string())]),
-        ]);
+        let vm = Vm::new();
+        let result = nth(
+            &vm,
+            &[
+                SExpr::Atom("10".to_string()),
+                SExpr::List(vec![SExpr::Atom("a".to_string())]),
+            ],
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SExpr::Atom("null".to_string()));
         println!("DEBUG: nth out of bounds returns null");
@@ -3435,7 +3487,11 @@ mod tests {
 
     #[test]
     fn builtin_list_creates_list() {
-        let result = list(&[SExpr::Atom("a".to_string()), SExpr::Atom("b".to_string())]);
+        let vm = Vm::new();
+        let result = list(
+            &vm,
+            &[SExpr::Atom("a".to_string()), SExpr::Atom("b".to_string())],
+        );
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap(),
@@ -3449,7 +3505,8 @@ mod tests {
 
     #[test]
     fn builtin_list_empty() {
-        let result = list(&[]);
+        let vm = Vm::new();
+        let result = list(&vm, &[]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SExpr::List(vec![]));
         println!("DEBUG: list with no args creates empty list");
@@ -3461,14 +3518,16 @@ mod tests {
 
     #[test]
     fn builtin_help_wrong_arg_count() {
-        let result = help(&[]);
+        let vm = Vm::new();
+        let result = help(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: help with no args returns error");
     }
 
     #[test]
     fn builtin_help_non_atom_arg() {
-        let result = help(&[SExpr::List(vec![])]);
+        let vm = Vm::new();
+        let result = help(&vm, &[SExpr::List(vec![])]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3477,7 +3536,8 @@ mod tests {
 
     #[test]
     fn builtin_help_not_found() {
-        let result = help(&[SExpr::Atom("nonexistent-function-xyz".to_string())]);
+        let vm = Vm::new();
+        let result = help(&vm, &[SExpr::Atom("nonexistent-function-xyz".to_string())]);
         assert!(result.is_ok());
         let help_text = result.unwrap();
         match help_text {
@@ -3495,10 +3555,14 @@ mod tests {
 
     #[test]
     fn builtin_obj_creates_object() {
-        let result = obj(&[
-            SExpr::Atom("\"key\"".to_string()),
-            SExpr::Atom("value".to_string()),
-        ]);
+        let vm = Vm::new();
+        let result = obj(
+            &vm,
+            &[
+                SExpr::Atom("\"key\"".to_string()),
+                SExpr::Atom("value".to_string()),
+            ],
+        );
         assert!(result.is_ok());
         match result.unwrap() {
             SExpr::List(items) => {
@@ -3512,7 +3576,8 @@ mod tests {
 
     #[test]
     fn builtin_obj_empty() {
-        let result = obj(&[]);
+        let vm = Vm::new();
+        let result = obj(&vm, &[]);
         assert!(result.is_ok());
         match result.unwrap() {
             SExpr::List(items) => {
@@ -3526,7 +3591,11 @@ mod tests {
 
     #[test]
     fn builtin_arr_creates_array() {
-        let result = arr(&[SExpr::Atom("1".to_string()), SExpr::Atom("2".to_string())]);
+        let vm = Vm::new();
+        let result = arr(
+            &vm,
+            &[SExpr::Atom("1".to_string()), SExpr::Atom("2".to_string())],
+        );
         assert!(result.is_ok());
         match result.unwrap() {
             SExpr::List(items) => {
@@ -3540,7 +3609,8 @@ mod tests {
 
     #[test]
     fn builtin_arr_empty() {
-        let result = arr(&[]);
+        let vm = Vm::new();
+        let result = arr(&vm, &[]);
         assert!(result.is_ok());
         match result.unwrap() {
             SExpr::List(items) => {
@@ -3554,17 +3624,22 @@ mod tests {
 
     #[test]
     fn builtin_get_wrong_arg_count() {
-        let result = builtin_get(&[SExpr::Atom("key".to_string())]);
+        let vm = Vm::new();
+        let result = builtin_get(&vm, &[SExpr::Atom("key".to_string())]);
         assert!(result.is_err());
         println!("DEBUG: get with one arg returns error");
     }
 
     #[test]
     fn builtin_get_non_atom_key() {
-        let result = builtin_get(&[
-            SExpr::List(vec![]),
-            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
-        ]);
+        let vm = Vm::new();
+        let result = builtin_get(
+            &vm,
+            &[
+                SExpr::List(vec![]),
+                SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+            ],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3573,37 +3648,41 @@ mod tests {
 
     #[test]
     fn builtin_get_quoted_key() {
+        let vm = Vm::new();
         let obj = SExpr::List(vec![
             SExpr::Atom("obj".to_string()),
             SExpr::Atom("\"key\"".to_string()),
             SExpr::Atom("value".to_string()),
         ]);
-        let result = builtin_get(&[SExpr::Atom("\"key\"".to_string()), obj]);
+        let result = builtin_get(&vm, &[SExpr::Atom("\"key\"".to_string()), obj]);
         assert!(result.is_ok());
         println!("DEBUG: get with quoted key works");
     }
 
     #[test]
     fn builtin_get_unquoted_key() {
+        let vm = Vm::new();
         let obj = SExpr::List(vec![
             SExpr::Atom("obj".to_string()),
             SExpr::Atom("\"key\"".to_string()),
             SExpr::Atom("value".to_string()),
         ]);
-        let result = builtin_get(&[SExpr::Atom("key".to_string()), obj]);
+        let result = builtin_get(&vm, &[SExpr::Atom("key".to_string()), obj]);
         assert!(result.is_ok());
         println!("DEBUG: get with unquoted key works");
     }
 
     #[test]
     fn builtin_keys_wrong_arg_count() {
-        let result = builtin_keys(&[]);
+        let vm = Vm::new();
+        let result = builtin_keys(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: keys with no args returns error");
     }
 
     #[test]
     fn builtin_keys_on_object() {
+        let vm = Vm::new();
         let obj = SExpr::List(vec![
             SExpr::Atom("obj".to_string()),
             SExpr::Atom("\"a\"".to_string()),
@@ -3611,47 +3690,57 @@ mod tests {
             SExpr::Atom("\"b\"".to_string()),
             SExpr::Atom("2".to_string()),
         ]);
-        let result = builtin_keys(&[obj]);
+        let result = builtin_keys(&vm, &[obj]);
         assert!(result.is_ok());
         println!("DEBUG: keys on object works");
     }
 
     #[test]
     fn builtin_values_wrong_arg_count() {
-        let result = builtin_values(&[]);
+        let vm = Vm::new();
+        let result = builtin_values(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: values with no args returns error");
     }
 
     #[test]
     fn builtin_values_on_object() {
+        let vm = Vm::new();
         let obj = SExpr::List(vec![
             SExpr::Atom("obj".to_string()),
             SExpr::Atom("\"a\"".to_string()),
             SExpr::Atom("1".to_string()),
         ]);
-        let result = builtin_values(&[obj]);
+        let result = builtin_values(&vm, &[obj]);
         assert!(result.is_ok());
         println!("DEBUG: values on object works");
     }
 
     #[test]
     fn builtin_assoc_wrong_arg_count() {
-        let result = builtin_assoc(&[
-            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
-            SExpr::Atom("key".to_string()),
-        ]);
+        let vm = Vm::new();
+        let result = builtin_assoc(
+            &vm,
+            &[
+                SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+                SExpr::Atom("key".to_string()),
+            ],
+        );
         assert!(result.is_err());
         println!("DEBUG: assoc with two args returns error");
     }
 
     #[test]
     fn builtin_assoc_non_atom_key() {
-        let result = builtin_assoc(&[
-            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
-            SExpr::List(vec![]),
-            SExpr::Atom("value".to_string()),
-        ]);
+        let vm = Vm::new();
+        let result = builtin_assoc(
+            &vm,
+            &[
+                SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+                SExpr::List(vec![]),
+                SExpr::Atom("value".to_string()),
+            ],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3660,29 +3749,38 @@ mod tests {
 
     #[test]
     fn builtin_assoc_quoted_key() {
+        let vm = Vm::new();
         let obj = SExpr::List(vec![SExpr::Atom("obj".to_string())]);
-        let result = builtin_assoc(&[
-            obj,
-            SExpr::Atom("\"key\"".to_string()),
-            SExpr::Atom("value".to_string()),
-        ]);
+        let result = builtin_assoc(
+            &vm,
+            &[
+                obj,
+                SExpr::Atom("\"key\"".to_string()),
+                SExpr::Atom("value".to_string()),
+            ],
+        );
         assert!(result.is_ok());
         println!("DEBUG: assoc with quoted key works");
     }
 
     #[test]
     fn builtin_dissoc_wrong_arg_count() {
-        let result = builtin_dissoc(&[SExpr::List(vec![SExpr::Atom("obj".to_string())])]);
+        let vm = Vm::new();
+        let result = builtin_dissoc(&vm, &[SExpr::List(vec![SExpr::Atom("obj".to_string())])]);
         assert!(result.is_err());
         println!("DEBUG: dissoc with one arg returns error");
     }
 
     #[test]
     fn builtin_dissoc_non_atom_key() {
-        let result = builtin_dissoc(&[
-            SExpr::List(vec![SExpr::Atom("obj".to_string())]),
-            SExpr::List(vec![]),
-        ]);
+        let vm = Vm::new();
+        let result = builtin_dissoc(
+            &vm,
+            &[
+                SExpr::List(vec![SExpr::Atom("obj".to_string())]),
+                SExpr::List(vec![]),
+            ],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("type-error"));
@@ -3691,32 +3789,36 @@ mod tests {
 
     #[test]
     fn builtin_dissoc_quoted_key() {
+        let vm = Vm::new();
         let obj = SExpr::List(vec![
             SExpr::Atom("obj".to_string()),
             SExpr::Atom("\"key\"".to_string()),
             SExpr::Atom("value".to_string()),
         ]);
-        let result = builtin_dissoc(&[obj, SExpr::Atom("\"key\"".to_string())]);
+        let result = builtin_dissoc(&vm, &[obj, SExpr::Atom("\"key\"".to_string())]);
         assert!(result.is_ok());
         println!("DEBUG: dissoc with quoted key works");
     }
 
     #[test]
     fn builtin_merge_wrong_arg_count_zero() {
-        let result = builtin_merge(&[]);
+        let vm = Vm::new();
+        let result = builtin_merge(&vm, &[]);
         assert!(result.is_err());
         println!("DEBUG: merge with no args returns error");
     }
 
     #[test]
     fn builtin_merge_wrong_arg_count_one() {
-        let result = builtin_merge(&[SExpr::List(vec![SExpr::Atom("obj".to_string())])]);
+        let vm = Vm::new();
+        let result = builtin_merge(&vm, &[SExpr::List(vec![SExpr::Atom("obj".to_string())])]);
         assert!(result.is_err());
         println!("DEBUG: merge with one arg returns error");
     }
 
     #[test]
     fn builtin_merge_two_objects() {
+        let vm = Vm::new();
         let obj1 = SExpr::List(vec![
             SExpr::Atom("obj".to_string()),
             SExpr::Atom("\"a\"".to_string()),
@@ -3727,7 +3829,7 @@ mod tests {
             SExpr::Atom("\"b\"".to_string()),
             SExpr::Atom("2".to_string()),
         ]);
-        let result = builtin_merge(&[obj1, obj2]);
+        let result = builtin_merge(&vm, &[obj1, obj2]);
         assert!(result.is_ok());
         println!("DEBUG: merge two objects works");
     }
@@ -4214,7 +4316,7 @@ mod tests {
         let mut vm = setup_vm();
         vm.def_fn("+", add);
 
-        fn sub(args: &[SExpr]) -> SResult<SExpr> {
+        fn sub(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
             let mut result = 0i64;
             for (i, arg) in args.iter().enumerate() {
                 if let SExpr::Atom(s) = arg {
@@ -4229,7 +4331,7 @@ mod tests {
             Ok(SExpr::Atom(result.to_string()))
         }
 
-        fn eq(args: &[SExpr]) -> SResult<SExpr> {
+        fn eq(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
             if args.len() != 2 {
                 return Ok(SExpr::Atom("#f".to_string()));
             }

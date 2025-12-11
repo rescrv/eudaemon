@@ -2071,6 +2071,89 @@ mod tests {
     }
 
     #[test]
+    fn extract_sections_simple() {
+        let doc = parse(r#"(doc (h1 "Title") (p "Intro") (h2 "Section") (p "Content"))"#);
+        let sections = extract_sections(&doc);
+        let s = sections.to_string();
+        println!("DEBUG extract_sections: {}", s);
+        assert!(s.contains("arr"));
+        assert!(s.contains("section"));
+        assert!(s.contains("\"title\""));
+        assert!(s.contains("\"Title\""));
+        assert!(s.contains("\"slug\""));
+        assert!(s.contains("\"title\""));
+    }
+
+    #[test]
+    fn extract_sections_nested_hierarchy() {
+        let doc = parse(r#"(doc (h1 "Top") (p "A") (h2 "Mid") (p "B") (h3 "Deep") (p "C"))"#);
+        let sections = extract_sections(&doc);
+        let s = sections.to_string();
+        println!("DEBUG extract_sections nested: {}", s);
+        assert!(s.contains("\"Top\""));
+        assert!(s.contains("\"Mid\""));
+        assert!(s.contains("\"Deep\""));
+        assert!(s.contains("\"children\""));
+    }
+
+    #[test]
+    fn extract_sections_empty_doc() {
+        let doc = parse(r#"(doc)"#);
+        let sections = extract_sections(&doc);
+        assert_eq!(sections, SExpr::List(vec![SExpr::Atom("arr".to_string())]));
+    }
+
+    #[test]
+    fn extract_sections_no_headers() {
+        let doc = parse(r#"(doc (p "Just text"))"#);
+        let sections = extract_sections(&doc);
+        assert_eq!(sections, SExpr::List(vec![SExpr::Atom("arr".to_string())]));
+    }
+
+    #[test]
+    fn section_to_doc_basic() {
+        let doc = parse(r#"(doc (h1 "Title") (p "Content"))"#);
+        let sections = extract_sections(&doc);
+
+        if let SExpr::List(items) = &sections
+            && items.len() > 1
+        {
+            let section = &items[1];
+            let result = section_to_doc(section).unwrap();
+            let s = result.to_string();
+            println!("DEBUG section_to_doc: {}", s);
+            assert!(s.contains("doc"));
+            assert!(s.contains("h1"));
+            assert!(s.contains("\"Title\""));
+        }
+    }
+
+    #[test]
+    fn section_to_doc_preserves_content() {
+        let doc = parse(r#"(doc (h2 "Section") (p "Para 1") (p "Para 2"))"#);
+        let sections = extract_sections(&doc);
+
+        if let SExpr::List(items) = &sections
+            && items.len() > 1
+        {
+            let section = &items[1];
+            let result = section_to_doc(section).unwrap();
+            let s = result.to_string();
+            println!("DEBUG section_to_doc content: {}", s);
+            assert!(s.contains("(h1 \"Section\")"));
+            assert!(s.contains("\"Para 1\""));
+            assert!(s.contains("\"Para 2\""));
+        }
+    }
+
+    #[test]
+    fn slugify_special_chars() {
+        assert_eq!(slugify("Hello, World!"), "hello_-world_");
+        assert_eq!(slugify("Test 123"), "test-123");
+        assert_eq!(slugify("a--b"), "a-b");
+    }
+
+    #[test]
     fn scan_links_link_ref() {
         let doc = parse(r#"(doc (p (link-ref "ref1" "Link text")))"#);
         let links = scan_links(&doc);
