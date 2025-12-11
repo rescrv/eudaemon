@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use crate::error::{SError, SResult};
@@ -46,6 +46,7 @@ pub trait Filesystem: Send + Sync {
 /// - All paths are resolved relative to the root
 /// - Path traversal via `..` that escapes root is rejected
 /// - Symlinks pointing outside root ARE allowed (chroot with symlink tolerance)
+#[derive(Debug)]
 pub struct DirectoryFilesystem {
     root: PathBuf,
 }
@@ -75,59 +76,56 @@ impl DirectoryFilesystem {
 
     /// Resolves a relative path within the filesystem root.
     ///
-    /// Normalizes the path and checks for path traversal attacks.
+    /// Checks for path traversal attacks using utf8path.
     /// Does NOT follow symlinks for the security check (only validates logical path).
     fn resolve(&self, path: &str) -> SResult<PathBuf> {
-        let normalized = normalize_path(path);
-
-        // Check for path escape via .. traversal
-        if path_escapes_root(&normalized) {
+        if path_contains_parent_traversal(path) {
             return Err(SError::new("filesystem")
-                .with_code("path-escape")
-                .with_message("Path traversal outside root is not allowed")
+                .with_code("parent-dir-not-allowed")
+                .with_message("Paths containing '..' are not allowed")
                 .with_string_field("path", path));
         }
 
-        Ok(self.root.join(normalized))
+        Ok(self.root.join(path))
     }
+}
 
-    /// Recursively finds all markdown files in the root directory.
-    fn find_markdown_files_recursive(&self, dir: &Path, base: &Path) -> SResult<Vec<String>> {
-        let mut files = Vec::new();
+/// Recursively finds all markdown files in a directory.
+fn find_markdown_files_recursive(dir: &Path, base: &Path) -> SResult<Vec<String>> {
+    let mut files = Vec::new();
 
-        let entries = fs::read_dir(dir).map_err(|e| {
+    let entries = fs::read_dir(dir).map_err(|e| {
+        SError::new("filesystem")
+            .with_code("io-error")
+            .with_message("Failed to read directory")
+            .with_string_field("path", &dir.display().to_string())
+            .with_string_field("error", &e.to_string())
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
             SError::new("filesystem")
                 .with_code("io-error")
-                .with_message("Failed to read directory")
-                .with_string_field("path", &dir.display().to_string())
+                .with_message("Failed to read directory entry")
                 .with_string_field("error", &e.to_string())
         })?;
 
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                SError::new("filesystem")
-                    .with_code("io-error")
-                    .with_message("Failed to read directory entry")
-                    .with_string_field("error", &e.to_string())
-            })?;
-
-            let path = entry.path();
-            if path.is_dir() {
-                files.extend(self.find_markdown_files_recursive(&path, base)?);
-            } else if path.is_file()
-                && path
-                    .extension()
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("md"))
-            {
-                // Get path relative to base
-                if let Ok(rel_path) = path.strip_prefix(base) {
-                    files.push(rel_path.to_string_lossy().replace('\\', "/"));
-                }
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(find_markdown_files_recursive(&path, base)?);
+        } else if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            // Get path relative to base
+            if let Ok(rel_path) = path.strip_prefix(base) {
+                files.push(rel_path.to_string_lossy().replace('\\', "/"));
             }
         }
-
-        Ok(files)
     }
+
+    Ok(files)
 }
 
 impl Filesystem for DirectoryFilesystem {
@@ -136,7 +134,7 @@ impl Filesystem for DirectoryFilesystem {
     }
 
     fn list_markdown_files(&self) -> SResult<Vec<String>> {
-        self.find_markdown_files_recursive(&self.root, &self.root)
+        find_markdown_files_recursive(&self.root, &self.root)
     }
 
     fn read(&self, path: &str) -> SResult<String> {
@@ -174,9 +172,7 @@ impl Filesystem for DirectoryFilesystem {
     }
 
     fn exists(&self, path: &str) -> bool {
-        self.resolve(path)
-            .map(|p| p.is_file())
-            .unwrap_or(false)
+        self.resolve(path).map(|p| p.is_file()).unwrap_or(false)
     }
 }
 
@@ -205,16 +201,14 @@ impl InMemoryFilesystem {
 
     /// Resolves and validates a path for the in-memory filesystem.
     fn resolve(&self, path: &str) -> SResult<String> {
-        let normalized = normalize_path(path);
-
-        if path_escapes_root(&normalized) {
+        if path_contains_parent_traversal(path) {
             return Err(SError::new("filesystem")
-                .with_code("path-escape")
-                .with_message("Path traversal outside root is not allowed")
+                .with_code("parent-dir-not-allowed")
+                .with_message("Paths containing '..' are not allowed")
                 .with_string_field("path", path));
         }
 
-        Ok(normalized)
+        Ok(path.to_string())
     }
 }
 
@@ -268,50 +262,19 @@ impl Filesystem for InMemoryFilesystem {
     }
 }
 
-/// Normalizes a path by resolving `.` and `..` components.
+/// Checks if a path contains parent directory traversal (`..`).
 ///
-/// This operates purely on the string representation and does not touch the filesystem.
-fn normalize_path(path: &str) -> String {
-    let path = Path::new(path);
-    let mut components = Vec::new();
+/// We reject all paths containing `..` for simplicity and security.
+fn path_contains_parent_traversal(path: &str) -> bool {
+    let utf8_path = utf8path::Path::new(path);
 
-    for component in path.components() {
-        match component {
-            Component::Normal(c) => {
-                components.push(c.to_string_lossy().to_string());
-            }
-            Component::ParentDir => {
-                components.pop();
-            }
-            Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) => {}
+    for component in utf8_path.components() {
+        if matches!(component, utf8path::Component::ParentDir) {
+            return true;
         }
     }
 
-    components.join("/")
-}
-
-/// Checks if a normalized path would escape the root via `..` traversal.
-fn path_escapes_root(normalized: &str) -> bool {
-    let path = Path::new(normalized);
-    let mut depth: i32 = 0;
-
-    for component in path.components() {
-        match component {
-            Component::Normal(_) => {
-                depth += 1;
-            }
-            Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    depth < 0
+    false
 }
 
 #[cfg(test)]
@@ -320,59 +283,22 @@ mod tests {
     use std::env;
 
     // ========================================================================
-    // normalize_path tests
+    // path_contains_parent_traversal tests
     // ========================================================================
 
     #[test]
-    fn normalize_simple_path() {
-        assert_eq!(normalize_path("foo/bar.md"), "foo/bar.md");
-        println!("DEBUG: simple path normalized correctly");
+    fn parent_traversal_safe_path() {
+        assert!(!path_contains_parent_traversal("foo/bar.md"));
+        assert!(!path_contains_parent_traversal("a/b/c"));
+        println!("DEBUG: safe paths don't contain parent traversal");
     }
 
     #[test]
-    fn normalize_path_with_current_dir() {
-        assert_eq!(normalize_path("./foo/bar.md"), "foo/bar.md");
-        assert_eq!(normalize_path("foo/./bar.md"), "foo/bar.md");
-        println!("DEBUG: current dir components removed");
-    }
-
-    #[test]
-    fn normalize_path_with_parent_dir() {
-        assert_eq!(normalize_path("foo/baz/../bar.md"), "foo/bar.md");
-        assert_eq!(normalize_path("a/b/c/../../d.md"), "a/d.md");
-        println!("DEBUG: parent dir components resolved");
-    }
-
-    #[test]
-    fn normalize_path_strips_leading_slash() {
-        assert_eq!(normalize_path("/foo/bar.md"), "foo/bar.md");
-        println!("DEBUG: leading slash stripped");
-    }
-
-    // ========================================================================
-    // path_escapes_root tests
-    // ========================================================================
-
-    #[test]
-    fn escape_check_safe_path() {
-        assert!(!path_escapes_root("foo/bar.md"));
-        assert!(!path_escapes_root("a/b/c"));
-        println!("DEBUG: safe paths don't escape");
-    }
-
-    #[test]
-    fn escape_check_parent_traversal() {
-        assert!(path_escapes_root("../etc/passwd"));
-        assert!(path_escapes_root("foo/../../bar"));
+    fn parent_traversal_detected() {
+        assert!(path_contains_parent_traversal("../etc/passwd"));
+        assert!(path_contains_parent_traversal("foo/../../bar"));
+        assert!(path_contains_parent_traversal("foo/../bar"));
         println!("DEBUG: parent traversal detected");
-    }
-
-    #[test]
-    fn escape_check_normalized_parent() {
-        // After normalization, "foo/../bar" becomes "bar" which is safe
-        let normalized = normalize_path("foo/../bar");
-        assert!(!path_escapes_root(&normalized));
-        println!("DEBUG: normalized path is safe");
     }
 
     // ========================================================================
@@ -450,13 +376,13 @@ mod tests {
     }
 
     #[test]
-    fn in_memory_path_escape_rejected() {
+    fn in_memory_parent_dir_rejected() {
         let fs = InMemoryFilesystem::new();
         let result = fs.read("../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("path-escape"));
-        println!("DEBUG: path escape is rejected");
+        assert!(err.to_string().contains("parent-dir-not-allowed"));
+        println!("DEBUG: parent dir is rejected");
     }
 
     #[test]
@@ -464,6 +390,60 @@ mod tests {
         let fs = InMemoryFilesystem::new();
         assert_eq!(fs.root(), Path::new("/memory"));
         println!("DEBUG: root returns /memory");
+    }
+
+    #[test]
+    fn in_memory_write_overwrites_existing() {
+        let fs = InMemoryFilesystem::new();
+        fs.write("test.md", "original").unwrap();
+        fs.write("test.md", "updated").unwrap();
+        let content = fs.read("test.md").unwrap();
+        assert_eq!(content, "updated");
+        println!("DEBUG: write overwrites existing content");
+    }
+
+    #[test]
+    fn in_memory_write_parent_dir_rejected() {
+        let fs = InMemoryFilesystem::new();
+        let result = fs.write("../escape.md", "malicious");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("parent-dir-not-allowed"));
+        println!("DEBUG: write rejects parent dir traversal");
+    }
+
+    #[test]
+    fn in_memory_exists_parent_dir_rejected() {
+        let fs = InMemoryFilesystem::new();
+        let result = fs.exists("../etc/passwd");
+        assert!(!result);
+        println!("DEBUG: exists returns false for parent dir traversal");
+    }
+
+    #[test]
+    fn in_memory_list_uppercase_md_extension() {
+        let fs = InMemoryFilesystem::new();
+        fs.write("lowercase.md", "# Lower").unwrap();
+        fs.write("uppercase.MD", "# Upper").unwrap();
+        fs.write("other.txt", "text").unwrap();
+
+        let files = fs.list_markdown_files().unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"lowercase.md".to_string()));
+        assert!(files.contains(&"uppercase.MD".to_string()));
+        println!("DEBUG: list_markdown_files includes .MD extension");
+    }
+
+    #[test]
+    fn in_memory_list_is_sorted() {
+        let fs = InMemoryFilesystem::new();
+        fs.write("z.md", "z").unwrap();
+        fs.write("a.md", "a").unwrap();
+        fs.write("m.md", "m").unwrap();
+
+        let files = fs.list_markdown_files().unwrap();
+        assert_eq!(files, vec!["a.md", "m.md", "z.md"]);
+        println!("DEBUG: list_markdown_files returns sorted results");
     }
 
     // ========================================================================
@@ -551,15 +531,15 @@ mod tests {
     }
 
     #[test]
-    fn directory_fs_path_escape_rejected() {
+    fn directory_fs_parent_dir_rejected() {
         let dir = env::current_dir().unwrap();
         let fs = DirectoryFilesystem::new(&dir).unwrap();
 
         let result = fs.read("../../../etc/passwd");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("path-escape"));
-        println!("DEBUG: path escape is rejected");
+        assert!(err.to_string().contains("parent-dir-not-allowed"));
+        println!("DEBUG: parent dir is rejected");
     }
 
     #[test]

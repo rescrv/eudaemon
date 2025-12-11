@@ -56,6 +56,8 @@
 //!
 //! - **Core S-expression types**: [`SExpr`], [`Parser`], [`SError`], [`SResult`]
 //! - **VM**: [`Vm`], [`BuiltinFn`], [`VmState`], [`Condition`], [`Restart`]
+//! - **Filesystem**: [`Filesystem`], [`DirectoryFilesystem`], [`InMemoryFilesystem`]
+//!   with builtins `load`, `save`, `list-files`, `read-file`, `write-file`, `file-exists?`
 //! - **JSON conversion**: [`json_to_sexpr`], [`sexpr_to_json`]
 //! - **Markdown conversion**: [`markdown_to_sexpr`], [`sexpr_to_markdown`]
 //! - **Node navigation**: [`PathId`], [`ContentId`], [`NodeId`], [`get_by_path`]
@@ -70,6 +72,7 @@
 mod docs;
 mod error;
 mod expr;
+mod filesystem;
 mod json;
 pub mod markdown;
 mod nodeid;
@@ -81,6 +84,7 @@ mod vm;
 
 pub use error::{SError, SResult};
 pub use expr::{Parser, SExpr};
+pub use filesystem::{DirectoryFilesystem, Filesystem, InMemoryFilesystem};
 pub use json::{
     json_to_sexpr, json_value_to_sexpr, sexpr_to_json, sexpr_to_json_value, unescape_string,
 };
@@ -122,4 +126,4 @@ pub use selector::{
 };
 pub use vm::{BuiltinFn, Condition, Restart, Vm, VmState};
 
-pub use docs::{ALL_DOCS, BUILTINS_DOCS, JSON_DOCS, MARKDOWN_DOCS, get_help};
+pub use docs::{ALL_DOCS, BUILTINS_DOCS, FILESYSTEM_DOCS, JSON_DOCS, MARKDOWN_DOCS, get_help};

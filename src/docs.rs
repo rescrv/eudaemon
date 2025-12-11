@@ -408,6 +408,46 @@ pub const MARKDOWN_WRAP_IN_DETAILS: (&str, &str) = (
 );
 
 // =============================================================================
+// Filesystem Documentation
+// =============================================================================
+
+/// Documentation for the `file-exists?` filesystem function.
+pub const FILESYSTEM_FILE_EXISTS_P: (&str, &str) = (
+    "docs/filesystem/file-exists-p.md",
+    include_str!("../docs/filesystem/file-exists-p.md"),
+);
+
+/// Documentation for the `list-files` filesystem function.
+pub const FILESYSTEM_LIST_FILES: (&str, &str) = (
+    "docs/filesystem/list-files.md",
+    include_str!("../docs/filesystem/list-files.md"),
+);
+
+/// Documentation for the `load` filesystem function.
+pub const FILESYSTEM_LOAD: (&str, &str) = (
+    "docs/filesystem/load.md",
+    include_str!("../docs/filesystem/load.md"),
+);
+
+/// Documentation for the `read-file` filesystem function.
+pub const FILESYSTEM_READ_FILE: (&str, &str) = (
+    "docs/filesystem/read-file.md",
+    include_str!("../docs/filesystem/read-file.md"),
+);
+
+/// Documentation for the `save` filesystem function.
+pub const FILESYSTEM_SAVE: (&str, &str) = (
+    "docs/filesystem/save.md",
+    include_str!("../docs/filesystem/save.md"),
+);
+
+/// Documentation for the `write-file` filesystem function.
+pub const FILESYSTEM_WRITE_FILE: (&str, &str) = (
+    "docs/filesystem/write-file.md",
+    include_str!("../docs/filesystem/write-file.md"),
+);
+
+// =============================================================================
 // Aggregate Constants
 // =============================================================================
 
@@ -447,6 +487,16 @@ pub const JSON_DOCS: [(&str, &str); 8] = [
     JSON_MERGE,
     JSON_OBJ,
     JSON_VALUES,
+];
+
+/// All filesystem documentation files as (path, contents) tuples.
+pub const FILESYSTEM_DOCS: [(&str, &str); 6] = [
+    FILESYSTEM_FILE_EXISTS_P,
+    FILESYSTEM_LIST_FILES,
+    FILESYSTEM_LOAD,
+    FILESYSTEM_READ_FILE,
+    FILESYSTEM_SAVE,
+    FILESYSTEM_WRITE_FILE,
 ];
 
 /// All markdown documentation files as (path, contents) tuples.
@@ -493,7 +543,7 @@ pub const MARKDOWN_DOCS: [(&str, &str); 36] = [
 ///
 /// This array contains every embedded documentation file, suitable for populating
 /// a virtual file system overlay.  Paths are relative to the crate root.
-pub const ALL_DOCS: [(&str, &str); 66] = [
+pub const ALL_DOCS: [(&str, &str); 72] = [
     // Builtins (22)
     BUILTINS_APPEND,
     BUILTINS_ATOM_P,
@@ -526,6 +576,13 @@ pub const ALL_DOCS: [(&str, &str); 66] = [
     JSON_MERGE,
     JSON_OBJ,
     JSON_VALUES,
+    // Filesystem (6)
+    FILESYSTEM_FILE_EXISTS_P,
+    FILESYSTEM_LIST_FILES,
+    FILESYSTEM_LOAD,
+    FILESYSTEM_READ_FILE,
+    FILESYSTEM_SAVE,
+    FILESYSTEM_WRITE_FILE,
     // Markdown (36)
     MARKDOWN_ANNOTATE,
     MARKDOWN_APPEND_CHILD,
@@ -620,7 +677,7 @@ mod tests {
     fn all_docs_count_matches_sum_of_categories() {
         assert_eq!(
             ALL_DOCS.len(),
-            BUILTINS_DOCS.len() + JSON_DOCS.len() + MARKDOWN_DOCS.len(),
+            BUILTINS_DOCS.len() + JSON_DOCS.len() + FILESYSTEM_DOCS.len() + MARKDOWN_DOCS.len(),
             "ALL_DOCS should contain exactly the sum of all category arrays"
         );
     }
@@ -680,6 +737,17 @@ mod tests {
             assert!(
                 path.starts_with("docs/markdown/"),
                 "Markdown doc path should be in docs/markdown/: {}",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn filesystem_docs_paths_are_in_filesystem_directory() {
+        for (path, _) in FILESYSTEM_DOCS {
+            assert!(
+                path.starts_with("docs/filesystem/"),
+                "Filesystem doc path should be in docs/filesystem/: {}",
                 path
             );
         }

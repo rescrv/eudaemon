@@ -14,8 +14,10 @@ use std::sync::Arc;
 use crate::docs::get_help;
 use crate::error::{SError, SResult};
 use crate::expr::SExpr;
+use crate::filesystem::Filesystem;
+use crate::markdown::{markdown_to_sexpr, sexpr_to_markdown};
 use crate::object::{assoc, dissoc, get, keys, merge, values};
-use crate::util::string_atom;
+use crate::util::{extract_string, string_atom};
 
 /// Unique identifier for a function in the arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -263,6 +265,8 @@ pub struct Vm {
     current_result: Option<SExpr>,
     /// Global variable bindings (for REPL file bindings).
     globals: HashMap<String, SExpr>,
+    /// Optional filesystem for file operations.
+    filesystem: Option<Box<dyn Filesystem>>,
 }
 
 impl Default for Vm {
@@ -281,7 +285,18 @@ impl Vm {
             next_func_id: 0,
             current_result: None,
             globals: HashMap::new(),
+            filesystem: None,
         }
+    }
+
+    /// Returns a reference to the filesystem, if one is set.
+    pub fn filesystem(&self) -> Option<&dyn Filesystem> {
+        self.filesystem.as_deref()
+    }
+
+    /// Sets the filesystem for this VM.
+    pub fn set_filesystem(&mut self, fs: Box<dyn Filesystem>) {
+        self.filesystem = Some(fs);
     }
 
     /// Binds a global variable.
@@ -335,6 +350,19 @@ impl Vm {
         self.def_fn("assoc", builtin_assoc);
         self.def_fn("dissoc", builtin_dissoc);
         self.def_fn("merge", builtin_merge);
+    }
+
+    /// Registers filesystem builtins for file I/O operations.
+    ///
+    /// These builtins require a filesystem to be set on the VM via [`Vm::set_filesystem`].
+    /// If no filesystem is set, the builtins will return an error.
+    pub fn register_filesystem_builtins(&mut self) {
+        self.def_fn("load", builtin_load);
+        self.def_fn("save", builtin_save);
+        self.def_fn("list-files", builtin_list_files);
+        self.def_fn("read-file", builtin_read_file);
+        self.def_fn("write-file", builtin_write_file);
+        self.def_fn("file-exists?", builtin_file_exists);
     }
 
     /// Looks up a function by name.
@@ -1732,6 +1760,117 @@ fn builtin_merge(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
             .with_message("merge requires at least two arguments"));
     }
     Ok(merge(args))
+}
+
+// ============================================================================
+// Filesystem builtins
+// ============================================================================
+
+/// Returns a reference to the filesystem or an error if none is set.
+fn require_filesystem(vm: &Vm) -> SResult<&dyn Filesystem> {
+    vm.filesystem().ok_or_else(|| {
+        SError::new("vm")
+            .with_code("no-filesystem")
+            .with_message("No filesystem is attached to this VM")
+    })
+}
+
+/// Loads a markdown file and parses it to an s-expression.
+///
+/// `(load "path.md")` -> s-expression document
+fn builtin_load(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("load")
+            .with_code("wrong-argument-count")
+            .with_message("load requires exactly one argument: the file path")
+            .with_atom_field("received", args.len()));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let content = fs.read(&path)?;
+    markdown_to_sexpr(&content)
+}
+
+/// Saves an s-expression document to a markdown file.
+///
+/// `(save doc "path.md")` -> writes file, returns path
+fn builtin_save(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("save")
+            .with_code("wrong-argument-count")
+            .with_message("save requires exactly two arguments: document and file path")
+            .with_atom_field("received", args.len()));
+    }
+    let path = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    let markdown = sexpr_to_markdown(&args[0])?;
+    fs.write(&path, &markdown)?;
+    Ok(string_atom(&path))
+}
+
+/// Lists all markdown files in the filesystem.
+///
+/// `(list-files)` -> list of file paths
+fn builtin_list_files(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if !args.is_empty() {
+        return Err(SError::new("list-files")
+            .with_code("wrong-argument-count")
+            .with_message("list-files takes no arguments")
+            .with_atom_field("received", args.len()));
+    }
+    let fs = require_filesystem(vm)?;
+    let files = fs.list_markdown_files()?;
+    let items: Vec<SExpr> = files.into_iter().map(|f| string_atom(&f)).collect();
+    Ok(SExpr::List(items))
+}
+
+/// Reads a file as a raw string.
+///
+/// `(read-file "path")` -> string content
+fn builtin_read_file(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("read-file")
+            .with_code("wrong-argument-count")
+            .with_message("read-file requires exactly one argument: the file path")
+            .with_atom_field("received", args.len()));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let content = fs.read(&path)?;
+    Ok(string_atom(&content))
+}
+
+/// Writes a string to a file.
+///
+/// `(write-file "path" content)` -> writes file, returns path
+fn builtin_write_file(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("write-file")
+            .with_code("wrong-argument-count")
+            .with_message("write-file requires exactly two arguments: path and content")
+            .with_atom_field("received", args.len()));
+    }
+    let path = extract_string(&args[0]);
+    let content = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    fs.write(&path, &content)?;
+    Ok(string_atom(&path))
+}
+
+/// Checks if a file exists.
+///
+/// `(file-exists? "path")` -> #t or #f
+fn builtin_file_exists(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("file-exists?")
+            .with_code("wrong-argument-count")
+            .with_message("file-exists? requires exactly one argument: the file path")
+            .with_atom_field("received", args.len()));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let exists = fs.exists(&path);
+    Ok(SExpr::Atom(if exists { "#t" } else { "#f" }.to_string()))
 }
 
 /// Extract a string key from an atom, handling quoted strings.

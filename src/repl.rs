@@ -26,6 +26,7 @@ use rustyline::{Context, Editor, Helper};
 
 use super::error::{SError, SResult};
 use super::expr::{Parser, SExpr};
+use super::filesystem::DirectoryFilesystem;
 use super::markdown::curation::{
     LinkInfo, extract_sections, find_undefined_references, generate_toc, get_external_links,
     get_image_links, get_internal_links, link_info_to_sexpr, mark_deprecated, normalize_headers,
@@ -195,31 +196,24 @@ impl Repl {
         Ok(Repl { working_dir })
     }
 
-    /// Creates a new VM with all builtins registered.
+    /// Creates a new VM with all builtins registered (no filesystem).
     fn create_vm(&self) -> Vm {
         let mut vm = Vm::new();
         vm.register_builtins();
         vm.register_json_builtins();
+        vm.register_filesystem_builtins();
         register_markdown_builtins(&mut vm);
         vm
     }
 
-    /// Creates a VM with all markdown files bound as variables.
-    fn create_vm_with_files(&self) -> SResult<Vm> {
+    /// Creates a VM with filesystem attached.
+    ///
+    /// The filesystem is rooted at the REPL's working directory and allows
+    /// file operations via builtins like `load`, `save`, `list-files`, etc.
+    fn create_vm_with_filesystem(&self) -> SResult<Vm> {
         let mut vm = self.create_vm();
-
-        // Load all markdown files from filesystem and bind as variables
-        let files = self.list_files()?;
-        for file in &files {
-            let path = self.working_dir.join(file);
-            if let Ok(content) = fs::read_to_string(&path)
-                && let Ok(sexpr) = markdown_to_sexpr(&content)
-            {
-                // Bind by full filename (e.g., "readme.md", "docs/guide.md")
-                vm.bind_global(file, sexpr);
-            }
-        }
-
+        let fs = DirectoryFilesystem::new(&self.working_dir)?;
+        vm.set_filesystem(Box::new(fs));
         Ok(vm)
     }
 
@@ -296,6 +290,13 @@ impl Repl {
             "extract-sections",
             "section-to-doc",
             "slugify",
+            // Filesystem builtins
+            "load",
+            "save",
+            "list-files",
+            "read-file",
+            "write-file",
+            "file-exists?",
         ];
         names.iter().map(|s| s.to_string()).collect()
     }
@@ -390,8 +391,8 @@ impl Repl {
             }
         };
 
-        // Create VM with file bindings and evaluate
-        let mut vm = self.create_vm_with_files()?;
+        // Create VM with filesystem and evaluate
+        let mut vm = self.create_vm_with_filesystem()?;
         let result = vm.eval(&expr)?;
 
         // Write result back to disk
@@ -400,13 +401,12 @@ impl Repl {
 
     /// Evaluates an s-expression string in the REPL environment.
     ///
-    /// All markdown files in the working directory are available as variables
-    /// using their full filename (e.g., "readme.md", "docs/guide.md").
+    /// Use `(load "filename.md")` to load files from the working directory.
     pub fn eval(&self, input: &str) -> SResult<SExpr> {
         let mut parser = Parser::new(input);
         let expr = parser.parse()?;
 
-        let mut vm = self.create_vm_with_files()?;
+        let mut vm = self.create_vm_with_filesystem()?;
         vm.eval(&expr)
     }
 
@@ -499,10 +499,10 @@ impl Repl {
             }
         };
 
-        let mut vm = match self.create_vm_with_files() {
+        let mut vm = match self.create_vm_with_filesystem() {
             Ok(vm) => vm,
             Err(e) => {
-                println!("Error loading files: {}", e);
+                println!("Error creating VM: {}", e);
                 return;
             }
         };
