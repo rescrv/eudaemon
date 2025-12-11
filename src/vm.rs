@@ -338,6 +338,7 @@ impl Vm {
         self.def_fn("nth", nth);
         self.def_fn("list", list);
         self.def_fn("help", help);
+        self.def_fn("str", str_concat);
     }
 
     /// Registers JSON object manipulation builtins.
@@ -1642,6 +1643,14 @@ fn nth(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
 
 fn list(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(args.to_vec()))
+}
+
+fn str_concat(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    let mut result = String::new();
+    for arg in args {
+        result.push_str(&extract_string(arg));
+    }
+    Ok(string_atom(&result))
 }
 
 fn help(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {

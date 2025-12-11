@@ -11,14 +11,22 @@ fn atom_to_string(atom: &str) -> String {
     }
 }
 
-/// Get a value from an object by key
+/// Get a value from an object by key.
+///
+/// Works with any tagged list containing key-value pairs, e.g.:
+/// - `(obj ("key" value) ...)`
+/// - `(section ("key" value) ...)`
+///
+/// The tag must be an unquoted atom (not a string).
 pub fn get(value: &SExpr, key: &str) -> SExpr {
     match value {
         SExpr::List(items) if !items.is_empty() => {
-            if let SExpr::Atom(tag) = &items[0]
-                && tag == "obj"
-            {
-                // Search for the key in the object
+            if let SExpr::Atom(tag) = &items[0] {
+                // Skip if tag looks like a quoted string
+                if tag.starts_with('"') {
+                    return SExpr::Atom("null".to_string());
+                }
+                // Search for the key in the key-value pairs
                 for item in items.iter().skip(1) {
                     if let SExpr::List(pair) = item
                         && pair.len() == 2
@@ -237,6 +245,22 @@ mod tests {
         let value = parse(r#"(obj ("name" "Alice"))"#);
         let result = get(&value, "missing");
         assert_eq!(result.to_string(), "null");
+    }
+
+    #[test]
+    fn get_works_with_section_tag() {
+        let value = parse(r#"(section ("level" 1) ("title" "Hello") ("slug" "hello"))"#);
+        let result = get(&value, "slug");
+        assert_eq!(result.to_string(), r#""hello""#);
+        println!("DEBUG get_works_with_section_tag: {}", result);
+    }
+
+    #[test]
+    fn get_works_with_any_tag() {
+        let value = parse(r#"(custom-tag ("foo" "bar") ("baz" 42))"#);
+        assert_eq!(get(&value, "foo").to_string(), r#""bar""#);
+        assert_eq!(get(&value, "baz").to_string(), "42");
+        println!("DEBUG get_works_with_any_tag passed");
     }
 
     #[test]

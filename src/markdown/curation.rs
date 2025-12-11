@@ -453,18 +453,28 @@ fn collect_headings_for_toc(expr: &SExpr, toc_items: &mut Vec<SExpr>) {
 
 /// Converts text to a URL-friendly slug.
 fn slugify(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c
-            } else if c.is_whitespace() || c == '-' {
-                '-'
-            } else {
-                '_'
+    let mut result = String::new();
+    let mut pending_underscore = false;
+
+    for c in text.to_lowercase().chars() {
+        if c.is_alphanumeric() {
+            if pending_underscore {
+                result.push('_');
             }
-        })
-        .collect::<String>()
+            pending_underscore = false;
+            result.push(c);
+        } else if c == '_' {
+            pending_underscore = true;
+        } else if c.is_whitespace() || c == '-' {
+            pending_underscore = false;
+            result.push('-');
+        } else {
+            // Other punctuation: buffer as underscore (only emit before alphanumeric)
+            pending_underscore = true;
+        }
+    }
+
+    result
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
@@ -2148,9 +2158,14 @@ mod tests {
 
     #[test]
     fn slugify_special_chars() {
-        assert_eq!(slugify("Hello, World!"), "hello_-world_");
+        // Punctuation is dropped unless followed by alphanumeric
+        assert_eq!(slugify("Hello, World!"), "hello-world");
         assert_eq!(slugify("Test 123"), "test-123");
         assert_eq!(slugify("a--b"), "a-b");
+        // Colon followed by space becomes just hyphen
+        assert_eq!(slugify("Lincoln: A Life"), "lincoln-a-life");
+        // Underscore before alphanumeric is preserved
+        assert_eq!(slugify("api_v2"), "api_v2");
     }
 
     #[test]
@@ -2251,5 +2266,36 @@ mod tests {
         let result = normalize_headers(&doc, &[(3, 1)]).unwrap();
         let s = result.to_string();
         assert!(s.contains("(h1 \"Nested\")"));
+    }
+
+    #[test]
+    fn extract_sections_slug_accessible_via_get() {
+        use crate::object::get;
+
+        let doc = parse(r#"(doc (h1 "Abraham Lincoln: A Life") (p "Intro text"))"#);
+        let sections = extract_sections(&doc);
+        println!("DEBUG sections: {}", sections);
+
+        // Get the first section (skip the "arr" tag)
+        if let SExpr::List(items) = &sections {
+            assert!(items.len() > 1, "Expected at least one section");
+            let section = &items[1];
+            println!("DEBUG section: {}", section);
+
+            // Use get to access the slug field
+            let slug = get(section, "slug");
+            println!("DEBUG slug: {}", slug);
+
+            // The slug should be "abraham-lincoln-a-life" (with colon removed)
+            let slug_str = crate::util::extract_string(&slug);
+            assert!(
+                !slug_str.is_empty() && slug_str != "null",
+                "Expected non-null slug, got: {}",
+                slug_str
+            );
+            assert_eq!(slug_str, "abraham-lincoln-a-life");
+        } else {
+            panic!("Expected sections to be a list");
+        }
     }
 }
