@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use agentkb::{DirectoryFilesystem, Parser, Vm, VmState, register_markdown_builtins};
+use agentkb::{register_markdown_builtins, DirectoryFilesystem, Parser, Vm, VmState};
 
 /// The Lisp program that does the actual work.
 ///
@@ -21,6 +21,9 @@ use agentkb::{DirectoryFilesystem, Parser, Vm, VmState, register_markdown_builti
 /// - save: convert s-expression to markdown and write to file
 /// - get: access fields in section objects
 /// - str: concatenate strings
+///
+/// This program is akin to the standard library call:
+/// (splat (load "lincoln.md") "lincoln/")
 const LISP_PROGRAM: &str = r#"
 (begin
   (defun get-field (section field)
