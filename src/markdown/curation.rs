@@ -1307,6 +1307,209 @@ pub fn skeleton_summary_to_sexpr(summary: &SkeletonSummary) -> SExpr {
     ])
 }
 
+// ============================================================================
+// Document Sectioning (for refactoring into file hierarchies)
+// ============================================================================
+
+/// Extracts the header level from a node, if it's a header.
+fn get_header_level(node: &SExpr) -> Option<u8> {
+    if let SExpr::List(items) = node
+        && let Some(SExpr::Atom(tag)) = items.first()
+        && tag.starts_with('h')
+        && tag.len() == 2
+    {
+        return tag[1..].parse().ok();
+    }
+    None
+}
+
+/// Extracts text content from a header node.
+fn extract_header_title(node: &SExpr) -> String {
+    if let SExpr::List(items) = node {
+        items
+            .iter()
+            .skip(1)
+            .map(extract_text_content)
+            .collect::<Vec<_>>()
+            .join("")
+    } else {
+        String::new()
+    }
+}
+
+/// Parses a document into a tree of sections based on header hierarchy.
+///
+/// The document is split at each header, with content between headers belonging
+/// to the preceding header's section. Headers with higher levels (e.g., h2, h3)
+/// become children of the nearest preceding header with a lower level.
+///
+/// Returns an s-expression array of section objects. Each section has:
+/// - level: the header level (1-6)
+/// - title: the header text
+/// - slug: URL-friendly version of the title
+/// - content: array of content nodes (not including child sections)
+/// - children: array of child sections
+///
+/// Content before the first header is ignored.
+pub fn extract_sections(doc: &SExpr) -> SExpr {
+    let items = match doc {
+        SExpr::List(items)
+            if items
+                .first()
+                .is_some_and(|e| matches!(e, SExpr::Atom(s) if s == "doc")) =>
+        {
+            &items[1..]
+        }
+        _ => return SExpr::List(vec![SExpr::Atom("arr".to_string())]),
+    };
+
+    let sections = parse_sections_to_sexpr(items, 0);
+    SExpr::List(
+        std::iter::once(SExpr::Atom("arr".to_string()))
+            .chain(sections)
+            .collect(),
+    )
+}
+
+/// Recursively parses sections from a slice of document nodes, returning s-expressions.
+fn parse_sections_to_sexpr(items: &[SExpr], min_level: u8) -> Vec<SExpr> {
+    let mut sections = Vec::new();
+    let mut i = 0;
+
+    while i < items.len() {
+        if let Some(level) = get_header_level(&items[i]) {
+            // Skip headers at or above the minimum level (they belong to a parent)
+            if min_level > 0 && level <= min_level {
+                break;
+            }
+
+            let title = extract_header_title(&items[i]);
+            let mut content = Vec::new();
+            let mut j = i + 1;
+
+            // Collect all items until we hit a header of same or higher level
+            while j < items.len() {
+                if let Some(next_level) = get_header_level(&items[j])
+                    && next_level <= level
+                {
+                    break;
+                }
+                j += 1;
+            }
+
+            // Separate direct content from child sections
+            for item in items.iter().take(j).skip(i + 1) {
+                if get_header_level(item).is_none() {
+                    content.push(item.clone());
+                }
+            }
+
+            // Recursively parse child sections
+            let child_items: Vec<_> = items[(i + 1)..j].to_vec();
+            let children = parse_sections_to_sexpr(&child_items, level);
+
+            // Build content array
+            let content_arr = SExpr::List(
+                std::iter::once(SExpr::Atom("arr".to_string()))
+                    .chain(content)
+                    .collect(),
+            );
+
+            // Build children array
+            let children_arr = SExpr::List(
+                std::iter::once(SExpr::Atom("arr".to_string()))
+                    .chain(children)
+                    .collect(),
+            );
+
+            // Build section object
+            let section = SExpr::List(vec![
+                SExpr::Atom("section".to_string()),
+                SExpr::List(vec![
+                    SExpr::Atom("\"level\"".to_string()),
+                    SExpr::Atom(level.to_string()),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("\"title\"".to_string()),
+                    string_atom(&title),
+                ]),
+                SExpr::List(vec![
+                    SExpr::Atom("\"slug\"".to_string()),
+                    string_atom(&slugify(&title)),
+                ]),
+                SExpr::List(vec![SExpr::Atom("\"content\"".to_string()), content_arr]),
+                SExpr::List(vec![SExpr::Atom("\"children\"".to_string()), children_arr]),
+            ]);
+
+            sections.push(section);
+            i = j;
+        } else {
+            // Content before first header - skip
+            i += 1;
+        }
+    }
+
+    sections
+}
+
+/// Converts a section s-expression back into a standalone document.
+///
+/// The section's header becomes an h1, and all direct content is included.
+/// Child sections are NOT included - use this for leaf sections or
+/// call recursively for the full hierarchy.
+///
+/// Takes a section object (as returned by extract-sections) and returns a doc.
+pub fn section_to_doc(section: &SExpr) -> SResult<SExpr> {
+    // Extract title from section
+    let title = get_section_field(section, "title")?;
+    let title_str = extract_string(&title);
+
+    // Extract content array from section
+    let content = get_section_field(section, "content")?;
+
+    let mut doc_items = vec![SExpr::Atom("doc".to_string())];
+
+    // Add the header (always as h1 in the output document)
+    doc_items.push(SExpr::List(vec![
+        SExpr::Atom("h1".to_string()),
+        string_atom(&title_str),
+    ]));
+
+    // Add the content items (skip the "arr" tag)
+    if let SExpr::List(items) = content {
+        for item in items.into_iter().skip(1) {
+            doc_items.push(item);
+        }
+    }
+
+    Ok(SExpr::List(doc_items))
+}
+
+/// Gets a field from a section s-expression.
+fn get_section_field(section: &SExpr, field_name: &str) -> SResult<SExpr> {
+    let quoted_name = format!("\"{}\"", field_name);
+    if let SExpr::List(items) = section {
+        for item in items.iter().skip(1) {
+            if let SExpr::List(pair) = item
+                && pair.len() == 2
+                && let SExpr::Atom(key) = &pair[0]
+                && key == &quoted_name
+            {
+                return Ok(pair[1].clone());
+            }
+        }
+    }
+    Err(SError::new("section")
+        .with_code("field-not-found")
+        .with_message("Section field not found")
+        .with_string_field("field", field_name))
+}
+
+/// Exposes the slugify function for external use.
+pub fn slugify_text(text: &str) -> String {
+    slugify(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

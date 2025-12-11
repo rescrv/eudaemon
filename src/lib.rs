@@ -87,13 +87,12 @@ pub use json::{
     json_to_sexpr, json_value_to_sexpr, sexpr_to_json, sexpr_to_json_value, unescape_string,
 };
 pub use markdown::curation::{
-    ExtractResult, ExtractStrategy, LinkDefinition, LinkInfo, SkeletonSummary, TagInfo,
-    extract_to_ref, extract_with_strategy, find_undefined_references, focus_context, generate_toc,
-    get_external_links, get_image_links, get_internal_links, get_tagged_nodes, link_info_to_sexpr,
-    mark_deprecated, merge_sections, normalize_headers, rehome_orphans, remove_tag,
-    scan_link_definitions, scan_links, scan_links_to_sexpr, skeleton_summary,
-    skeleton_summary_to_sexpr, skeletonize, tag_node, update_link, wrap_in_callout,
-    wrap_in_details,
+    extract_sections, extract_to_ref, extract_with_strategy, find_undefined_references,
+    focus_context, generate_toc, get_external_links, get_image_links, get_internal_links,
+    get_tagged_nodes, link_info_to_sexpr, mark_deprecated, merge_sections, normalize_headers,
+    rehome_orphans, remove_tag, scan_link_definitions, scan_links, scan_links_to_sexpr,
+    section_to_doc, skeleton_summary, skeleton_summary_to_sexpr, skeletonize, slugify_text,
+    tag_node, update_link, wrap_in_callout, wrap_in_details,
 };
 pub use markdown::invariants::{
     Invariant, ValidationResult, Violation, all_pass, assert_invariant, validate_all,

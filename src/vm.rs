@@ -7,13 +7,6 @@
 //!
 //! The VM stores functions in an arena and uses `FunctionId` references, allowing
 //! function redefinition to affect all existing references.
-//!
-//! TODO(claude): Per PLAN.md section 4, implement the "Inspector" (Reflection):
-//! - Create an `Inspectable` trait with `children(&self) -> Vec<(String, ValueId)>`
-//!   and `label(&self) -> String` methods
-//! - Implement `,inspect <obj>` command in the REPL
-//! - Create a sub-loop inspector mode where commands like `cd 0`, `ls` navigate
-//!   the arena/memory graph
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -193,19 +186,19 @@ struct Frame {
     /// The operation this frame is performing.
     op: FrameOp,
     /// Local variable bindings for this frame.
-    locals: HashMap<String, SExpr>,
+    env: Environment,
 }
 
 impl Frame {
     fn new(op: FrameOp) -> Self {
         Frame {
             op,
-            locals: HashMap::new(),
+            env: Environment::new(),
         }
     }
 
-    fn with_locals(op: FrameOp, locals: HashMap<String, SExpr>) -> Self {
-        Frame { op, locals }
+    fn with_env(op: FrameOp, env: Environment) -> Self {
+        Frame { op, env }
     }
 }
 
@@ -228,10 +221,6 @@ impl Environment {
     }
 
     /// Creates a child environment with this as parent.
-    ///
-    /// TODO(claude): This method will be used when implementing user-defined lambdas that
-    /// capture their lexical environment.
-    #[allow(dead_code)]
     pub fn child(self: &Arc<Self>) -> Self {
         Environment {
             bindings: HashMap::new(),
@@ -424,29 +413,25 @@ impl Vm {
     /// Steps a single frame.
     fn step_frame(&mut self, frame: Frame) -> Result<VmState, Condition> {
         match frame.op {
-            FrameOp::Eval(expr) => self.step_eval(expr, frame.locals),
+            FrameOp::Eval(expr) => self.step_eval(expr, frame.env),
             FrameOp::Call {
                 func_name,
                 args,
                 evaluated_count,
-            } => self.step_call(func_name, args, evaluated_count, frame.locals),
+            } => self.step_call(func_name, args, evaluated_count, frame.env),
             FrameOp::SpecialForm { name, args, state } => {
-                self.step_special_form(name, args, state, frame.locals)
+                self.step_special_form(name, args, state, frame.env)
             }
         }
     }
 
     /// Steps an Eval frame.
-    fn step_eval(
-        &mut self,
-        expr: SExpr,
-        locals: HashMap<String, SExpr>,
-    ) -> Result<VmState, Condition> {
+    fn step_eval(&mut self, expr: SExpr, env: Environment) -> Result<VmState, Condition> {
         match expr {
             SExpr::Atom(ref s) => {
-                // Check for local variable binding first
-                if let Some(value) = locals.get(s) {
-                    self.current_result = Some(value.clone());
+                // Check for local variable binding first (uses Environment::lookup)
+                if let Some(value) = env.lookup(s) {
+                    self.current_result = Some(value);
                     return Ok(VmState::Running);
                 }
                 // Check for global variable binding
@@ -480,25 +465,25 @@ impl Vm {
                 match func_name.as_str() {
                     "quote" | "if" | "let" | "begin" | "->" | "->>" | "map" | "filter"
                     | "reduce" | "lambda" | "defun" => {
-                        self.frames.push(Frame::with_locals(
+                        self.frames.push(Frame::with_env(
                             FrameOp::SpecialForm {
                                 name: func_name,
                                 args,
                                 state: SpecialFormState::WaitingForValue,
                             },
-                            locals,
+                            env,
                         ));
                         Ok(VmState::Running)
                     }
                     _ => {
                         // Regular function call - start evaluating arguments
-                        self.frames.push(Frame::with_locals(
+                        self.frames.push(Frame::with_env(
                             FrameOp::Call {
                                 func_name,
                                 args,
                                 evaluated_count: 0,
                             },
-                            locals,
+                            env,
                         ));
                         Ok(VmState::Running)
                     }
@@ -513,7 +498,7 @@ impl Vm {
         func_name: String,
         mut args: Vec<SExpr>,
         evaluated_count: usize,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         // If we have a result from a previous step, store it
         if let Some(result) = self.current_result.take()
@@ -525,19 +510,19 @@ impl Vm {
         // If there are more arguments to evaluate
         if evaluated_count < args.len() {
             // Push the call frame back with incremented count
-            self.frames.push(Frame::with_locals(
+            self.frames.push(Frame::with_env(
                 FrameOp::Call {
                     func_name,
                     args: args.clone(),
                     evaluated_count: evaluated_count + 1,
                 },
-                locals.clone(),
+                env.clone(),
             ));
 
             // Push an eval frame for the next argument
-            self.frames.push(Frame::with_locals(
+            self.frames.push(Frame::with_env(
                 FrameOp::Eval(args[evaluated_count].clone()),
-                locals,
+                env,
             ));
 
             return Ok(VmState::Running);
@@ -545,24 +530,28 @@ impl Vm {
 
         // All arguments evaluated - call the function
         // First check if func_name is a local binding pointing to a lambda
-        let resolved_name = if let Some(SExpr::Atom(name)) = locals.get(&func_name) {
+        let resolved_name = if let Some(SExpr::Atom(name)) = env.lookup(&func_name) {
             name.clone()
         } else {
             func_name.clone()
         };
         let func = self.lookup_fn(&resolved_name).cloned();
         match func {
-            Some(FunctionObj::Builtin { func, .. }) => match func(&args) {
+            Some(FunctionObj::Builtin { name, func }) => match func(&args) {
                 Ok(result) => {
                     self.current_result = Some(result);
                     Ok(VmState::Running)
                 }
                 Err(e) => Err(Condition::Custom {
                     code: "builtin-error".to_string(),
-                    message: e.to_string(),
+                    message: format!("{}: {}", name, e),
                 }),
             },
-            Some(FunctionObj::Lambda { params, body, env }) => {
+            Some(FunctionObj::Lambda {
+                params,
+                body,
+                env: captured_env,
+            }) => {
                 // Check argument count
                 if args.len() != params.len() {
                     return Err(Condition::WrongArgumentCount {
@@ -572,22 +561,15 @@ impl Vm {
                     });
                 }
 
-                // Create new locals by binding params to args, starting with captured env
-                let mut new_locals = HashMap::new();
-                // Copy bindings from captured environment
-                for (k, v) in &env.bindings {
-                    new_locals.insert(k.clone(), v.clone());
-                }
-                // Bind parameters to arguments
+                // Create child environment from captured env and bind parameters
+                let mut new_env = captured_env.child();
                 for (param, arg) in params.iter().zip(args.iter()) {
-                    new_locals.insert(param.clone(), arg.clone());
+                    new_env.bind(param, arg.clone());
                 }
 
                 // Push a frame to evaluate the body in the new environment
-                self.frames.push(Frame::with_locals(
-                    FrameOp::Eval(body.clone()),
-                    new_locals,
-                ));
+                self.frames
+                    .push(Frame::with_env(FrameOp::Eval(body.clone()), new_env));
                 Ok(VmState::Running)
             }
             None => Err(Condition::FunctionNotFound { name: func_name }),
@@ -600,20 +582,20 @@ impl Vm {
         name: String,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         match name.as_str() {
             "quote" => self.step_quote(args),
-            "if" => self.step_if(args, state, locals),
-            "let" => self.step_let(args, state, locals),
-            "begin" => self.step_begin(args, state, locals),
-            "->" => self.step_thread_first(args, state, locals),
-            "->>" => self.step_thread_last(args, state, locals),
-            "map" => self.step_map(args, state, locals),
-            "filter" => self.step_filter(args, state, locals),
-            "reduce" => self.step_reduce(args, state, locals),
-            "lambda" => self.step_lambda(args, locals),
-            "defun" => self.step_defun(args, locals),
+            "if" => self.step_if(args, state, env),
+            "let" => self.step_let(args, state, env),
+            "begin" => self.step_begin(args, state, env),
+            "->" => self.step_thread_first(args, state, env),
+            "->>" => self.step_thread_last(args, state, env),
+            "map" => self.step_map(args, state, env),
+            "filter" => self.step_filter(args, state, env),
+            "reduce" => self.step_reduce(args, state, env),
+            "lambda" => self.step_lambda(args, env),
+            "defun" => self.step_defun(args, env),
             _ => Err(Condition::Custom {
                 code: "unknown-special-form".to_string(),
                 message: format!("Unknown special form: {}", name),
@@ -622,11 +604,7 @@ impl Vm {
     }
 
     /// Handles (lambda (params...) body).
-    fn step_lambda(
-        &mut self,
-        args: Vec<SExpr>,
-        locals: HashMap<String, SExpr>,
-    ) -> Result<VmState, Condition> {
+    fn step_lambda(&mut self, args: Vec<SExpr>, env: Environment) -> Result<VmState, Condition> {
         if args.len() != 2 {
             return Err(Condition::WrongArgumentCount {
                 function: "lambda".to_string(),
@@ -663,13 +641,14 @@ impl Vm {
         let body = args[1].clone();
 
         // Capture the current environment
-        let env = Arc::new(Environment {
-            bindings: locals,
-            parent: None,
-        });
+        let captured_env = Arc::new(env);
 
         // Create the lambda function object
-        let lambda = FunctionObj::Lambda { params, body, env };
+        let lambda = FunctionObj::Lambda {
+            params,
+            body,
+            env: captured_env,
+        };
 
         // Register it in the arena with a generated name
         let id = FunctionId(self.next_func_id);
@@ -684,11 +663,7 @@ impl Vm {
     }
 
     /// Handles (defun name (params...) body).
-    fn step_defun(
-        &mut self,
-        args: Vec<SExpr>,
-        locals: HashMap<String, SExpr>,
-    ) -> Result<VmState, Condition> {
+    fn step_defun(&mut self, args: Vec<SExpr>, env: Environment) -> Result<VmState, Condition> {
         if args.len() != 3 {
             return Err(Condition::WrongArgumentCount {
                 function: "defun".to_string(),
@@ -736,13 +711,14 @@ impl Vm {
         let body = args[2].clone();
 
         // Capture the current environment
-        let env = Arc::new(Environment {
-            bindings: locals,
-            parent: None,
-        });
+        let captured_env = Arc::new(env);
 
         // Create the lambda function object
-        let lambda = FunctionObj::Lambda { params, body, env };
+        let lambda = FunctionObj::Lambda {
+            params,
+            body,
+            env: captured_env,
+        };
 
         // Register it in the arena with the given name (or update if it exists)
         let id = if let Some(&existing_id) = self.function_names.get(&func_name) {
@@ -781,7 +757,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.len() != 3 {
             return Err(Condition::WrongArgumentCount {
@@ -795,16 +771,16 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the condition
                 let first_arg = args[0].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "if".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(first_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -816,7 +792,7 @@ impl Vm {
                     args[2].clone()
                 };
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(branch), locals));
+                    .push(Frame::with_env(FrameOp::Eval(branch), env));
                 Ok(VmState::Running)
             }
             _ => Ok(VmState::Running),
@@ -828,7 +804,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        mut locals: HashMap<String, SExpr>,
+        mut env: Environment,
     ) -> Result<VmState, Condition> {
         if args.len() < 2 {
             return Err(Condition::WrongArgumentCount {
@@ -852,13 +828,13 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 if bindings.is_empty() {
                     // No bindings, evaluate body directly
-                    self.frames.push(Frame::with_locals(
+                    self.frames.push(Frame::with_env(
                         FrameOp::SpecialForm {
                             name: "let".to_string(),
                             args,
                             state: SpecialFormState::Index(bindings.len()),
                         },
-                        locals,
+                        env,
                     ));
                 } else {
                     // Start evaluating first binding
@@ -870,16 +846,16 @@ impl Vm {
                                 message: "Each binding must be (var value)".to_string(),
                             });
                         }
-                        self.frames.push(Frame::with_locals(
+                        self.frames.push(Frame::with_env(
                             FrameOp::SpecialForm {
                                 name: "let".to_string(),
                                 args,
                                 state: SpecialFormState::Index(0),
                             },
-                            locals.clone(),
+                            env.clone(),
                         ));
                         self.frames
-                            .push(Frame::with_locals(FrameOp::Eval(pair[1].clone()), locals));
+                            .push(Frame::with_env(FrameOp::Eval(pair[1].clone()), env));
                     } else {
                         return Err(Condition::Custom {
                             code: "invalid-binding".to_string(),
@@ -890,13 +866,13 @@ impl Vm {
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
-                // Store the evaluated value
+                // Store the evaluated value using Environment::bind
                 if idx < bindings.len()
                     && let Some(result) = self.current_result.take()
                     && let SExpr::List(pair) = &bindings[idx]
                 {
                     if let SExpr::Atom(var_name) = &pair[0] {
-                        locals.insert(var_name.clone(), result);
+                        env.bind(var_name, result);
                     } else {
                         return Err(Condition::Custom {
                             code: "invalid-binding-name".to_string(),
@@ -915,16 +891,16 @@ impl Vm {
                                 message: "Each binding must be (var value)".to_string(),
                             });
                         }
-                        self.frames.push(Frame::with_locals(
+                        self.frames.push(Frame::with_env(
                             FrameOp::SpecialForm {
                                 name: "let".to_string(),
                                 args,
                                 state: SpecialFormState::Index(idx + 1),
                             },
-                            locals.clone(),
+                            env.clone(),
                         ));
                         self.frames
-                            .push(Frame::with_locals(FrameOp::Eval(pair[1].clone()), locals));
+                            .push(Frame::with_env(FrameOp::Eval(pair[1].clone()), env));
                     }
                     return Ok(VmState::Running);
                 }
@@ -935,19 +911,19 @@ impl Vm {
                     self.current_result = Some(SExpr::List(vec![]));
                 } else if body.len() == 1 {
                     self.frames
-                        .push(Frame::with_locals(FrameOp::Eval(body[0].clone()), locals));
+                        .push(Frame::with_env(FrameOp::Eval(body[0].clone()), env));
                 } else {
                     // Multiple body expressions - use begin
-                    self.frames.push(Frame::with_locals(
+                    self.frames.push(Frame::with_env(
                         FrameOp::SpecialForm {
                             name: "begin".to_string(),
                             args: body.to_vec(),
                             state: SpecialFormState::Index(0),
                         },
-                        locals.clone(),
+                        env.clone(),
                     ));
                     self.frames
-                        .push(Frame::with_locals(FrameOp::Eval(body[0].clone()), locals));
+                        .push(Frame::with_env(FrameOp::Eval(body[0].clone()), env));
                 }
                 Ok(VmState::Running)
             }
@@ -959,7 +935,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.is_empty() {
             return Err(Condition::WrongArgumentCount {
@@ -973,32 +949,32 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Start evaluating first expression
                 let first_arg = args[0].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "begin".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(first_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
                 if idx + 1 < args.len() {
                     // More expressions to evaluate
                     let next_arg = args[idx + 1].clone();
-                    self.frames.push(Frame::with_locals(
+                    self.frames.push(Frame::with_env(
                         FrameOp::SpecialForm {
                             name: "begin".to_string(),
                             args,
                             state: SpecialFormState::Index(idx + 1),
                         },
-                        locals.clone(),
+                        env.clone(),
                     ));
                     self.frames
-                        .push(Frame::with_locals(FrameOp::Eval(next_arg), locals));
+                        .push(Frame::with_env(FrameOp::Eval(next_arg), env));
                 }
                 // Last expression's result is already in current_result
                 Ok(VmState::Running)
@@ -1011,7 +987,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.is_empty() {
             return Err(Condition::WrongArgumentCount {
@@ -1025,16 +1001,16 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the initial value
                 let first_arg = args[0].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "->".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(first_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
@@ -1050,16 +1026,16 @@ impl Vm {
                 let form = &args[idx + 1];
                 let threaded = thread_into(form, value, true);
 
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "->".to_string(),
                         args,
                         state: SpecialFormState::Index(idx + 1),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(threaded), locals));
+                    .push(Frame::with_env(FrameOp::Eval(threaded), env));
                 Ok(VmState::Running)
             }
         }
@@ -1070,7 +1046,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.is_empty() {
             return Err(Condition::WrongArgumentCount {
@@ -1084,16 +1060,16 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the initial value
                 let first_arg = args[0].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "->>".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(first_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(first_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(idx) => {
@@ -1109,16 +1085,16 @@ impl Vm {
                 let form = &args[idx + 1];
                 let threaded = thread_into(form, value, false);
 
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "->>".to_string(),
                         args,
                         state: SpecialFormState::Index(idx + 1),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(threaded), locals));
+                    .push(Frame::with_env(FrameOp::Eval(threaded), env));
                 Ok(VmState::Running)
             }
         }
@@ -1129,7 +1105,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.len() != 2 {
             return Err(Condition::WrongArgumentCount {
@@ -1153,16 +1129,16 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the list argument
                 let second_arg = args[1].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "map".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(second_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(second_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -1201,7 +1177,7 @@ impl Vm {
                 );
 
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(list_expr), locals));
+                    .push(Frame::with_env(FrameOp::Eval(list_expr), env));
                 Ok(VmState::Running)
             }
             _ => Ok(VmState::Running),
@@ -1213,7 +1189,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.len() != 2 {
             return Err(Condition::WrongArgumentCount {
@@ -1237,16 +1213,16 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the list argument
                 let second_arg = args[1].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "filter".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(second_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(second_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
@@ -1302,7 +1278,7 @@ impl Vm {
         &mut self,
         args: Vec<SExpr>,
         state: SpecialFormState,
-        locals: HashMap<String, SExpr>,
+        env: Environment,
     ) -> Result<VmState, Condition> {
         if args.len() != 3 {
             return Err(Condition::WrongArgumentCount {
@@ -1326,36 +1302,36 @@ impl Vm {
             SpecialFormState::WaitingForValue => {
                 // Evaluate the initial value
                 let second_arg = args[1].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "reduce".to_string(),
                         args,
                         state: SpecialFormState::Index(0),
                     },
-                    locals.clone(),
+                    env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(second_arg), locals));
+                    .push(Frame::with_env(FrameOp::Eval(second_arg), env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(0) => {
                 let init = self.current_result.take().unwrap_or(SExpr::List(vec![]));
                 // Now evaluate the list
-                // Store init in locals temporarily
-                let mut new_locals = locals.clone();
-                new_locals.insert("__reduce_acc__".to_string(), init);
+                // Store init in env temporarily
+                let mut new_env = env.clone();
+                new_env.bind("__reduce_acc__", init);
 
                 let third_arg = args[2].clone();
-                self.frames.push(Frame::with_locals(
+                self.frames.push(Frame::with_env(
                     FrameOp::SpecialForm {
                         name: "reduce".to_string(),
                         args,
                         state: SpecialFormState::Index(1),
                     },
-                    new_locals.clone(),
+                    new_env.clone(),
                 ));
                 self.frames
-                    .push(Frame::with_locals(FrameOp::Eval(third_arg), new_locals));
+                    .push(Frame::with_env(FrameOp::Eval(third_arg), new_env));
                 Ok(VmState::Running)
             }
             SpecialFormState::Index(1) => {
@@ -1370,10 +1346,9 @@ impl Vm {
                     }
                 };
 
-                let init = locals
-                    .get("__reduce_acc__")
-                    .cloned()
-                    .unwrap_or(SExpr::List(vec![]));
+                let init = env
+                    .lookup("__reduce_acc__")
+                    .unwrap_or_else(|| SExpr::List(vec![]));
 
                 if items.is_empty() {
                     self.current_result = Some(init);
@@ -4138,7 +4113,10 @@ mod tests {
         let expr = parser.parse().unwrap();
         let result = vm.eval(&expr);
         assert!(result.is_err());
-        println!("DEBUG: lambda with wrong syntax returns error: {:?}", result);
+        println!(
+            "DEBUG: lambda with wrong syntax returns error: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4273,5 +4251,826 @@ mod tests {
         // sum-to(5) = 5 + 4 + 3 + 2 + 1 + 0 = 15
         assert_eq!(result, SExpr::Atom("15".to_string()));
         println!("DEBUG: recursive defun works: {}", result);
+    }
+
+    // ========================================================================
+    // Comprehensive Lambda tests
+    // ========================================================================
+
+    // ------------------------------------------------------------------------
+    // Lambda syntax validation tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_requires_exactly_two_args() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!(
+            "DEBUG: lambda with no args returns wrong-argument-count: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn lambda_requires_two_args_not_one() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda (x))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!(
+            "DEBUG: lambda with one arg returns wrong-argument-count: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn lambda_requires_two_args_not_three() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda (x) body extra)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!(
+            "DEBUG: lambda with three args returns wrong-argument-count: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn lambda_params_must_be_list() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda not-a-list body)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        assert!(err.to_string().contains("list of parameters"));
+        println!(
+            "DEBUG: lambda with non-list params returns type-error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn lambda_param_names_must_be_atoms() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda ((nested list) x) body)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        assert!(err.to_string().contains("atom"));
+        println!(
+            "DEBUG: lambda with non-atom param name returns type-error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn lambda_all_params_must_be_atoms() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda (x (y z)) body)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type-error"));
+        println!(
+            "DEBUG: lambda with mixed atom/list params returns type-error: {}",
+            err
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda returns callable reference tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_returns_internal_name() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(lambda (x) x)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        match result {
+            SExpr::Atom(name) => {
+                assert!(name.starts_with("__lambda_"));
+                println!("DEBUG: lambda returns internal name: {}", name);
+            }
+            _ => panic!("Expected atom, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn lambda_sequential_creates_unique_names() {
+        let mut vm = setup_vm();
+        let mut parser1 = Parser::new("(lambda (x) x)");
+        let mut parser2 = Parser::new("(lambda (y) y)");
+        let expr1 = parser1.parse().unwrap();
+        let expr2 = parser2.parse().unwrap();
+        let result1 = vm.eval(&expr1).unwrap();
+        let result2 = vm.eval(&expr2).unwrap();
+        match (&result1, &result2) {
+            (SExpr::Atom(name1), SExpr::Atom(name2)) => {
+                assert_ne!(name1, name2);
+                println!(
+                    "DEBUG: sequential lambdas have unique names: {} vs {}",
+                    name1, name2
+                );
+            }
+            _ => panic!("Expected atoms"),
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda parameter binding tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_binds_single_param() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (x) x))) (f 42))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("42".to_string()));
+        println!("DEBUG: lambda binds single param correctly: {}", result);
+    }
+
+    #[test]
+    fn lambda_binds_multiple_params_in_order() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (a b c) b))) (f 1 2 3))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("2".to_string()));
+        println!(
+            "DEBUG: lambda binds multiple params in order, b=2: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn lambda_binds_first_param() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (a b c) a))) (f 1 2 3))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("1".to_string()));
+        println!("DEBUG: lambda binds first param a=1: {}", result);
+    }
+
+    #[test]
+    fn lambda_binds_last_param() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (a b c) c))) (f 1 2 3))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("3".to_string()));
+        println!("DEBUG: lambda binds last param c=3: {}", result);
+    }
+
+    #[test]
+    fn lambda_params_shadow_outer_bindings() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((x 100)) (let ((f (lambda (x) x))) (f 42)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("42".to_string()));
+        println!("DEBUG: lambda params shadow outer bindings: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda closure/environment capture tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_captures_single_binding() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((y 10)) (let ((f (lambda (x) (+ x y)))) (f 5)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: lambda captures single binding y=10: {}", result);
+    }
+
+    #[test]
+    fn lambda_captures_multiple_bindings() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new(
+            "(let ((a 1) (b 2) (c 3)) (let ((f (lambda (x) (+ x (+ a (+ b c)))))) (f 10)))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // x=10, a=1, b=2, c=3 -> 10 + 1 + 2 + 3 = 16
+        assert_eq!(result, SExpr::Atom("16".to_string()));
+        println!(
+            "DEBUG: lambda captures multiple bindings a=1,b=2,c=3: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn lambda_captures_nested_let_bindings() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new(
+            "(let ((a 1)) (let ((b 2)) (let ((f (lambda (x) (+ x (+ a b))))) (f 10))))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // x=10, a=1, b=2 -> 10 + 1 + 2 = 13
+        assert_eq!(result, SExpr::Atom("13".to_string()));
+        println!(
+            "DEBUG: lambda captures nested let bindings a=1,b=2: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn lambda_closure_preserves_captured_values() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Create closure with y=10, then call it after y would be "out of scope"
+        let mut parser = Parser::new("(let ((f (let ((y 10)) (lambda (x) (+ x y))))) (f 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!(
+            "DEBUG: closure preserves captured value y=10 after scope: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn lambda_captures_at_definition_time() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Define closure with y=10, rebind y to 100, call closure - should use 10
+        let mut parser =
+            Parser::new("(let ((y 10)) (let ((f (lambda (x) (+ x y)))) (let ((y 100)) (f 5))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // Closure captured y=10 at definition, not y=100
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!(
+            "DEBUG: lambda captures at definition time (y=10 not 100): {}",
+            result
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda argument count validation tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_call_too_few_args() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x y) (+ x y)))) (f 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!("DEBUG: lambda call with too few args: {}", err);
+    }
+
+    #[test]
+    fn lambda_call_too_many_args() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x) (+ x 1)))) (f 5 6 7))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!("DEBUG: lambda call with too many args: {}", err);
+    }
+
+    #[test]
+    fn lambda_zero_params_requires_zero_args() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda () (quote ok)))) (f extra))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("wrong-argument-count"));
+        println!("DEBUG: zero-param lambda rejects args: {}", err);
+    }
+
+    // ------------------------------------------------------------------------
+    // Nested lambda tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn nested_lambda_inner_captures_outer_param() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // (lambda (x) (lambda (y) (+ x y))) - curried add
+        let mut parser = Parser::new(
+            "(let ((make-adder (lambda (x) (lambda (y) (+ x y))))) (let ((add5 (make-adder 5))) (add5 3)))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("8".to_string()));
+        println!(
+            "DEBUG: nested lambda inner captures outer param (currying): {}",
+            result
+        );
+    }
+
+    #[test]
+    fn nested_lambda_multiple_levels() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Three-level nesting: (lambda (a) (lambda (b) (lambda (c) (+ a (+ b c)))))
+        let mut parser = Parser::new(
+            "(let ((f (lambda (a) (lambda (b) (lambda (c) (+ a (+ b c))))))) (let ((g (f 1))) (let ((h (g 2))) (h 3))))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // a=1, b=2, c=3 -> 1 + 2 + 3 = 6
+        assert_eq!(result, SExpr::Atom("6".to_string()));
+        println!("DEBUG: three-level nested lambda: {}", result);
+    }
+
+    #[test]
+    fn lambda_returns_lambda() {
+        let mut vm = setup_vm();
+        // Lambda that returns another lambda without calling it
+        let mut parser = Parser::new("(let ((f (lambda (x) (lambda (y) y)))) (f 1))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        match result {
+            SExpr::Atom(name) => {
+                assert!(name.starts_with("__lambda_"));
+                println!("DEBUG: lambda can return lambda: {}", name);
+            }
+            _ => panic!("Expected lambda reference atom"),
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda with body expressions tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_body_can_use_quote() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (x) (quote hello)))) (f anything))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("hello".to_string()));
+        println!("DEBUG: lambda body can use quote: {}", result);
+    }
+
+    #[test]
+    fn lambda_body_can_use_if() {
+        let mut vm = setup_vm();
+        let mut parser =
+            Parser::new("(let ((f (lambda (x) (if x (quote yes) (quote no))))) (f #t))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("yes".to_string()));
+        println!("DEBUG: lambda body can use if (true case): {}", result);
+    }
+
+    #[test]
+    fn lambda_body_if_false_case() {
+        let mut vm = setup_vm();
+        let mut parser =
+            Parser::new("(let ((f (lambda (x) (if x (quote yes) (quote no))))) (f #f))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("no".to_string()));
+        println!("DEBUG: lambda body can use if (false case): {}", result);
+    }
+
+    #[test]
+    fn lambda_body_can_use_let() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x) (let ((y 10)) (+ x y))))) (f 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: lambda body can use let: {}", result);
+    }
+
+    #[test]
+    fn lambda_body_can_use_begin() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser =
+            Parser::new("(let ((f (lambda (x) (begin (+ x 1) (+ x 2) (+ x 3))))) (f 10))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // begin returns last expression: 10 + 3 = 13
+        assert_eq!(result, SExpr::Atom("13".to_string()));
+        println!("DEBUG: lambda body can use begin: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda with builtins tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_can_call_builtins() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (lst) (first lst)))) (f (quote (a b c))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("a".to_string()));
+        println!("DEBUG: lambda can call builtins (first): {}", result);
+    }
+
+    #[test]
+    fn lambda_with_rest_builtin() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (lst) (rest lst)))) (f (quote (a b c))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(
+            result,
+            SExpr::List(vec![
+                SExpr::Atom("b".to_string()),
+                SExpr::Atom("c".to_string())
+            ])
+        );
+        println!("DEBUG: lambda can call rest builtin: {:?}", result);
+    }
+
+    #[test]
+    fn lambda_with_cons_builtin() {
+        let mut vm = setup_vm();
+        let mut parser =
+            Parser::new("(let ((f (lambda (x lst) (cons x lst)))) (f (quote a) (quote (b c))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(
+            result,
+            SExpr::List(vec![
+                SExpr::Atom("a".to_string()),
+                SExpr::Atom("b".to_string()),
+                SExpr::Atom("c".to_string())
+            ])
+        );
+        println!("DEBUG: lambda can call cons builtin: {:?}", result);
+    }
+
+    #[test]
+    fn lambda_with_length_builtin() {
+        let mut vm = setup_vm();
+        let mut parser =
+            Parser::new("(let ((f (lambda (lst) (length lst)))) (f (quote (a b c d e))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("5".to_string()));
+        println!("DEBUG: lambda can call length builtin: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda with map/filter/reduce tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_used_with_map() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // map expects a function name, and lambda returns one
+        let mut parser =
+            Parser::new("(let ((inc (lambda (x) (+ x 1)))) (map inc (quote (1 2 3))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(
+            result,
+            SExpr::List(vec![
+                SExpr::Atom("2".to_string()),
+                SExpr::Atom("3".to_string()),
+                SExpr::Atom("4".to_string())
+            ])
+        );
+        println!("DEBUG: lambda used with map: {:?}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda identity and simple transformations
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_identity_function() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((id (lambda (x) x))) (id (quote (a b c))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(
+            result,
+            SExpr::List(vec![
+                SExpr::Atom("a".to_string()),
+                SExpr::Atom("b".to_string()),
+                SExpr::Atom("c".to_string())
+            ])
+        );
+        println!("DEBUG: identity lambda: {:?}", result);
+    }
+
+    #[test]
+    fn lambda_constant_function() {
+        let mut vm = setup_vm();
+        let mut parser =
+            Parser::new("(let ((always42 (lambda (x) 42))) (always42 (quote anything)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("42".to_string()));
+        println!("DEBUG: constant lambda returns 42: {}", result);
+    }
+
+    #[test]
+    fn lambda_swap_function() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((swap (lambda (a b) (list b a)))) (swap 1 2))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(
+            result,
+            SExpr::List(vec![
+                SExpr::Atom("2".to_string()),
+                SExpr::Atom("1".to_string())
+            ])
+        );
+        println!("DEBUG: swap lambda: {:?}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda with list arguments tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_accepts_list_argument() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (lst) (first lst)))) (f (quote (1 2 3))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("1".to_string()));
+        println!("DEBUG: lambda accepts list argument: {}", result);
+    }
+
+    #[test]
+    fn lambda_accepts_empty_list_argument() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (lst) (empty? lst)))) (f (quote ())))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("#t".to_string()));
+        println!("DEBUG: lambda accepts empty list argument: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda reuse tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_can_be_called_multiple_times() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x) (+ x 1)))) (+ (f 1) (+ (f 2) (f 3))))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // f(1)=2, f(2)=3, f(3)=4 -> 2+3+4 = 9
+        assert_eq!(result, SExpr::Atom("9".to_string()));
+        println!(
+            "DEBUG: lambda can be called multiple times: f(1)+f(2)+f(3)={}",
+            result
+        );
+    }
+
+    #[test]
+    fn lambda_stateless_across_calls() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Each call to f should be independent
+        let mut parser =
+            Parser::new("(let ((f (lambda (x) (let ((y 10)) (+ x y))))) (+ (f 1) (f 2)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // f(1)=11, f(2)=12 -> 23
+        assert_eq!(result, SExpr::Atom("23".to_string()));
+        println!("DEBUG: lambda stateless across calls: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda edge cases
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_empty_param_list() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda () (quote constant)))) (f))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("constant".to_string()));
+        println!("DEBUG: lambda with empty param list: {}", result);
+    }
+
+    #[test]
+    fn lambda_many_params() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser =
+            Parser::new("(let ((f (lambda (a b c d e) (+ a (+ b (+ c (+ d e))))))) (f 1 2 3 4 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: lambda with many params: {}", result);
+    }
+
+    #[test]
+    fn lambda_body_evaluates_atom() {
+        let mut vm = setup_vm();
+        // Body is just an atom, should evaluate to that atom
+        let mut parser = Parser::new("(let ((f (lambda (x) x))) (f hello))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("hello".to_string()));
+        println!("DEBUG: lambda body evaluates atom: {}", result);
+    }
+
+    #[test]
+    fn lambda_body_evaluates_to_empty_list() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(let ((f (lambda (x) (quote ())))) (f anything))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::List(vec![]));
+        println!("DEBUG: lambda body evaluates to empty list: {:?}", result);
+    }
+
+    #[test]
+    fn lambda_arg_evaluation_order() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        // Arguments should be evaluated left-to-right before call
+        // We test by building a list to verify order
+        let mut parser =
+            Parser::new("(let ((f (lambda (a b c) (list a b c)))) (f (+ 1 0) (+ 2 0) (+ 3 0)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(
+            result,
+            SExpr::List(vec![
+                SExpr::Atom("1".to_string()),
+                SExpr::Atom("2".to_string()),
+                SExpr::Atom("3".to_string())
+            ])
+        );
+        println!("DEBUG: lambda arg evaluation order: {:?}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda interaction with thread macros
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_in_thread_first() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x) (+ x 10)))) (-> 5 f))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: lambda in thread-first: {}", result);
+    }
+
+    #[test]
+    fn lambda_in_thread_last() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser = Parser::new("(let ((f (lambda (x) (+ x 10)))) (->> 5 f))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("15".to_string()));
+        println!("DEBUG: lambda in thread-last: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda with globals tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_can_access_globals() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        vm.bind_global("global-val", SExpr::Atom("100".to_string()));
+        let mut parser = Parser::new("(let ((f (lambda (x) (+ x global-val)))) (f 5))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("105".to_string()));
+        println!("DEBUG: lambda can access globals: {}", result);
+    }
+
+    #[test]
+    fn lambda_param_shadows_global() {
+        let mut vm = setup_vm();
+        vm.bind_global("x", SExpr::Atom("global".to_string()));
+        let mut parser = Parser::new("(let ((f (lambda (x) x))) (f (quote local)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("local".to_string()));
+        println!("DEBUG: lambda param shadows global: {}", result);
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda FunctionObj structure tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_function_obj_captures_empty_env() {
+        let params = vec![];
+        let body = SExpr::Atom("x".to_string());
+        let env = Arc::new(Environment::new());
+        let lambda = FunctionObj::Lambda {
+            params: params.clone(),
+            body: body.clone(),
+            env: Arc::clone(&env),
+        };
+        match lambda {
+            FunctionObj::Lambda {
+                params: p,
+                body: b,
+                env: e,
+            } => {
+                assert!(p.is_empty());
+                assert_eq!(b, body);
+                assert!(e.bindings.is_empty());
+                println!("DEBUG: Lambda FunctionObj with empty params and env");
+            }
+            _ => panic!("Expected Lambda variant"),
+        }
+    }
+
+    #[test]
+    fn lambda_function_obj_captures_populated_env() {
+        let params = vec!["x".to_string()];
+        let body = SExpr::Atom("x".to_string());
+        let mut parent_env = Environment::new();
+        parent_env.bind("captured", SExpr::Atom("value".to_string()));
+        let env = Arc::new(parent_env);
+        let lambda = FunctionObj::Lambda {
+            params: params.clone(),
+            body: body.clone(),
+            env: Arc::clone(&env),
+        };
+        match lambda {
+            FunctionObj::Lambda { env: e, .. } => {
+                assert!(e.lookup("captured").is_some());
+                assert_eq!(e.lookup("captured"), Some(SExpr::Atom("value".to_string())));
+                println!("DEBUG: Lambda FunctionObj captures populated env");
+            }
+            _ => panic!("Expected Lambda variant"),
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Lambda calling lambda tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn lambda_calls_another_lambda() {
+        let mut vm = setup_vm();
+        vm.def_fn("+", add);
+        let mut parser =
+            Parser::new("(let ((g (lambda (x) (+ x 1)))) (let ((f (lambda (y) (g y)))) (f 5)))");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::Atom("6".to_string()));
+        println!("DEBUG: lambda calls another lambda: {}", result);
+    }
+
+    #[test]
+    fn lambda_passes_lambda_as_argument() {
+        let mut vm = setup_vm();
+        // apply takes a function reference name and an arg, calls (f arg)
+        let mut parser = Parser::new(
+            "(let ((apply-fn (lambda (f x) (f x)))) (let ((inc (lambda (n) (cons n (quote ()))))) (apply-fn inc 42)))",
+        );
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        assert_eq!(result, SExpr::List(vec![SExpr::Atom("42".to_string())]));
+        println!("DEBUG: lambda passes lambda as argument: {:?}", result);
     }
 }

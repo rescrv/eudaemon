@@ -15,6 +15,7 @@ use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rustyline::EditMode;
 use rustyline::completion::{Completer, Pair};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
@@ -22,14 +23,15 @@ use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::hint::Hinter;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context, Editor, Helper};
-use rustyline::EditMode;
 
 use super::error::{SError, SResult};
+use super::eval::Env;
 use super::expr::{Parser, SExpr};
 use super::markdown::curation::{
-    LinkInfo, find_undefined_references, generate_toc, get_external_links, get_image_links,
-    get_internal_links, link_info_to_sexpr, mark_deprecated, normalize_headers,
-    scan_link_definitions, scan_links_to_sexpr, update_link, wrap_in_callout, wrap_in_details,
+    LinkInfo, extract_sections, find_undefined_references, generate_toc, get_external_links,
+    get_image_links, get_internal_links, link_info_to_sexpr, mark_deprecated, normalize_headers,
+    scan_link_definitions, scan_links_to_sexpr, section_to_doc, slugify_text, update_link,
+    wrap_in_callout, wrap_in_details,
 };
 use super::markdown::mutations::{
     append_child, graft, hoist, insert_after, insert_before, prepend_child, prune, replace_at,
@@ -44,7 +46,6 @@ use super::nodeid::{
     to_annotated_sexpr,
 };
 use super::util::{extract_string, find_markdown_files, string_atom};
-use super::eval::Env;
 use super::vm::{Restart, Vm, VmState};
 
 // ============================================================================
@@ -224,21 +225,75 @@ impl Repl {
     fn get_function_names(&self) -> Vec<String> {
         // Core builtins
         let names = vec![
-            "null?", "list?", "atom?", "empty?", "eq?",
-            "first", "rest", "cons", "append", "length", "nth", "list", "help",
-            "quote", "if", "let", "begin", "->", "->>", "map", "filter", "reduce",
-            "obj", "arr", "get", "keys", "values", "assoc", "dissoc", "merge",
-            "markdown-to-sexpr", "sexpr-to-markdown",
-            "get-frontmatter", "get-frontmatter-content", "set-frontmatter",
-            "remove-frontmatter", "parse-yaml-frontmatter", "get-fm-field",
-            "upsert-fm-field", "remove-fm-field",
-            "get-by-path", "get-node", "get-parent", "get-siblings", "get-context", "annotate",
-            "replace-at", "prune", "insert-before", "insert-after",
-            "append-child", "prepend-child", "hoist", "graft",
-            "wrap-in-callout", "wrap-in-details", "normalize-headers",
-            "mark-deprecated", "generate-toc",
-            "scan-links", "get-internal-links", "get-external-links",
-            "get-image-links", "scan-link-defs", "find-undef-refs", "update-link",
+            "null?",
+            "list?",
+            "atom?",
+            "empty?",
+            "eq?",
+            "first",
+            "rest",
+            "cons",
+            "append",
+            "length",
+            "nth",
+            "list",
+            "help",
+            "quote",
+            "if",
+            "let",
+            "begin",
+            "->",
+            "->>",
+            "map",
+            "filter",
+            "reduce",
+            "obj",
+            "arr",
+            "get",
+            "keys",
+            "values",
+            "assoc",
+            "dissoc",
+            "merge",
+            "markdown-to-sexpr",
+            "sexpr-to-markdown",
+            "get-frontmatter",
+            "get-frontmatter-content",
+            "set-frontmatter",
+            "remove-frontmatter",
+            "parse-yaml-frontmatter",
+            "get-fm-field",
+            "upsert-fm-field",
+            "remove-fm-field",
+            "get-by-path",
+            "get-node",
+            "get-parent",
+            "get-siblings",
+            "get-context",
+            "annotate",
+            "replace-at",
+            "prune",
+            "insert-before",
+            "insert-after",
+            "append-child",
+            "prepend-child",
+            "hoist",
+            "graft",
+            "wrap-in-callout",
+            "wrap-in-details",
+            "normalize-headers",
+            "mark-deprecated",
+            "generate-toc",
+            "scan-links",
+            "get-internal-links",
+            "get-external-links",
+            "get-image-links",
+            "scan-link-defs",
+            "find-undef-refs",
+            "update-link",
+            "extract-sections",
+            "section-to-doc",
+            "slugify",
         ];
         names.iter().map(|s| s.to_string()).collect()
     }
@@ -361,8 +416,8 @@ impl Repl {
     /// - Steppable VM with restart support for error recovery
     pub fn run_interactive(&self) -> SResult<()> {
         let helper = LispHelper::new(self.get_function_names());
-        let mut rl: Editor<LispHelper, rustyline::history::DefaultHistory> =
-            Editor::new().map_err(|e| {
+        let mut rl: Editor<LispHelper, rustyline::history::DefaultHistory> = Editor::new()
+            .map_err(|e| {
                 SError::new("repl")
                     .with_code("readline-error")
                     .with_message("Failed to initialize readline")
@@ -754,6 +809,11 @@ pub fn register_markdown_builtins(env: &mut Env) {
     env.def_fn("scan-link-defs", builtin_scan_link_defs);
     env.def_fn("find-undef-refs", builtin_find_undef_refs);
     env.def_fn("update-link", builtin_update_link);
+
+    // Sectioning
+    env.def_fn("extract-sections", builtin_extract_sections);
+    env.def_fn("section-to-doc", builtin_section_to_doc);
+    env.def_fn("slugify", builtin_slugify);
 }
 
 /// Registers all markdown-related functions in the VM.
@@ -805,6 +865,11 @@ pub fn register_markdown_builtins_vm(vm: &mut Vm) {
     vm.def_fn("scan-link-defs", builtin_scan_link_defs);
     vm.def_fn("find-undef-refs", builtin_find_undef_refs);
     vm.def_fn("update-link", builtin_update_link);
+
+    // Sectioning
+    vm.def_fn("extract-sections", builtin_extract_sections);
+    vm.def_fn("section-to-doc", builtin_section_to_doc);
+    vm.def_fn("slugify", builtin_slugify);
 }
 
 // Conversion functions
@@ -1323,6 +1388,39 @@ fn builtin_update_link(args: &[SExpr]) -> SResult<SExpr> {
     let path = PathId::parse(&path_str)?;
     let new_url = extract_string(&args[2]);
     update_link(&args[0], &path, &new_url)
+}
+
+// Sectioning functions
+
+fn builtin_extract_sections(args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("extract-sections")
+            .with_code("wrong-argument-count")
+            .with_message("Requires exactly one document argument")
+            .with_atom_field("received", args.len()));
+    }
+    Ok(extract_sections(&args[0]))
+}
+
+fn builtin_section_to_doc(args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("section-to-doc")
+            .with_code("wrong-argument-count")
+            .with_message("Requires exactly one section argument")
+            .with_atom_field("received", args.len()));
+    }
+    section_to_doc(&args[0])
+}
+
+fn builtin_slugify(args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("slugify")
+            .with_code("wrong-argument-count")
+            .with_message("Requires exactly one string argument")
+            .with_atom_field("received", args.len()));
+    }
+    let text = extract_string(&args[0]);
+    Ok(string_atom(&slugify_text(&text)))
 }
 
 // Helper functions
