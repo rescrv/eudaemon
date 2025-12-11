@@ -364,6 +364,7 @@ impl Vm {
         self.def_fn("read-file", builtin_read_file);
         self.def_fn("write-file", builtin_write_file);
         self.def_fn("file-exists?", builtin_file_exists);
+        self.def_fn("splat", builtin_splat);
     }
 
     /// Looks up a function by name.
@@ -1880,6 +1881,31 @@ fn builtin_file_exists(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     let fs = require_filesystem(vm)?;
     let exists = fs.exists(&path);
     Ok(SExpr::Atom(if exists { "#t" } else { "#f" }.to_string()))
+}
+
+/// Splats a document into a directory hierarchy based on header structure.
+///
+/// `(splat doc "prefix/")` -> list of written file paths
+///
+/// Given a document and a prefix, this function:
+/// 1. Extracts sections from the document using header hierarchy
+/// 2. For each top-level section with children, creates `prefix/slug/index.md`
+/// 3. For leaf sections, creates `prefix/slug.md`
+///
+/// Returns a list of all file paths written.
+fn builtin_splat(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    use crate::markdown::curation::splat;
+
+    if args.len() != 2 {
+        return Err(SError::new("splat")
+            .with_code("wrong-argument-count")
+            .with_message("splat requires exactly two arguments: document and prefix")
+            .with_atom_field("received", args.len()));
+    }
+    let prefix = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+
+    splat(&args[0], &prefix, |path, content| fs.write(path, content))
 }
 
 /// Extract a string key from an atom, handling quoted strings.

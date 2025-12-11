@@ -1520,6 +1520,155 @@ pub fn slugify_text(text: &str) -> String {
     slugify(text)
 }
 
+// ============================================================================
+// Splat: Refactor a document into a directory hierarchy
+// ============================================================================
+
+/// Splats a document into a directory hierarchy based on header structure.
+///
+/// Given a document, a prefix, and a filesystem writer function, this:
+/// 1. Extracts sections from the document using header hierarchy
+/// 2. For each top-level section, creates appropriate files:
+///    - Sections with children get `prefix/slug/index.md` with a ToC
+///    - Leaf sections get `prefix/slug.md` with content
+///
+/// The `writer` function is called for each file to write.
+/// Returns a list of paths written as an s-expression.
+pub fn splat<F>(doc: &SExpr, prefix: &str, mut writer: F) -> SResult<SExpr>
+where
+    F: FnMut(&str, &str) -> SResult<()>,
+{
+    let sections = extract_sections(doc);
+
+    // Get the array of sections (skip the "arr" tag)
+    let section_items = match &sections {
+        SExpr::List(items) if !items.is_empty() => &items[1..],
+        _ => return Ok(SExpr::List(vec![])),
+    };
+
+    if section_items.is_empty() {
+        return Ok(SExpr::List(vec![]));
+    }
+
+    let mut written_paths = Vec::new();
+
+    // Process each top-level section
+    for section in section_items {
+        splat_section(section, prefix, &mut writer, &mut written_paths)?;
+    }
+
+    Ok(SExpr::List(written_paths))
+}
+
+/// Recursively processes a section and its children, writing files.
+fn splat_section<F>(
+    section: &SExpr,
+    parent_path: &str,
+    writer: &mut F,
+    written_paths: &mut Vec<SExpr>,
+) -> SResult<()>
+where
+    F: FnMut(&str, &str) -> SResult<()>,
+{
+    let title = get_section_field(section, "title")?;
+    let title_str = extract_string(&title);
+    let slug = get_section_field(section, "slug")?;
+    let slug_str = extract_string(&slug);
+    let children = get_section_field(section, "children")?;
+
+    // Get children as a list (skip the "arr" tag)
+    let child_sections: Vec<&SExpr> = match &children {
+        SExpr::List(items) if items.len() > 1 => items[1..].iter().collect(),
+        _ => vec![],
+    };
+
+    if child_sections.is_empty() {
+        // Leaf section: create slug.md
+        let path = format!("{}{}.md", parent_path, slug_str);
+        let content = section_to_doc(section)?;
+        let markdown = super::sexpr_to_markdown(&content)?;
+        writer(&path, &markdown)?;
+        written_paths.push(string_atom(&path));
+    } else {
+        // Section with children: create slug/index.md with ToC
+        let dir_path = format!("{}{}/", parent_path, slug_str);
+        let index_path = format!("{}index.md", dir_path);
+        let index_content = make_section_index(section, &title_str, &child_sections)?;
+        let markdown = super::sexpr_to_markdown(&index_content)?;
+        writer(&index_path, &markdown)?;
+        written_paths.push(string_atom(&index_path));
+
+        // Recursively process children
+        for child in child_sections {
+            splat_section(child, &dir_path, writer, written_paths)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Creates an index document for a section with children.
+///
+/// The index contains:
+/// - The section title as h1
+/// - The section's direct content (if any)
+/// - A list of links to child sections
+fn make_section_index(section: &SExpr, title: &str, children: &[&SExpr]) -> SResult<SExpr> {
+    let mut doc_items = vec![SExpr::Atom("doc".to_string())];
+
+    // Add header
+    doc_items.push(SExpr::List(vec![
+        SExpr::Atom("h1".to_string()),
+        string_atom(title),
+    ]));
+
+    // Add direct content from the section (if any)
+    let content = get_section_field(section, "content")?;
+    if let SExpr::List(items) = content {
+        for item in items.into_iter().skip(1) {
+            // skip "arr" tag
+            doc_items.push(item);
+        }
+    }
+
+    // Build the table of contents
+    let mut toc_items = vec![SExpr::Atom("ul".to_string())];
+    for child in children {
+        let child_title = get_section_field(child, "title")?;
+        let child_title_str = extract_string(&child_title);
+        let child_slug = get_section_field(child, "slug")?;
+        let child_slug_str = extract_string(&child_slug);
+        let child_children = get_section_field(child, "children")?;
+
+        // Determine if child has its own children
+        let has_grandchildren = match &child_children {
+            SExpr::List(items) => items.len() > 1,
+            _ => false,
+        };
+
+        // Link path depends on whether child has children
+        let link_path = if has_grandchildren {
+            format!("{}/index.md", child_slug_str)
+        } else {
+            format!("{}.md", child_slug_str)
+        };
+
+        let link = SExpr::List(vec![
+            SExpr::Atom("link".to_string()),
+            string_atom(&link_path),
+            string_atom(""),
+            string_atom(&child_title_str),
+        ]);
+
+        let li = SExpr::List(vec![SExpr::Atom("li".to_string()), link]);
+        toc_items.push(li);
+    }
+
+    doc_items.push(SExpr::List(toc_items));
+
+    Ok(SExpr::List(doc_items))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2297,5 +2446,178 @@ mod tests {
         } else {
             panic!("Expected sections to be a list");
         }
+    }
+
+    // Splat tests
+
+    #[test]
+    fn splat_empty_doc() {
+        let doc = parse(r#"(doc)"#);
+        let mut written: Vec<(String, String)> = Vec::new();
+        let result = splat(&doc, "out/", |path, content| {
+            written.push((path.to_string(), content.to_string()));
+            Ok(())
+        })
+        .unwrap();
+        println!("DEBUG splat empty: {:?}", result);
+        assert!(written.is_empty());
+        assert_eq!(result, SExpr::List(vec![]));
+    }
+
+    #[test]
+    fn splat_single_leaf_section() {
+        let doc = parse(r#"(doc (h1 "Introduction") (p "Hello world"))"#);
+        let mut written: Vec<(String, String)> = Vec::new();
+        let result = splat(&doc, "out/", |path, content| {
+            written.push((path.to_string(), content.to_string()));
+            Ok(())
+        })
+        .unwrap();
+        println!("DEBUG splat single leaf: {:?}", result);
+        println!("DEBUG written files: {:?}", written);
+
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].0, "out/introduction.md");
+        assert!(written[0].1.contains("# Introduction"));
+        assert!(written[0].1.contains("Hello world"));
+    }
+
+    #[test]
+    fn splat_section_with_children() {
+        let doc = parse(
+            r#"(doc 
+                (h1 "Guide") 
+                (p "Intro") 
+                (h2 "Chapter One") 
+                (p "Content one") 
+                (h2 "Chapter Two") 
+                (p "Content two")
+            )"#,
+        );
+        let mut written: Vec<(String, String)> = Vec::new();
+        let result = splat(&doc, "docs/", |path, content| {
+            written.push((path.to_string(), content.to_string()));
+            Ok(())
+        })
+        .unwrap();
+        println!("DEBUG splat with children result: {:?}", result);
+        for (path, content) in &written {
+            println!("DEBUG file: {} => {}", path, content);
+        }
+
+        // Should create:
+        // - docs/guide/index.md (with ToC linking to chapters)
+        // - docs/guide/chapter-one.md
+        // - docs/guide/chapter-two.md
+        assert_eq!(written.len(), 3);
+
+        let paths: Vec<&str> = written.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"docs/guide/index.md"));
+        assert!(paths.contains(&"docs/guide/chapter-one.md"));
+        assert!(paths.contains(&"docs/guide/chapter-two.md"));
+
+        // Index should have links to children
+        let index = written
+            .iter()
+            .find(|(p, _)| p == "docs/guide/index.md")
+            .unwrap();
+        assert!(index.1.contains("chapter-one.md"));
+        assert!(index.1.contains("chapter-two.md"));
+    }
+
+    #[test]
+    fn splat_nested_sections() {
+        let doc = parse(
+            r#"(doc 
+                (h1 "Book") 
+                (h2 "Part One") 
+                (h3 "Chapter 1") 
+                (p "Text") 
+                (h3 "Chapter 2") 
+                (p "More text")
+            )"#,
+        );
+        let mut written: Vec<(String, String)> = Vec::new();
+        let result = splat(&doc, "", |path, content| {
+            written.push((path.to_string(), content.to_string()));
+            Ok(())
+        })
+        .unwrap();
+        println!("DEBUG splat nested result: {:?}", result);
+        for (path, _) in &written {
+            println!("DEBUG path: {}", path);
+        }
+
+        // Should create:
+        // - book/index.md (links to part-one)
+        // - book/part-one/index.md (links to chapters)
+        // - book/part-one/chapter-1.md
+        // - book/part-one/chapter-2.md
+        assert_eq!(written.len(), 4);
+
+        let paths: Vec<&str> = written.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"book/index.md"));
+        assert!(paths.contains(&"book/part-one/index.md"));
+        assert!(paths.contains(&"book/part-one/chapter-1.md"));
+        assert!(paths.contains(&"book/part-one/chapter-2.md"));
+    }
+
+    #[test]
+    fn splat_returns_written_paths() {
+        let doc = parse(r#"(doc (h1 "A") (p "a") (h1 "B") (p "b"))"#);
+        let mut written: Vec<(String, String)> = Vec::new();
+        let result = splat(&doc, "x/", |path, content| {
+            written.push((path.to_string(), content.to_string()));
+            Ok(())
+        })
+        .unwrap();
+
+        // Result should be a list of paths
+        if let SExpr::List(items) = result {
+            assert_eq!(items.len(), 2);
+            let paths: Vec<String> = items.iter().map(extract_string).collect();
+            assert!(paths.contains(&"x/a.md".to_string()));
+            assert!(paths.contains(&"x/b.md".to_string()));
+        } else {
+            panic!("Expected list result");
+        }
+    }
+
+    #[test]
+    fn splat_writer_error_propagates() {
+        let doc = parse(r#"(doc (h1 "Test") (p "Content"))"#);
+        let result = splat(&doc, "out/", |_path, _content| {
+            Err(SError::new("test")
+                .with_code("write-failed")
+                .with_message("Simulated write failure"))
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        println!("DEBUG error: {}", err.detail());
+        assert!(err.detail().to_string().contains("write-failed"));
+    }
+
+    #[test]
+    fn splat_index_includes_section_content() {
+        let doc = parse(
+            r#"(doc 
+                (h1 "Guide") 
+                (p "This is the guide intro.") 
+                (h2 "Details") 
+                (p "Detail content")
+            )"#,
+        );
+        let mut written: Vec<(String, String)> = Vec::new();
+        splat(&doc, "", |path, content| {
+            written.push((path.to_string(), content.to_string()));
+            Ok(())
+        })
+        .unwrap();
+
+        let index = written.iter().find(|(p, _)| p == "guide/index.md").unwrap();
+        println!("DEBUG index content: {}", index.1);
+        // Index should include the intro paragraph
+        assert!(index.1.contains("This is the guide intro."));
     }
 }
