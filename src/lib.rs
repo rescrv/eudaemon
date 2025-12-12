@@ -211,7 +211,7 @@ where
     SE: Stderr,
 {
     env: Environment<SI, SO, SE>,
-    bin: fn(&Environment<SI, SO, SE>) -> Result<(), Error>,
+    bin: fn(&Environment<SI, SO, SE>) -> Result<ExitCode, Error>,
 }
 
 impl<SI, SO, SE> Command<SI, SO, SE>
@@ -230,6 +230,6 @@ where
     }
 
     pub fn run(self) -> Result<ExitCode, Error> {
-        Ok(ExitCode::from(-13))
+        self.bin(
     }
 }

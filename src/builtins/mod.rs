@@ -1,11 +1,11 @@
-use crate::{Environment, Error, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Stderr, Stdin, Stdout};
 
 mod cat;
 
 #[allow(clippy::type_complexity)]
 pub fn lookup_bin<SI, SO, SE>(
     bin: &str,
-) -> Result<fn(&Environment<SI, SO, SE>) -> Result<(), Error>, Error>
+) -> Result<fn(&Environment<SI, SO, SE>) -> Result<ExitCode, Error>, Error>
 where
     SI: Stdin,
     SO: Stdout,
