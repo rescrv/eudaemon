@@ -12,6 +12,7 @@ mod fold;
 mod head;
 mod ls;
 mod mkdir;
+mod mktemp;
 mod nl;
 mod paste;
 mod printf;
@@ -57,6 +58,7 @@ where
         "head" | "/usr/bin/head" => Ok(head::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
+        "mktemp" | "/usr/bin/mktemp" => Ok(mktemp::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
