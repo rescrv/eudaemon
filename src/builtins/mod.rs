@@ -11,15 +11,21 @@ mod env;
 pub mod expand;
 mod fold;
 mod head;
+mod ln;
 mod ls;
 mod mkdir;
+mod mktemp;
 mod nl;
 mod paste;
 mod printf;
 mod pwd;
+mod realpath;
+mod rm;
+mod rmdir;
 mod seq;
 pub mod sh;
 mod sort;
+mod stat;
 mod tail;
 mod tee;
 mod test;
@@ -54,14 +60,20 @@ where
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "ln" | "/bin/ln" => Ok(ln::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
+        "mktemp" | "/usr/bin/mktemp" => Ok(mktemp::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
+        "realpath" | "/bin/realpath" => Ok(realpath::bin),
+        "rm" | "/bin/rm" => Ok(rm::bin),
+        "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
+        "stat" | "/usr/bin/stat" => Ok(stat::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
         "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
@@ -72,6 +84,7 @@ where
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
+        "unlink" | "/bin/unlink" => Ok(rm::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
