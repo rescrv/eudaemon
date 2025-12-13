@@ -8,9 +8,12 @@ mod echo;
 mod expand;
 mod fold;
 mod head;
+mod ls;
+mod mkdir;
 mod nl;
 mod paste;
 mod printf;
+mod pwd;
 mod seq;
 pub mod sh;
 mod sort;
@@ -20,6 +23,7 @@ mod tr;
 mod truncate;
 mod uniq;
 mod wc;
+mod yes;
 
 /// Look up a builtin binary by name.
 #[allow(clippy::type_complexity)]
@@ -42,9 +46,15 @@ where
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "ls" | "/bin/ls" => Ok(ls::bin),
+        "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
+<<<<<<< HEAD
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
+=======
+        "pwd" | "/bin/pwd" => Ok(pwd::bin),
+>>>>>>> synshell4
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
@@ -56,6 +66,7 @@ where
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
+        "yes" | "/usr/bin/yes" => Ok(yes::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
 }
