@@ -308,6 +308,12 @@ pub trait Filesystem {
     fn readlink(&self, path: &str) -> Result<String, Error>;
     /// Rename a file or directory from src to dst.
     fn rename(&self, src: &str, dst: &str) -> Result<(), Error>;
+    /// Create a unique temporary file using a template (Xs are replaced).
+    /// Returns the actual path created.
+    fn mkstemp(&self, template: &str) -> Result<String, Error>;
+    /// Create a unique temporary directory using a template (Xs are replaced).
+    /// Returns the actual path created.
+    fn mkdtemp(&self, template: &str) -> Result<String, Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -556,6 +562,93 @@ impl Filesystem for RealFilesystem {
 
     fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
         std::fs::rename(src, dst).map_err(Error::Io)
+    }
+
+    fn mkstemp(&self, template: &str) -> Result<String, Error> {
+        use std::fs::OpenOptions;
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary file",
+        )))
+    }
+
+    fn mkdtemp(&self, template: &str) -> Result<String, Error> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary directory",
+        )))
     }
 }
 
@@ -1161,6 +1254,144 @@ impl Filesystem for MockFilesystem {
 
         inner.entries.insert(dst.to_string(), entry);
         Ok(())
+    }
+
+    fn mkstemp(&self, template: &str) -> Result<String, Error> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            let ino = self.alloc_ino();
+            let mut inner = self.0.borrow_mut();
+
+            let path_obj = std::path::Path::new(&path);
+            if let Some(parent) = path_obj.parent() {
+                let parent_str = parent.to_str().unwrap_or("");
+                if !parent_str.is_empty() && parent_str != "/" {
+                    match inner.entries.get(parent_str) {
+                        Some(MockEntry::Directory(_)) => {}
+                        Some(_) => {
+                            return Err(Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::NotADirectory,
+                                parent_str,
+                            )));
+                        }
+                        None => {
+                            return Err(Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                parent_str,
+                            )));
+                        }
+                    }
+                }
+            }
+
+            if !inner.entries.contains_key(&path) {
+                inner
+                    .entries
+                    .insert(path.clone(), MockEntry::File(String::new(), ino));
+                return Ok(path);
+            }
+        }
+
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary file",
+        )))
+    }
+
+    fn mkdtemp(&self, template: &str) -> Result<String, Error> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            let ino = self.alloc_ino();
+            let mut inner = self.0.borrow_mut();
+
+            let path_obj = std::path::Path::new(&path);
+            if let Some(parent) = path_obj.parent() {
+                let parent_str = parent.to_str().unwrap_or("");
+                if !parent_str.is_empty() && parent_str != "/" {
+                    match inner.entries.get(parent_str) {
+                        Some(MockEntry::Directory(_)) => {}
+                        Some(_) => {
+                            return Err(Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::NotADirectory,
+                                parent_str,
+                            )));
+                        }
+                        None => {
+                            return Err(Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                parent_str,
+                            )));
+                        }
+                    }
+                }
+            }
+
+            if !inner.entries.contains_key(&path) {
+                inner
+                    .entries
+                    .insert(path.clone(), MockEntry::Directory(ino));
+                return Ok(path);
+            }
+        }
+
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary directory",
+        )))
     }
 }
 

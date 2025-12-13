@@ -13,11 +13,13 @@ mod head;
 mod ln;
 mod ls;
 mod mkdir;
+mod mktemp;
 mod mv;
 mod nl;
 mod paste;
 mod printf;
 mod pwd;
+mod readlink;
 mod realpath;
 mod rm;
 mod rmdir;
@@ -61,11 +63,13 @@ where
         "ln" | "/bin/ln" => Ok(ln::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
+        "mktemp" | "/usr/bin/mktemp" => Ok(mktemp::bin),
         "mv" | "/bin/mv" => Ok(mv::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
+        "readlink" | "/usr/bin/readlink" => Ok(readlink::bin),
         "realpath" | "/bin/realpath" => Ok(realpath::bin),
         "rm" | "/bin/rm" => Ok(rm::bin),
         "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),

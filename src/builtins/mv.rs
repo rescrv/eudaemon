@@ -6,11 +6,7 @@ use crate::{Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, S
 
 fn build_options() -> Options {
     let mut opts = Options::new();
-    opts.optflag(
-        "f",
-        "",
-        "Do not prompt for confirmation before overwriting",
-    );
+    opts.optflag("f", "", "Do not prompt for confirmation before overwriting");
     opts.optflag(
         "h",
         "",
@@ -217,7 +213,12 @@ where
         Err(e) => {
             // If rename fails, we could try copy+delete for cross-filesystem moves
             // For now, just report the error
-            Err(format!("rename {} to {}: {}", from, to, io_error_message(&e)))
+            Err(format!(
+                "rename {} to {}: {}",
+                from,
+                to,
+                io_error_message(&e)
+            ))
         }
     }
 }
