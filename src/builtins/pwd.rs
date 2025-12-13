@@ -37,7 +37,8 @@ where
                 'L' => logical = true,
                 'P' => logical = false,
                 _ => {
-                    env.stderr.write_line(&format!("pwd: -{}: invalid option", ch))?;
+                    env.stderr
+                        .write_line(&format!("pwd: -{}: invalid option", ch))?;
                     env.stderr.write_line("usage: pwd [-L | -P]")?;
                     return Ok(ExitCode::from(1));
                 }
@@ -52,13 +53,12 @@ where
     }
 
     // For -L, check PWD environment variable first
-    if logical {
-        if let Some(pwd) = env.env.get("PWD") {
-            if pwd.starts_with('/') {
-                env.stdout.write_line(pwd)?;
-                return Ok(ExitCode::from(0));
-            }
-        }
+    if logical
+        && let Some(pwd) = env.env.get("PWD")
+        && pwd.starts_with('/')
+    {
+        env.stdout.write_line(pwd)?;
+        return Ok(ExitCode::from(0));
     }
 
     // Fall back to physical cwd (or use it directly for -P)
