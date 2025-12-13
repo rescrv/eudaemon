@@ -5,7 +5,7 @@ mod cat;
 mod comm;
 mod cut;
 mod echo;
-mod expand;
+pub mod expand;
 mod fold;
 mod head;
 mod nl;
@@ -18,6 +18,7 @@ mod tail;
 mod tee;
 mod tr;
 mod truncate;
+mod unexpand;
 mod uniq;
 mod wc;
 mod yes;
@@ -55,6 +56,7 @@ where
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
+        "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),

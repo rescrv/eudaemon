@@ -43,5 +43,4 @@ test
 timeout
 touch
 uname
-unexpand
 unlink

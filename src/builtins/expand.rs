@@ -6,7 +6,7 @@ use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 /// Tab stops configuration.
 #[derive(Clone, Debug)]
-enum TabStops {
+pub enum TabStops {
     /// Default: tab stops every 8 columns.
     Default,
     /// Single interval: tab stops at every N columns.
@@ -21,7 +21,7 @@ impl TabStops {
     /// Accepts:
     /// - A single number (interval mode): tab stops every N columns
     /// - Comma or space-separated list of numbers (explicit mode): tab stops at those columns
-    fn parse(spec: &str) -> Result<Self, String> {
+    pub fn parse(spec: &str) -> Result<Self, String> {
         let mut stops = Vec::new();
         let mut current = String::new();
 
@@ -77,7 +77,7 @@ impl TabStops {
 
     /// Calculate how many spaces to emit for a tab at the given column position.
     /// Column is 0-indexed.
-    fn spaces_for_tab(&self, column: usize) -> usize {
+    pub fn spaces_for_tab(&self, column: usize) -> usize {
         match self {
             TabStops::Default => {
                 // Tab stops every 8 columns (0, 8, 16, ...)
@@ -98,6 +98,32 @@ impl TabStops {
                 }
                 // Past all tab stops: just emit one space
                 1
+            }
+        }
+    }
+
+    /// Find the next tab stop column (0-indexed) from the given column.
+    /// Returns None if past all tab stops (for List mode).
+    pub fn next_tab_stop(&self, column: usize) -> Option<usize> {
+        match self {
+            TabStops::Default => {
+                // Tab stops every 8 columns (0, 8, 16, ...)
+                Some(((column / 8) + 1) * 8)
+            }
+            TabStops::Interval(n) => {
+                // Tab stops every n columns (0, n, 2n, ...)
+                Some(((column / n) + 1) * n)
+            }
+            TabStops::List(stops) => {
+                // Find the next tab stop after the current column
+                // Column is 0-indexed, but tab stops are 1-indexed positions
+                for &stop in stops {
+                    if stop > column + 1 {
+                        return Some(stop - 1);
+                    }
+                }
+                // Past all tab stops
+                None
             }
         }
     }
@@ -235,6 +261,12 @@ where
         }
         Err(_e) => Err(1),
     }
+}
+
+/// Expand tabs in a single line.
+#[cfg(test)]
+pub fn expand_line_for_test(line: &str, tab_stops: &TabStops) -> String {
+    expand_line(line, tab_stops)
 }
 
 /// Expand tabs in a single line.
