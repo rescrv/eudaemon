@@ -50,11 +50,8 @@ where
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
-<<<<<<< HEAD
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
-=======
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
->>>>>>> synshell4
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
