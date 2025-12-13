@@ -3,7 +3,6 @@ use getopts::Options;
 use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 /// Options for the cat command.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default)]
 struct CatOptions {
     /// -b: Number non-blank output lines.
@@ -11,6 +10,7 @@ struct CatOptions {
     /// -e: Display non-printing characters and $ at end of each line.
     show_ends: bool,
     /// -l: Set an exclusive advisory lock (no-op in mock).
+    #[allow(dead_code)]
     lock: bool,
     /// -n: Number all output lines.
     number: bool,
@@ -19,6 +19,7 @@ struct CatOptions {
     /// -t: Display non-printing characters and tabs as ^I.
     show_tabs: bool,
     /// -u: Disable output buffering (no-op).
+    #[allow(dead_code)]
     unbuffered: bool,
     /// -v: Display non-printing characters visibly.
     show_nonprinting: bool,
