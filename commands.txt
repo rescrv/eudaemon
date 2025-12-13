@@ -5,7 +5,6 @@ df
 du
 install
 link
-mktemp
 readlink
 shuf
 split
