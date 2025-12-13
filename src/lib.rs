@@ -306,6 +306,8 @@ pub trait Filesystem {
     fn rmdir(&self, path: &str) -> Result<(), Error>;
     /// Read the target of a symbolic link.
     fn readlink(&self, path: &str) -> Result<String, Error>;
+    /// Rename a file or directory from src to dst.
+    fn rename(&self, src: &str, dst: &str) -> Result<(), Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -550,6 +552,10 @@ impl Filesystem for RealFilesystem {
                     "symlink target is not valid UTF-8",
                 ))
             })
+    }
+
+    fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
+        std::fs::rename(src, dst).map_err(Error::Io)
     }
 }
 
@@ -1076,6 +1082,85 @@ impl Filesystem for MockFilesystem {
                 path,
             ))),
         }
+    }
+
+    fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
+        let mut inner = self.0.borrow_mut();
+
+        // Check if source exists
+        let entry = inner
+            .entries
+            .remove(src)
+            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, src)))?;
+
+        // Check if destination exists
+        if inner.entries.contains_key(dst) {
+            // If source is a directory and dest exists, it's an error unless dest is also
+            // an empty directory
+            if let MockEntry::Directory(_) = &entry {
+                match inner.entries.get(dst) {
+                    Some(MockEntry::Directory(_)) => {
+                        // Check if dest directory is empty
+                        let prefix = format!("{}/", dst.trim_end_matches('/'));
+                        let has_children = inner.entries.keys().any(|k| k.starts_with(&prefix));
+                        if has_children {
+                            // Put source back and return error
+                            inner.entries.insert(src.to_string(), entry);
+                            return Err(Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::DirectoryNotEmpty,
+                                dst,
+                            )));
+                        }
+                        // Remove empty destination directory
+                        inner.entries.remove(dst);
+                    }
+                    Some(_) => {
+                        // Can't replace a file with a directory
+                        inner.entries.insert(src.to_string(), entry);
+                        return Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotADirectory,
+                            dst,
+                        )));
+                    }
+                    None => unreachable!(),
+                }
+            } else {
+                // Source is a file, check if dest is a directory
+                if let Some(MockEntry::Directory(_)) = inner.entries.get(dst) {
+                    inner.entries.insert(src.to_string(), entry);
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::IsADirectory,
+                        dst,
+                    )));
+                }
+                // Remove existing file/symlink at destination
+                inner.entries.remove(dst);
+            }
+        }
+
+        // For directories, we also need to move all children
+        if let MockEntry::Directory(_) = &entry {
+            let src_prefix = format!("{}/", src.trim_end_matches('/'));
+            let dst_prefix = format!("{}/", dst.trim_end_matches('/'));
+
+            // Collect all children to move
+            let children_to_move: Vec<(String, MockEntry)> = inner
+                .entries
+                .iter()
+                .filter(|(k, _)| k.starts_with(&src_prefix))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+            // Remove old children and insert with new paths
+            for (old_path, child_entry) in children_to_move {
+                inner.entries.remove(&old_path);
+                let new_path = format!("{}{}", dst_prefix, &old_path[src_prefix.len()..]);
+                inner.entries.insert(new_path, child_entry);
+            }
+        }
+
+        inner.entries.insert(dst.to_string(), entry);
+        Ok(())
     }
 }
 

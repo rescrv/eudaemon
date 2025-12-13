@@ -13,6 +13,7 @@ mod head;
 mod ln;
 mod ls;
 mod mkdir;
+mod mv;
 mod nl;
 mod paste;
 mod printf;
@@ -60,6 +61,7 @@ where
         "ln" | "/bin/ln" => Ok(ln::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
+        "mv" | "/bin/mv" => Ok(mv::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
