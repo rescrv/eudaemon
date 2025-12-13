@@ -5,6 +5,7 @@ mod cat;
 mod cut;
 mod echo;
 mod head;
+mod paste;
 pub mod sh;
 mod tail;
 mod truncate;
@@ -29,6 +30,7 @@ where
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
