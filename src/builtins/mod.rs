@@ -9,6 +9,7 @@ mod nl;
 mod paste;
 mod seq;
 pub mod sh;
+mod sort;
 mod tail;
 mod tee;
 mod truncate;
@@ -36,6 +37,7 @@ where
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
+        "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
