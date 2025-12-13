@@ -1,5 +1,4 @@
 chroot
-cp
 date
 df
 du

@@ -4,6 +4,7 @@ mod base64;
 mod basename;
 mod cat;
 mod comm;
+mod cp;
 mod cut;
 mod date;
 mod echo;
@@ -52,6 +53,7 @@ where
         "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
         "comm" | "/usr/bin/comm" => Ok(comm::bin),
+        "cp" | "/bin/cp" => Ok(cp::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "date" | "/bin/date" => Ok(date::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
