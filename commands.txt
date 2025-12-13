@@ -9,14 +9,10 @@ factor
 install
 link
 ln
-ls
 mktemp
 mv
-printf
-pwd
 readlink
 realpath
-rm
 rmdir
 seq
 shuf
