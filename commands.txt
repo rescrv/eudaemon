@@ -3,10 +3,8 @@ cp
 date
 df
 du
-factor
 install
 link
-ln
 mktemp
 mv
 readlink
@@ -19,4 +17,3 @@ test
 timeout
 touch
 uname
-unlink
