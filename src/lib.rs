@@ -250,6 +250,8 @@ pub trait Filesystem {
     /// Punch a hole in a file by writing spaces at the given offset for the given length.
     /// The file must exist. If offset + length exceeds file size, extends the file.
     fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error>;
+    /// Write a string to a file, creating or overwriting as needed.
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -323,6 +325,10 @@ impl Filesystem for RealFilesystem {
         file.write_all(&spaces).map_err(Error::Io)?;
 
         Ok(())
+    }
+
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        std::fs::write(path, contents).map_err(Error::Io)
     }
 }
 
@@ -425,6 +431,13 @@ impl Filesystem for MockFilesystem {
             *byte = b' ';
         }
 
+        Ok(())
+    }
+
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        self.0
+            .borrow_mut()
+            .insert(path.to_string(), contents.to_string());
         Ok(())
     }
 }
