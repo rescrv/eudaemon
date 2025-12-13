@@ -915,9 +915,10 @@ impl Filesystem for MockFilesystem {
                 dst,
             )));
         }
-        let entry = files.get(src).cloned().ok_or_else(|| {
-            Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, src))
-        })?;
+        let entry = files
+            .get(src)
+            .cloned()
+            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, src)))?;
         match entry {
             MockEntry::Directory => {
                 return Err(Error::Io(std::io::Error::new(

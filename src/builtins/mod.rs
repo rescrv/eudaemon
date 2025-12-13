@@ -6,6 +6,7 @@ mod cat;
 mod comm;
 mod cut;
 mod echo;
+mod env;
 pub mod expand;
 mod fold;
 mod head;
@@ -45,6 +46,7 @@ where
         "comm" | "/usr/bin/comm" => Ok(comm::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
+        "env" | "/usr/bin/env" => Ok(env::bin),
         "exit" => Ok(exit_bin),
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),

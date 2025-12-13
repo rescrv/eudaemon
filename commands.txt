@@ -3,7 +3,6 @@ cp
 date
 df
 du
-env
 factor
 install
 link
