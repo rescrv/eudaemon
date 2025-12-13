@@ -2,9 +2,11 @@ use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 mod basename;
 mod cat;
+mod comm;
 mod cut;
 mod echo;
 mod expand;
+mod fold;
 mod head;
 mod nl;
 mod paste;
@@ -31,10 +33,12 @@ where
     match bin {
         "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
+        "comm" | "/usr/bin/comm" => Ok(comm::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
+        "fold" | "/usr/bin/fold" => Ok(fold::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
