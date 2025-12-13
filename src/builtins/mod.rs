@@ -14,6 +14,8 @@ mod nl;
 mod paste;
 mod printf;
 mod pwd;
+mod rm;
+mod rmdir;
 mod seq;
 pub mod sh;
 mod sort;
@@ -53,6 +55,8 @@ where
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
+        "rm" | "/bin/rm" => Ok(rm::bin),
+        "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
@@ -64,6 +68,7 @@ where
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
+        "unlink" | "/bin/unlink" => Ok(rm::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
