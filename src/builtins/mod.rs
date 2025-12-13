@@ -10,6 +10,7 @@ mod fold;
 mod head;
 mod nl;
 mod paste;
+mod printf;
 mod seq;
 pub mod sh;
 mod sort;
@@ -43,6 +44,7 @@ where
         "head" | "/usr/bin/head" => Ok(head::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
+        "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
