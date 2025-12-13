@@ -1,6 +1,7 @@
 use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 mod cat;
+mod echo;
 pub mod sh;
 
 /// Look up a builtin binary by name.
@@ -16,6 +17,7 @@ where
 {
     match bin {
         "cat" | "/bin/cat" => Ok(cat::bin),
+        "echo" | "/bin/echo" => Ok(echo::bin),
         "sh" | "/bin/sh" => Ok(sh::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
