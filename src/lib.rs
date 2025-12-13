@@ -252,6 +252,8 @@ pub trait Filesystem {
     fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error>;
     /// Write a string to a file, creating or overwriting as needed.
     fn write_string(&self, path: &str, contents: &str) -> Result<(), Error>;
+    /// Append a string to a file, creating if it does not exist.
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -329,6 +331,18 @@ impl Filesystem for RealFilesystem {
 
     fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
         std::fs::write(path, contents).map_err(Error::Io)
+    }
+
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(Error::Io)?;
+        file.write_all(contents.as_bytes()).map_err(Error::Io)
     }
 }
 
@@ -438,6 +452,15 @@ impl Filesystem for MockFilesystem {
         self.0
             .borrow_mut()
             .insert(path.to_string(), contents.to_string());
+        Ok(())
+    }
+
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        files
+            .entry(path.to_string())
+            .or_default()
+            .push_str(contents);
         Ok(())
     }
 }
