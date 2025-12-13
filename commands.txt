@@ -35,7 +35,6 @@ rm
 rmdir
 seq
 shuf
-sort
 split
 stat
 sum
@@ -43,7 +42,6 @@ tac
 test
 timeout
 touch
-tsort
 uname
 unexpand
 unlink
