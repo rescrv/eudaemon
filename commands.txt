@@ -24,10 +24,8 @@ ls
 mkdir
 mktemp
 mv
-nl
 numfmt
 od
-paste
 pathchk
 printenv
 printf
@@ -44,7 +42,6 @@ split
 stat
 sum
 tac
-tee
 test
 timeout
 touch

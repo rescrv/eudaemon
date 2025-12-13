@@ -7,6 +7,7 @@ mod echo;
 mod head;
 mod nl;
 mod paste;
+mod seq;
 pub mod sh;
 mod tail;
 mod tee;
@@ -34,6 +35,7 @@ where
         "head" | "/usr/bin/head" => Ok(head::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
+        "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
