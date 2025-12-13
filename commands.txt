@@ -45,4 +45,3 @@ touch
 uname
 unexpand
 unlink
-yes
