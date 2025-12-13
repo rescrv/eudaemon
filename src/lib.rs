@@ -290,6 +290,18 @@ pub trait Filesystem {
     fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error>;
     /// Get detailed information about a file or directory.
     fn stat(&self, path: &str) -> Result<DirEntry, Error>;
+    /// Get detailed information about a file or directory without following symlinks.
+    fn lstat(&self, path: &str) -> Result<DirEntry, Error>;
+    /// Create a symbolic link at linkpath pointing to target.
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), Error>;
+    /// Create a hard link at dst pointing to src.
+    fn link(&self, src: &str, dst: &str) -> Result<(), Error>;
+    /// Remove a file or symbolic link.
+    fn unlink(&self, path: &str) -> Result<(), Error>;
+    /// Remove an empty directory.
+    fn rmdir(&self, path: &str) -> Result<(), Error>;
+    /// Read the target of a symbolic link.
+    fn readlink(&self, path: &str) -> Result<String, Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -449,6 +461,70 @@ impl Filesystem for RealFilesystem {
                 .unwrap_or(0),
         })
     }
+
+    fn lstat(&self, path: &str) -> Result<DirEntry, Error> {
+        let metadata = std::fs::symlink_metadata(path).map_err(Error::Io)?;
+        let file_type = if metadata.is_symlink() {
+            FileType::Symlink
+        } else if metadata.is_dir() {
+            FileType::Directory
+        } else if metadata.is_file() {
+            FileType::RegularFile
+        } else {
+            FileType::Other
+        };
+        Ok(DirEntry {
+            file_type,
+            size: metadata.len(),
+            mtime_ms: metadata
+                .modified()
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
+        })
+    }
+
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), Error> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, linkpath).map_err(Error::Io)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "symlinks not supported on this platform",
+            )))
+        }
+    }
+
+    fn link(&self, src: &str, dst: &str) -> Result<(), Error> {
+        std::fs::hard_link(src, dst).map_err(Error::Io)
+    }
+
+    fn unlink(&self, path: &str) -> Result<(), Error> {
+        std::fs::remove_file(path).map_err(Error::Io)
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), Error> {
+        std::fs::remove_dir(path).map_err(Error::Io)
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, Error> {
+        std::fs::read_link(path)
+            .map_err(Error::Io)?
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "symlink target is not valid UTF-8",
+                ))
+            })
+    }
 }
 
 /// Internal entry for the mock filesystem.
@@ -458,6 +534,8 @@ enum MockEntry {
     File(String),
     /// A directory.
     Directory,
+    /// A symbolic link with target path.
+    Symlink(String),
 }
 
 /// A mock filesystem backed by a HashMap.
@@ -502,7 +580,7 @@ impl Filesystem for MockFilesystem {
             .get(path)
             .and_then(|entry| match entry {
                 MockEntry::File(contents) => Some(contents.clone()),
-                MockEntry::Directory => None,
+                MockEntry::Directory | MockEntry::Symlink(_) => None,
             })
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
     }
@@ -519,6 +597,7 @@ impl Filesystem for MockFilesystem {
                 size: match entry {
                     MockEntry::File(contents) => contents.len() as u64,
                     MockEntry::Directory => 0,
+                    MockEntry::Symlink(target) => target.len() as u64,
                 },
             })
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
@@ -605,6 +684,12 @@ impl Filesystem for MockFilesystem {
                     path,
                 )));
             }
+            MockEntry::Symlink(_) => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cannot append to a symbolic link",
+                )));
+            }
         }
         Ok(())
     }
@@ -626,7 +711,7 @@ impl Filesystem for MockFilesystem {
             if !parent_str.is_empty() && parent_str != "/" {
                 match files.get(parent_str) {
                     Some(MockEntry::Directory) => {}
-                    Some(MockEntry::File(_)) => {
+                    Some(MockEntry::File(_) | MockEntry::Symlink(_)) => {
                         return Err(Error::Io(std::io::Error::new(
                             std::io::ErrorKind::NotADirectory,
                             parent_str,
@@ -651,7 +736,7 @@ impl Filesystem for MockFilesystem {
         if let Some(entry) = files.get(path) {
             match entry {
                 MockEntry::Directory => return Ok(()),
-                MockEntry::File(_) => {
+                MockEntry::File(_) | MockEntry::Symlink(_) => {
                     return Err(Error::Io(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
                         path,
@@ -671,7 +756,7 @@ impl Filesystem for MockFilesystem {
             if let Some(entry) = files.get(ancestor_str) {
                 match entry {
                     MockEntry::Directory => {}
-                    MockEntry::File(_) => {
+                    MockEntry::File(_) | MockEntry::Symlink(_) => {
                         return Err(Error::Io(std::io::Error::new(
                             std::io::ErrorKind::NotADirectory,
                             ancestor_str,
@@ -699,7 +784,7 @@ impl Filesystem for MockFilesystem {
         // Check if path is a directory
         match files.get(path) {
             Some(MockEntry::Directory) => {}
-            Some(MockEntry::File(_)) => {
+            Some(MockEntry::File(_) | MockEntry::Symlink(_)) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotADirectory,
                     path,
@@ -730,6 +815,7 @@ impl Filesystem for MockFilesystem {
                     let (file_type, size) = match entry {
                         MockEntry::File(contents) => (FileType::RegularFile, contents.len() as u64),
                         MockEntry::Directory => (FileType::Directory, 0),
+                        MockEntry::Symlink(target) => (FileType::Symlink, target.len() as u64),
                     };
                     entries.push((
                         rest.to_string(),
@@ -747,6 +833,45 @@ impl Filesystem for MockFilesystem {
 
     fn stat(&self, path: &str) -> Result<DirEntry, Error> {
         let files = self.0.borrow();
+        let mut current_path = path.to_string();
+        let mut depth = 0;
+        loop {
+            if depth > 40 {
+                return Err(Error::Io(std::io::Error::other(
+                    "too many levels of symbolic links",
+                )));
+            }
+            match files.get(&current_path) {
+                Some(MockEntry::File(contents)) => {
+                    return Ok(DirEntry {
+                        file_type: FileType::RegularFile,
+                        size: contents.len() as u64,
+                        mtime_ms: 0,
+                    });
+                }
+                Some(MockEntry::Directory) => {
+                    return Ok(DirEntry {
+                        file_type: FileType::Directory,
+                        size: 0,
+                        mtime_ms: 0,
+                    });
+                }
+                Some(MockEntry::Symlink(target)) => {
+                    current_path = target.clone();
+                    depth += 1;
+                }
+                None => {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        path,
+                    )));
+                }
+            }
+        }
+    }
+
+    fn lstat(&self, path: &str) -> Result<DirEntry, Error> {
+        let files = self.0.borrow();
         match files.get(path) {
             Some(MockEntry::File(contents)) => Ok(DirEntry {
                 file_type: FileType::RegularFile,
@@ -758,6 +883,108 @@ impl Filesystem for MockFilesystem {
                 size: 0,
                 mtime_ms: 0,
             }),
+            Some(MockEntry::Symlink(target)) => Ok(DirEntry {
+                file_type: FileType::Symlink,
+                size: target.len() as u64,
+                mtime_ms: 0,
+            }),
+            None => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                path,
+            ))),
+        }
+    }
+
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        if files.contains_key(linkpath) {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                linkpath,
+            )));
+        }
+        files.insert(linkpath.to_string(), MockEntry::Symlink(target.to_string()));
+        Ok(())
+    }
+
+    fn link(&self, src: &str, dst: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        if files.contains_key(dst) {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                dst,
+            )));
+        }
+        let entry = files
+            .get(src)
+            .cloned()
+            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, src)))?;
+        match entry {
+            MockEntry::Directory => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "hard links to directories are not allowed",
+                )));
+            }
+            MockEntry::File(_) | MockEntry::Symlink(_) => {
+                files.insert(dst.to_string(), entry);
+            }
+        }
+        Ok(())
+    }
+
+    fn unlink(&self, path: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        match files.get(path) {
+            Some(MockEntry::Directory) => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::IsADirectory,
+                path,
+            ))),
+            Some(_) => {
+                files.remove(path);
+                Ok(())
+            }
+            None => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                path,
+            ))),
+        }
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        match files.get(path) {
+            Some(MockEntry::Directory) => {
+                let prefix = format!("{}/", path.trim_end_matches('/'));
+                let has_children = files.keys().any(|k| k.starts_with(&prefix));
+                if has_children {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::DirectoryNotEmpty,
+                        path,
+                    )));
+                }
+                files.remove(path);
+                Ok(())
+            }
+            Some(_) => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                path,
+            ))),
+            None => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                path,
+            ))),
+        }
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, Error> {
+        let files = self.0.borrow();
+        match files.get(path) {
+            Some(MockEntry::Symlink(target)) => Ok(target.clone()),
+            Some(_) => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a symbolic link",
+            ))),
             None => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 path,
