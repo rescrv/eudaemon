@@ -251,8 +251,21 @@ pub struct DirEntry {
     pub file_type: FileType,
     /// The size of the file in bytes.
     pub size: u64,
+    /// The access time in milliseconds since UNIX epoch.
+    pub atime_ms: i64,
     /// The modification time in milliseconds since UNIX epoch.
     pub mtime_ms: i64,
+}
+
+/// Timestamp specification for setting file times.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeSpec {
+    /// Set to the current time.
+    Now,
+    /// Leave the time unchanged.
+    Omit,
+    /// Set to a specific time in milliseconds since UNIX epoch.
+    Time(i64),
 }
 
 /// A trait for filesystem operations.
@@ -302,6 +315,14 @@ pub trait Filesystem {
     fn rmdir(&self, path: &str) -> Result<(), Error>;
     /// Read the target of a symbolic link.
     fn readlink(&self, path: &str) -> Result<String, Error>;
+    /// Set the access and modification times of a file.
+    /// TimeSpec::Now sets to current time, TimeSpec::Omit leaves unchanged.
+    fn set_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error>;
+    /// Set the access and modification times of a file without following symlinks.
+    fn lset_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error>;
+    /// Create an empty file if it does not exist, without changing times if it does.
+    /// Returns true if the file was created, false if it already existed.
+    fn create_file(&self, path: &str) -> Result<bool, Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -423,6 +444,14 @@ impl Filesystem for RealFilesystem {
             let dir_entry = DirEntry {
                 file_type,
                 size: metadata.len(),
+                atime_ms: metadata
+                    .accessed()
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0),
                 mtime_ms: metadata
                     .modified()
                     .map(|t| {
@@ -451,6 +480,14 @@ impl Filesystem for RealFilesystem {
         Ok(DirEntry {
             file_type,
             size: metadata.len(),
+            atime_ms: metadata
+                .accessed()
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
             mtime_ms: metadata
                 .modified()
                 .map(|t| {
@@ -476,6 +513,14 @@ impl Filesystem for RealFilesystem {
         Ok(DirEntry {
             file_type,
             size: metadata.len(),
+            atime_ms: metadata
+                .accessed()
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
             mtime_ms: metadata
                 .modified()
                 .map(|t| {
@@ -525,17 +570,92 @@ impl Filesystem for RealFilesystem {
                 ))
             })
     }
+
+    fn set_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        use std::fs::FileTimes;
+        use std::time::Duration;
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let file = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .map_err(Error::Io)?;
+
+        let metadata = file.metadata().map_err(Error::Io)?;
+        let mut times = FileTimes::new();
+
+        let atime_val = match atime {
+            TimeSpec::Now => SystemTime::now(),
+            TimeSpec::Omit => metadata.accessed().map_err(Error::Io)?,
+            TimeSpec::Time(ms) => {
+                if ms >= 0 {
+                    UNIX_EPOCH + Duration::from_millis(ms as u64)
+                } else {
+                    UNIX_EPOCH - Duration::from_millis((-ms) as u64)
+                }
+            }
+        };
+        times = times.set_accessed(atime_val);
+
+        let mtime_val = match mtime {
+            TimeSpec::Now => SystemTime::now(),
+            TimeSpec::Omit => metadata.modified().map_err(Error::Io)?,
+            TimeSpec::Time(ms) => {
+                if ms >= 0 {
+                    UNIX_EPOCH + Duration::from_millis(ms as u64)
+                } else {
+                    UNIX_EPOCH - Duration::from_millis((-ms) as u64)
+                }
+            }
+        };
+        times = times.set_modified(mtime_val);
+
+        file.set_times(times).map_err(Error::Io)
+    }
+
+    fn lset_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        // For symlinks on the real filesystem, we cannot easily set times without libc.
+        // The -h flag implies -c (no create), so if we can't modify symlink times,
+        // we silently succeed for symlinks (matching BSD behavior when unsupported).
+        let metadata = std::fs::symlink_metadata(path).map_err(Error::Io)?;
+        if metadata.is_symlink() {
+            // Cannot set times on symlinks without platform-specific APIs.
+            // Return Ok to match the -h flag behavior (silently skip).
+            return Ok(());
+        }
+        // For non-symlinks, fall back to regular set_times
+        self.set_times(path, atime, mtime)
+    }
+
+    fn create_file(&self, path: &str) -> Result<bool, Error> {
+        use std::fs::OpenOptions;
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+}
+
+/// Timestamps for mock filesystem entries.
+#[derive(Clone, Debug, Default)]
+struct MockTimes {
+    /// Access time in milliseconds since UNIX epoch.
+    atime_ms: i64,
+    /// Modification time in milliseconds since UNIX epoch.
+    mtime_ms: i64,
 }
 
 /// Internal entry for the mock filesystem.
 #[derive(Clone, Debug)]
 enum MockEntry {
-    /// A file with contents.
-    File(String),
-    /// A directory.
-    Directory,
-    /// A symbolic link with target path.
-    Symlink(String),
+    /// A file with contents and timestamps.
+    File(String, MockTimes),
+    /// A directory with timestamps.
+    Directory(MockTimes),
+    /// A symbolic link with target path and timestamps.
+    Symlink(String, MockTimes),
 }
 
 /// A mock filesystem backed by a HashMap.
@@ -550,16 +670,33 @@ impl MockFilesystem {
 
     /// Add a file to the mock filesystem.
     pub fn add_file(&self, path: &str, contents: &str) {
-        self.0
-            .borrow_mut()
-            .insert(path.to_string(), MockEntry::File(contents.to_string()));
+        self.0.borrow_mut().insert(
+            path.to_string(),
+            MockEntry::File(contents.to_string(), MockTimes::default()),
+        );
+    }
+
+    /// Add a file to the mock filesystem with specific timestamps.
+    pub fn add_file_with_times(&self, path: &str, contents: &str, atime_ms: i64, mtime_ms: i64) {
+        self.0.borrow_mut().insert(
+            path.to_string(),
+            MockEntry::File(contents.to_string(), MockTimes { atime_ms, mtime_ms }),
+        );
     }
 
     /// Add a directory to the mock filesystem.
     pub fn add_directory(&self, path: &str) {
         self.0
             .borrow_mut()
-            .insert(path.to_string(), MockEntry::Directory);
+            .insert(path.to_string(), MockEntry::Directory(MockTimes::default()));
+    }
+
+    /// Add a symbolic link to the mock filesystem.
+    pub fn add_symlink(&self, linkpath: &str, target: &str) {
+        self.0.borrow_mut().insert(
+            linkpath.to_string(),
+            MockEntry::Symlink(target.to_string(), MockTimes::default()),
+        );
     }
 }
 
@@ -579,8 +716,8 @@ impl Filesystem for MockFilesystem {
             .borrow()
             .get(path)
             .and_then(|entry| match entry {
-                MockEntry::File(contents) => Some(contents.clone()),
-                MockEntry::Directory | MockEntry::Symlink(_) => None,
+                MockEntry::File(contents, _) => Some(contents.clone()),
+                MockEntry::Directory(_) | MockEntry::Symlink(_, _) => None,
             })
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
     }
@@ -595,9 +732,9 @@ impl Filesystem for MockFilesystem {
             .get(path)
             .map(|entry| FileMetadata {
                 size: match entry {
-                    MockEntry::File(contents) => contents.len() as u64,
-                    MockEntry::Directory => 0,
-                    MockEntry::Symlink(target) => target.len() as u64,
+                    MockEntry::File(contents, _) => contents.len() as u64,
+                    MockEntry::Directory(_) => 0,
+                    MockEntry::Symlink(target, _) => target.len() as u64,
                 },
             })
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
@@ -607,8 +744,8 @@ impl Filesystem for MockFilesystem {
         let mut files = self.0.borrow_mut();
         let entry = files
             .entry(path.to_string())
-            .or_insert_with(|| MockEntry::File(String::new()));
-        if let MockEntry::File(contents) = entry {
+            .or_insert_with(|| MockEntry::File(String::new(), MockTimes::default()));
+        if let MockEntry::File(contents, _) = entry {
             let size = size as usize;
             if contents.len() > size {
                 contents.truncate(size);
@@ -621,7 +758,7 @@ impl Filesystem for MockFilesystem {
 
     fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
         let mut files = self.0.borrow_mut();
-        if let Some(MockEntry::File(contents)) = files.get_mut(path) {
+        if let Some(MockEntry::File(contents, _)) = files.get_mut(path) {
             let size = size as usize;
             if contents.len() > size {
                 contents.truncate(size);
@@ -637,7 +774,7 @@ impl Filesystem for MockFilesystem {
     fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
         let contents = match files.get_mut(path) {
-            Some(MockEntry::File(contents)) => contents,
+            Some(MockEntry::File(contents, _)) => contents,
             _ => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -665,9 +802,10 @@ impl Filesystem for MockFilesystem {
     }
 
     fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
-        self.0
-            .borrow_mut()
-            .insert(path.to_string(), MockEntry::File(contents.to_string()));
+        self.0.borrow_mut().insert(
+            path.to_string(),
+            MockEntry::File(contents.to_string(), MockTimes::default()),
+        );
         Ok(())
     }
 
@@ -675,16 +813,16 @@ impl Filesystem for MockFilesystem {
         let mut files = self.0.borrow_mut();
         match files
             .entry(path.to_string())
-            .or_insert_with(|| MockEntry::File(String::new()))
+            .or_insert_with(|| MockEntry::File(String::new(), MockTimes::default()))
         {
-            MockEntry::File(existing) => existing.push_str(contents),
-            MockEntry::Directory => {
+            MockEntry::File(existing, _) => existing.push_str(contents),
+            MockEntry::Directory(_) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::IsADirectory,
                     path,
                 )));
             }
-            MockEntry::Symlink(_) => {
+            MockEntry::Symlink(_, _) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "cannot append to a symbolic link",
@@ -710,8 +848,8 @@ impl Filesystem for MockFilesystem {
             // Parent must exist and be a directory (or be empty/root)
             if !parent_str.is_empty() && parent_str != "/" {
                 match files.get(parent_str) {
-                    Some(MockEntry::Directory) => {}
-                    Some(MockEntry::File(_) | MockEntry::Symlink(_)) => {
+                    Some(MockEntry::Directory(_)) => {}
+                    Some(MockEntry::File(_, _) | MockEntry::Symlink(_, _)) => {
                         return Err(Error::Io(std::io::Error::new(
                             std::io::ErrorKind::NotADirectory,
                             parent_str,
@@ -726,7 +864,7 @@ impl Filesystem for MockFilesystem {
                 }
             }
         }
-        files.insert(path.to_string(), MockEntry::Directory);
+        files.insert(path.to_string(), MockEntry::Directory(MockTimes::default()));
         Ok(())
     }
 
@@ -735,8 +873,8 @@ impl Filesystem for MockFilesystem {
         // If it already exists as a directory, success
         if let Some(entry) = files.get(path) {
             match entry {
-                MockEntry::Directory => return Ok(()),
-                MockEntry::File(_) | MockEntry::Symlink(_) => {
+                MockEntry::Directory(_) => return Ok(()),
+                MockEntry::File(_, _) | MockEntry::Symlink(_, _) => {
                     return Err(Error::Io(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
                         path,
@@ -755,8 +893,8 @@ impl Filesystem for MockFilesystem {
             }
             if let Some(entry) = files.get(ancestor_str) {
                 match entry {
-                    MockEntry::Directory => {}
-                    MockEntry::File(_) | MockEntry::Symlink(_) => {
+                    MockEntry::Directory(_) => {}
+                    MockEntry::File(_, _) | MockEntry::Symlink(_, _) => {
                         return Err(Error::Io(std::io::Error::new(
                             std::io::ErrorKind::NotADirectory,
                             ancestor_str,
@@ -764,7 +902,10 @@ impl Filesystem for MockFilesystem {
                     }
                 }
             } else {
-                files.insert(ancestor_str.to_string(), MockEntry::Directory);
+                files.insert(
+                    ancestor_str.to_string(),
+                    MockEntry::Directory(MockTimes::default()),
+                );
             }
         }
         Ok(())
@@ -774,7 +915,7 @@ impl Filesystem for MockFilesystem {
         self.0
             .borrow()
             .get(path)
-            .map(|entry| matches!(entry, MockEntry::Directory))
+            .map(|entry| matches!(entry, MockEntry::Directory(_)))
             .unwrap_or(false)
     }
 
@@ -783,8 +924,8 @@ impl Filesystem for MockFilesystem {
 
         // Check if path is a directory
         match files.get(path) {
-            Some(MockEntry::Directory) => {}
-            Some(MockEntry::File(_) | MockEntry::Symlink(_)) => {
+            Some(MockEntry::Directory(_)) => {}
+            Some(MockEntry::File(_, _) | MockEntry::Symlink(_, _)) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotADirectory,
                     path,
@@ -812,17 +953,22 @@ impl Filesystem for MockFilesystem {
             if let Some(rest) = file_path.strip_prefix(&prefix) {
                 // Only include direct children (no slashes in the rest)
                 if !rest.contains('/') && !rest.is_empty() {
-                    let (file_type, size) = match entry {
-                        MockEntry::File(contents) => (FileType::RegularFile, contents.len() as u64),
-                        MockEntry::Directory => (FileType::Directory, 0),
-                        MockEntry::Symlink(target) => (FileType::Symlink, target.len() as u64),
+                    let (file_type, size, times) = match entry {
+                        MockEntry::File(contents, times) => {
+                            (FileType::RegularFile, contents.len() as u64, times)
+                        }
+                        MockEntry::Directory(times) => (FileType::Directory, 0, times),
+                        MockEntry::Symlink(target, times) => {
+                            (FileType::Symlink, target.len() as u64, times)
+                        }
                     };
                     entries.push((
                         rest.to_string(),
                         DirEntry {
                             file_type,
                             size,
-                            mtime_ms: 0,
+                            atime_ms: times.atime_ms,
+                            mtime_ms: times.mtime_ms,
                         },
                     ));
                 }
@@ -842,21 +988,23 @@ impl Filesystem for MockFilesystem {
                 )));
             }
             match files.get(&current_path) {
-                Some(MockEntry::File(contents)) => {
+                Some(MockEntry::File(contents, times)) => {
                     return Ok(DirEntry {
                         file_type: FileType::RegularFile,
                         size: contents.len() as u64,
-                        mtime_ms: 0,
+                        atime_ms: times.atime_ms,
+                        mtime_ms: times.mtime_ms,
                     });
                 }
-                Some(MockEntry::Directory) => {
+                Some(MockEntry::Directory(times)) => {
                     return Ok(DirEntry {
                         file_type: FileType::Directory,
                         size: 0,
-                        mtime_ms: 0,
+                        atime_ms: times.atime_ms,
+                        mtime_ms: times.mtime_ms,
                     });
                 }
-                Some(MockEntry::Symlink(target)) => {
+                Some(MockEntry::Symlink(target, _)) => {
                     current_path = target.clone();
                     depth += 1;
                 }
@@ -873,20 +1021,23 @@ impl Filesystem for MockFilesystem {
     fn lstat(&self, path: &str) -> Result<DirEntry, Error> {
         let files = self.0.borrow();
         match files.get(path) {
-            Some(MockEntry::File(contents)) => Ok(DirEntry {
+            Some(MockEntry::File(contents, times)) => Ok(DirEntry {
                 file_type: FileType::RegularFile,
                 size: contents.len() as u64,
-                mtime_ms: 0,
+                atime_ms: times.atime_ms,
+                mtime_ms: times.mtime_ms,
             }),
-            Some(MockEntry::Directory) => Ok(DirEntry {
+            Some(MockEntry::Directory(times)) => Ok(DirEntry {
                 file_type: FileType::Directory,
                 size: 0,
-                mtime_ms: 0,
+                atime_ms: times.atime_ms,
+                mtime_ms: times.mtime_ms,
             }),
-            Some(MockEntry::Symlink(target)) => Ok(DirEntry {
+            Some(MockEntry::Symlink(target, times)) => Ok(DirEntry {
                 file_type: FileType::Symlink,
                 size: target.len() as u64,
-                mtime_ms: 0,
+                atime_ms: times.atime_ms,
+                mtime_ms: times.mtime_ms,
             }),
             None => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -903,7 +1054,10 @@ impl Filesystem for MockFilesystem {
                 linkpath,
             )));
         }
-        files.insert(linkpath.to_string(), MockEntry::Symlink(target.to_string()));
+        files.insert(
+            linkpath.to_string(),
+            MockEntry::Symlink(target.to_string(), MockTimes::default()),
+        );
         Ok(())
     }
 
@@ -920,13 +1074,13 @@ impl Filesystem for MockFilesystem {
             .cloned()
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, src)))?;
         match entry {
-            MockEntry::Directory => {
+            MockEntry::Directory(_) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "hard links to directories are not allowed",
                 )));
             }
-            MockEntry::File(_) | MockEntry::Symlink(_) => {
+            MockEntry::File(_, _) | MockEntry::Symlink(_, _) => {
                 files.insert(dst.to_string(), entry);
             }
         }
@@ -936,7 +1090,7 @@ impl Filesystem for MockFilesystem {
     fn unlink(&self, path: &str) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
         match files.get(path) {
-            Some(MockEntry::Directory) => Err(Error::Io(std::io::Error::new(
+            Some(MockEntry::Directory(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 path,
             ))),
@@ -954,7 +1108,7 @@ impl Filesystem for MockFilesystem {
     fn rmdir(&self, path: &str) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
         match files.get(path) {
-            Some(MockEntry::Directory) => {
+            Some(MockEntry::Directory(_)) => {
                 let prefix = format!("{}/", path.trim_end_matches('/'));
                 let has_children = files.keys().any(|k| k.starts_with(&prefix));
                 if has_children {
@@ -980,7 +1134,7 @@ impl Filesystem for MockFilesystem {
     fn readlink(&self, path: &str) -> Result<String, Error> {
         let files = self.0.borrow();
         match files.get(path) {
-            Some(MockEntry::Symlink(target)) => Ok(target.clone()),
+            Some(MockEntry::Symlink(target, _)) => Ok(target.clone()),
             Some(_) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "not a symbolic link",
@@ -990,6 +1144,105 @@ impl Filesystem for MockFilesystem {
                 path,
             ))),
         }
+    }
+
+    fn set_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        let mut current_path = path.to_string();
+        let mut depth = 0;
+
+        // Follow symlinks to find the target
+        loop {
+            if depth > 40 {
+                return Err(Error::Io(std::io::Error::other(
+                    "too many levels of symbolic links",
+                )));
+            }
+            match files.get(&current_path) {
+                Some(MockEntry::Symlink(target, _)) => {
+                    current_path = target.clone();
+                    depth += 1;
+                }
+                Some(_) => break,
+                None => {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        path,
+                    )));
+                }
+            }
+        }
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let entry = files.get_mut(&current_path).unwrap();
+        let times = match entry {
+            MockEntry::File(_, times) => times,
+            MockEntry::Directory(times) => times,
+            MockEntry::Symlink(_, times) => times,
+        };
+
+        match atime {
+            TimeSpec::Now => times.atime_ms = now_ms,
+            TimeSpec::Omit => {}
+            TimeSpec::Time(t) => times.atime_ms = t,
+        }
+
+        match mtime {
+            TimeSpec::Now => times.mtime_ms = now_ms,
+            TimeSpec::Omit => {}
+            TimeSpec::Time(t) => times.mtime_ms = t,
+        }
+
+        Ok(())
+    }
+
+    fn lset_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let entry = files
+            .get_mut(path)
+            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))?;
+
+        let times = match entry {
+            MockEntry::File(_, times) => times,
+            MockEntry::Directory(times) => times,
+            MockEntry::Symlink(_, times) => times,
+        };
+
+        match atime {
+            TimeSpec::Now => times.atime_ms = now_ms,
+            TimeSpec::Omit => {}
+            TimeSpec::Time(t) => times.atime_ms = t,
+        }
+
+        match mtime {
+            TimeSpec::Now => times.mtime_ms = now_ms,
+            TimeSpec::Omit => {}
+            TimeSpec::Time(t) => times.mtime_ms = t,
+        }
+
+        Ok(())
+    }
+
+    fn create_file(&self, path: &str) -> Result<bool, Error> {
+        let mut files = self.0.borrow_mut();
+        if files.contains_key(path) {
+            return Ok(false);
+        }
+        files.insert(
+            path.to_string(),
+            MockEntry::File(String::new(), MockTimes::default()),
+        );
+        Ok(true)
     }
 }
 
