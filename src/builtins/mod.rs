@@ -5,6 +5,7 @@ mod cat;
 mod echo;
 mod head;
 pub mod sh;
+mod tail;
 mod truncate;
 mod wc;
 
@@ -25,6 +26,7 @@ where
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
