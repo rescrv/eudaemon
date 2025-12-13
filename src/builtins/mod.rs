@@ -17,11 +17,14 @@ mod paste;
 mod printf;
 mod pwd;
 mod realpath;
+mod rm;
+mod rmdir;
 mod seq;
 pub mod sh;
 mod sort;
 mod tail;
 mod tee;
+mod test;
 mod tr;
 mod truncate;
 mod unexpand;
@@ -59,10 +62,13 @@ where
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
         "realpath" | "/bin/realpath" => Ok(realpath::bin),
+        "rm" | "/bin/rm" => Ok(rm::bin),
+        "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
+        "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
         "tr" | "/usr/bin/tr" => Ok(tr::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
@@ -70,6 +76,7 @@ where
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
+        "unlink" | "/bin/unlink" => Ok(rm::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
