@@ -1,26 +1,37 @@
 use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
+mod base64;
 mod basename;
 mod cat;
 mod comm;
+mod cp;
 mod cut;
+mod date;
 mod echo;
+mod env;
 pub mod expand;
 mod fold;
 mod head;
+mod ln;
 mod ls;
 mod mkdir;
+mod mktemp;
+mod mv;
 mod nl;
 mod paste;
 mod printf;
 mod pwd;
+mod readlink;
+mod realpath;
 mod rm;
 mod rmdir;
 mod seq;
 pub mod sh;
 mod sort;
+mod stat;
 mod tail;
 mod tee;
+mod test;
 mod touch;
 mod tr;
 mod truncate;
@@ -41,27 +52,38 @@ where
     FS: Filesystem,
 {
     match bin {
+        "base64" | "/usr/bin/base64" => Ok(base64::bin),
         "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
         "comm" | "/usr/bin/comm" => Ok(comm::bin),
+        "cp" | "/bin/cp" => Ok(cp::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
+        "date" | "/bin/date" => Ok(date::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
+        "env" | "/usr/bin/env" => Ok(env::bin),
         "exit" => Ok(exit_bin),
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "ln" | "/bin/ln" => Ok(ln::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
+        "mktemp" | "/usr/bin/mktemp" => Ok(mktemp::bin),
+        "mv" | "/bin/mv" => Ok(mv::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
+        "readlink" | "/usr/bin/readlink" => Ok(readlink::bin),
+        "realpath" | "/bin/realpath" => Ok(realpath::bin),
         "rm" | "/bin/rm" => Ok(rm::bin),
         "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
+        "stat" | "/usr/bin/stat" => Ok(stat::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
+        "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
         "touch" | "/usr/bin/touch" => Ok(touch::bin),
         "tr" | "/usr/bin/tr" => Ok(tr::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
