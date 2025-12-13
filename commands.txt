@@ -17,7 +17,6 @@ factor
 fmt
 fold
 hashsum
-head
 install
 join
 link
@@ -57,5 +56,4 @@ uname
 unexpand
 uniq
 unlink
-wc
 yes
