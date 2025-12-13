@@ -8,6 +8,7 @@ mod head;
 pub mod sh;
 mod tail;
 mod truncate;
+mod uniq;
 mod wc;
 
 /// Look up a builtin binary by name.
@@ -33,6 +34,7 @@ where
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
+        "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }

@@ -52,6 +52,5 @@ tr
 tsort
 uname
 unexpand
-uniq
 unlink
 yes
