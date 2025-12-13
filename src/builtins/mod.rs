@@ -10,6 +10,7 @@ mod env;
 pub mod expand;
 mod fold;
 mod head;
+mod ln;
 mod ls;
 mod mkdir;
 mod mktemp;
@@ -23,6 +24,7 @@ mod rmdir;
 mod seq;
 pub mod sh;
 mod sort;
+mod stat;
 mod tail;
 mod tee;
 mod test;
@@ -56,6 +58,7 @@ where
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "ln" | "/bin/ln" => Ok(ln::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
         "mktemp" | "/usr/bin/mktemp" => Ok(mktemp::bin),
@@ -68,6 +71,7 @@ where
         "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
+        "stat" | "/usr/bin/stat" => Ok(stat::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
         "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
