@@ -3,7 +3,6 @@ base64
 basenc
 chroot
 cksum
-comm
 cp
 csplit
 date
@@ -44,7 +43,6 @@ tac
 test
 timeout
 touch
-tr
 tsort
 uname
 unexpand

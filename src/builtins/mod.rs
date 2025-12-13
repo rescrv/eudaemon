@@ -2,6 +2,7 @@ use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 mod basename;
 mod cat;
+mod comm;
 mod cut;
 mod echo;
 mod fold;
@@ -12,6 +13,7 @@ mod seq;
 pub mod sh;
 mod tail;
 mod tee;
+mod tr;
 mod truncate;
 mod uniq;
 mod wc;
@@ -30,6 +32,7 @@ where
     match bin {
         "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
+        "comm" | "/usr/bin/comm" => Ok(comm::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
@@ -40,6 +43,7 @@ where
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
+        "tr" | "/usr/bin/tr" => Ok(tr::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
