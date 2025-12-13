@@ -1,5 +1,6 @@
 use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
+mod base64;
 mod basename;
 mod cat;
 mod comm;
@@ -38,6 +39,7 @@ where
     FS: Filesystem,
 {
     match bin {
+        "base64" | "/usr/bin/base64" => Ok(base64::bin),
         "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
         "comm" | "/usr/bin/comm" => Ok(comm::bin),
