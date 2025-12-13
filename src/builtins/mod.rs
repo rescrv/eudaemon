@@ -11,6 +11,7 @@ mod head;
 mod mkdir;
 mod nl;
 mod paste;
+mod pwd;
 mod seq;
 pub mod sh;
 mod sort;
@@ -20,6 +21,7 @@ mod tr;
 mod truncate;
 mod uniq;
 mod wc;
+mod yes;
 
 /// Look up a builtin binary by name.
 #[allow(clippy::type_complexity)]
@@ -45,6 +47,7 @@ where
         "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
+        "pwd" | "/bin/pwd" => Ok(pwd::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
@@ -56,6 +59,7 @@ where
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
+        "yes" | "/usr/bin/yes" => Ok(yes::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
 }
