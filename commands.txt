@@ -6,7 +6,6 @@ cksum
 comm
 cp
 csplit
-cut
 date
 df
 du
@@ -45,7 +44,6 @@ split
 stat
 sum
 tac
-tail
 tee
 test
 timeout
