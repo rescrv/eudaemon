@@ -2,6 +2,7 @@ use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 mod basename;
 mod cat;
+mod cut;
 mod echo;
 mod head;
 pub mod sh;
@@ -21,6 +22,7 @@ where
     match bin {
         "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
+        "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
         "head" | "/usr/bin/head" => Ok(head::bin),

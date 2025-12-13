@@ -6,7 +6,6 @@ cksum
 comm
 cp
 csplit
-cut
 date
 df
 du
@@ -17,7 +16,6 @@ factor
 fmt
 fold
 hashsum
-head
 install
 join
 link
@@ -46,7 +44,6 @@ split
 stat
 sum
 tac
-tail
 tee
 test
 timeout
@@ -57,5 +54,4 @@ uname
 unexpand
 uniq
 unlink
-wc
 yes
