@@ -19,6 +19,7 @@ pub mod sh;
 mod sort;
 mod tail;
 mod tee;
+mod test;
 mod tr;
 mod truncate;
 mod unexpand;
@@ -57,6 +58,7 @@ where
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
+        "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
         "tr" | "/usr/bin/tr" => Ok(tr::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
