@@ -4,6 +4,7 @@ mod basename;
 mod cat;
 mod cut;
 mod echo;
+mod expand;
 mod head;
 mod nl;
 mod paste;
@@ -33,6 +34,7 @@ where
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
+        "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
