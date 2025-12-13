@@ -3,7 +3,6 @@ base64
 basenc
 chroot
 cksum
-comm
 cp
 csplit
 date
@@ -14,7 +13,6 @@ expand
 expr
 factor
 fmt
-fold
 hashsum
 install
 join
@@ -45,7 +43,6 @@ tac
 test
 timeout
 touch
-tr
 tsort
 uname
 unexpand
