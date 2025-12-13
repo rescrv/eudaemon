@@ -19,6 +19,7 @@ mod tr;
 mod truncate;
 mod uniq;
 mod wc;
+mod yes;
 
 /// Look up a builtin binary by name.
 #[allow(clippy::type_complexity)]
@@ -54,6 +55,7 @@ where
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
+        "yes" | "/usr/bin/yes" => Ok(yes::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
 }
