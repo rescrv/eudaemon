@@ -615,6 +615,69 @@ impl MockFilesystem {
             .entries
             .insert(path.to_string(), MockEntry::Directory(ino));
     }
+
+    /// Resolve symlink components in a path (excluding the final component).
+    /// This mimics how the kernel resolves paths for operations like rename.
+    fn resolve_parent_path(
+        &self,
+        inner: &MockFilesystemInner,
+        path: &str,
+    ) -> Result<String, Error> {
+        if path == "/" || !path.contains('/') {
+            return Ok(path.to_string());
+        }
+
+        let path = path.trim_end_matches('/');
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.is_empty() {
+            return Ok(path.to_string());
+        }
+
+        // Resolve all components except the last one
+        let mut resolved = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            let current = if resolved.is_empty() {
+                format!("/{}", part)
+            } else {
+                format!("{}/{}", resolved, part)
+            };
+
+            // For all but the last component, follow symlinks
+            if i < parts.len() - 1 {
+                let mut depth = 0;
+                let mut check_path = current.clone();
+                loop {
+                    if depth > 40 {
+                        return Err(Error::Io(std::io::Error::other(
+                            "too many levels of symbolic links",
+                        )));
+                    }
+                    match inner.entries.get(&check_path) {
+                        Some(MockEntry::Symlink(target, _)) => {
+                            check_path = target.clone();
+                            depth += 1;
+                        }
+                        Some(MockEntry::Directory(_)) => {
+                            resolved = check_path;
+                            break;
+                        }
+                        _ => {
+                            resolved = check_path;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                // Last component - don't follow symlinks
+                resolved = current;
+            }
+        }
+
+        Ok(resolved)
+    }
 }
 
 impl Default for MockFilesystem {
@@ -1085,7 +1148,24 @@ impl Filesystem for MockFilesystem {
     }
 
     fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
+        // First resolve the destination path (following symlinks in parent directories)
+        let dst_resolved = {
+            let inner = self.0.borrow();
+            self.resolve_parent_path(&inner, dst)?
+        };
+
         let mut inner = self.0.borrow_mut();
+
+        // Check if we're trying to move a directory into itself
+        let src_trimmed = src.trim_end_matches('/');
+        let dst_trimmed = dst_resolved.trim_end_matches('/');
+        let src_prefix = format!("{}/", src_trimmed);
+        if dst_trimmed.starts_with(&src_prefix) || dst_trimmed == src_trimmed {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cannot move directory into itself",
+            )));
+        }
 
         // Check if source exists
         let entry = inner
@@ -1094,54 +1174,54 @@ impl Filesystem for MockFilesystem {
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, src)))?;
 
         // Check if destination exists
-        if inner.entries.contains_key(dst) {
+        if inner.entries.contains_key(&dst_resolved) {
             // If source is a directory and dest exists, it's an error unless dest is also
             // an empty directory
             if let MockEntry::Directory(_) = &entry {
-                match inner.entries.get(dst) {
+                match inner.entries.get(&dst_resolved) {
                     Some(MockEntry::Directory(_)) => {
                         // Check if dest directory is empty
-                        let prefix = format!("{}/", dst.trim_end_matches('/'));
+                        let prefix = format!("{}/", dst_resolved.trim_end_matches('/'));
                         let has_children = inner.entries.keys().any(|k| k.starts_with(&prefix));
                         if has_children {
                             // Put source back and return error
                             inner.entries.insert(src.to_string(), entry);
                             return Err(Error::Io(std::io::Error::new(
                                 std::io::ErrorKind::DirectoryNotEmpty,
-                                dst,
+                                dst_resolved,
                             )));
                         }
                         // Remove empty destination directory
-                        inner.entries.remove(dst);
+                        inner.entries.remove(&dst_resolved);
                     }
                     Some(_) => {
                         // Can't replace a file with a directory
                         inner.entries.insert(src.to_string(), entry);
                         return Err(Error::Io(std::io::Error::new(
                             std::io::ErrorKind::NotADirectory,
-                            dst,
+                            dst_resolved,
                         )));
                     }
                     None => unreachable!(),
                 }
             } else {
                 // Source is a file, check if dest is a directory
-                if let Some(MockEntry::Directory(_)) = inner.entries.get(dst) {
+                if let Some(MockEntry::Directory(_)) = inner.entries.get(&dst_resolved) {
                     inner.entries.insert(src.to_string(), entry);
                     return Err(Error::Io(std::io::Error::new(
                         std::io::ErrorKind::IsADirectory,
-                        dst,
+                        dst_resolved,
                     )));
                 }
                 // Remove existing file/symlink at destination
-                inner.entries.remove(dst);
+                inner.entries.remove(&dst_resolved);
             }
         }
 
         // For directories, we also need to move all children
         if let MockEntry::Directory(_) = &entry {
             let src_prefix = format!("{}/", src.trim_end_matches('/'));
-            let dst_prefix = format!("{}/", dst.trim_end_matches('/'));
+            let dst_prefix = format!("{}/", dst_resolved.trim_end_matches('/'));
 
             // Collect all children to move
             let children_to_move: Vec<(String, MockEntry)> = inner
@@ -1159,7 +1239,7 @@ impl Filesystem for MockFilesystem {
             }
         }
 
-        inner.entries.insert(dst.to_string(), entry);
+        inner.entries.insert(dst_resolved, entry);
         Ok(())
     }
 }

@@ -6,11 +6,7 @@ use crate::{Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, S
 
 fn build_options() -> Options {
     let mut opts = Options::new();
-    opts.optflag(
-        "f",
-        "",
-        "Do not prompt for confirmation before overwriting",
-    );
+    opts.optflag("f", "", "Do not prompt for confirmation before overwriting");
     opts.optflag(
         "h",
         "",
@@ -23,8 +19,11 @@ fn build_options() -> Options {
 }
 
 /// Configuration for the mv command.
+#[allow(dead_code)]
 struct MvConfig {
     /// Do not prompt for confirmation before overwriting (-f).
+    /// This is a no-op since overwriting is the default behavior,
+    /// but we accept it for compatibility with users accustomed to `mv -f`.
     force: bool,
     /// Do not follow symlinks to directories (-h).
     no_follow: bool,
@@ -70,36 +69,59 @@ where
 
     // Handle flag precedence: last one wins
     // -f, -i, -n are mutually exclusive; last specified wins
-    let mut config = MvConfig {
-        force: false,
-        no_follow: matches.opt_present("h"),
-        no_clobber: false,
-        verbose: matches.opt_present("v"),
-    };
+    // Use opt_positions to determine which was specified last
+    let f_positions = matches.opt_positions("f");
+    let i_positions = matches.opt_positions("i");
+    let n_positions = matches.opt_positions("n");
 
-    // Process flags in order to handle precedence (supports combined flags like -nv)
-    for arg in &env.args[1..] {
-        if arg.starts_with('-') && !arg.starts_with("--") {
-            // Process each character in the flag group
-            for ch in arg.chars().skip(1) {
-                match ch {
-                    'f' => {
-                        config.force = true;
-                        config.no_clobber = false;
-                    }
-                    'i' => {
-                        config.force = false;
-                        config.no_clobber = false;
-                    }
-                    'n' => {
-                        config.no_clobber = true;
-                        config.force = false;
-                    }
-                    _ => {}
-                }
+    let last_f = f_positions.last().copied();
+    let last_i = i_positions.last().copied();
+    let last_n = n_positions.last().copied();
+
+    // Determine which flag was last (if any)
+    let (force, no_clobber) = match (last_f, last_i, last_n) {
+        (Some(f), Some(i), Some(n)) => {
+            if f > i && f > n {
+                (true, false)
+            } else if n > f && n > i {
+                (false, true)
+            } else {
+                (false, false)
             }
         }
-    }
+        (Some(f), Some(i), None) => {
+            if f > i {
+                (true, false)
+            } else {
+                (false, false)
+            }
+        }
+        (Some(f), None, Some(n)) => {
+            if f > n {
+                (true, false)
+            } else {
+                (false, true)
+            }
+        }
+        (None, Some(i), Some(n)) => {
+            if n > i {
+                (false, true)
+            } else {
+                (false, false)
+            }
+        }
+        (Some(_), None, None) => (true, false),
+        (None, Some(_), None) => (false, false),
+        (None, None, Some(_)) => (false, true),
+        (None, None, None) => (false, false),
+    };
+
+    let config = MvConfig {
+        force,
+        no_follow: matches.opt_present("h"),
+        no_clobber,
+        verbose: matches.opt_present("v"),
+    };
 
     if matches.free.len() < 2 {
         env.stderr.write_line(
@@ -110,11 +132,19 @@ where
     }
 
     let last_arg = &matches.free[matches.free.len() - 1];
+    let last_arg_trimmed = last_arg.trim_end_matches('/');
+    let has_trailing_slash = last_arg.len() > 1 && last_arg.ends_with('/');
 
     // Determine if target is a directory
-    let target_is_dir = if config.no_follow {
+    let target_is_dir = if has_trailing_slash {
+        // Trailing slash forces directory interpretation
+        env.fs
+            .stat(last_arg_trimmed)
+            .map(|e| e.file_type == FileType::Directory)
+            .unwrap_or(false)
+    } else if config.no_follow {
         // With -h, check if it's a symlink to a directory
-        match env.fs.lstat(last_arg) {
+        match env.fs.lstat(last_arg_trimmed) {
             Ok(entry) if entry.file_type == FileType::Symlink => {
                 // It's a symlink - check what it points to, but if we're in -h mode
                 // with 2 args, treat it as a file (rename the symlink)
@@ -122,7 +152,7 @@ where
                     false
                 } else {
                     env.fs
-                        .stat(last_arg)
+                        .stat(last_arg_trimmed)
                         .map(|e| e.file_type == FileType::Directory)
                         .unwrap_or(false)
                 }
@@ -131,8 +161,9 @@ where
             Err(_) => false,
         }
     } else {
+        // Without -h, follow symlinks (use stat)
         env.fs
-            .stat(last_arg)
+            .stat(last_arg_trimmed)
             .map(|e| e.file_type == FileType::Directory)
             .unwrap_or(false)
     };
@@ -154,7 +185,7 @@ where
                 .rsplit('/')
                 .next()
                 .unwrap_or(source);
-            let target = format!("{}/{}", last_arg.trim_end_matches('/'), basename);
+            let target = format!("{}/{}", last_arg_trimmed, basename);
 
             if let Err(msg) = do_move(env, &config, source, &target) {
                 env.stderr.write_line(&format!("mv: {}", msg))?;
@@ -164,9 +195,8 @@ where
     } else {
         // Simple rename: source to target
         let source = &matches.free[0];
-        let target = last_arg;
 
-        if let Err(msg) = do_move(env, &config, source, target) {
+        if let Err(msg) = do_move(env, &config, source, last_arg_trimmed) {
             env.stderr.write_line(&format!("mv: {}", msg))?;
             exit_code = 1;
         }
@@ -188,6 +218,10 @@ where
     SE: Stderr,
     FS: Filesystem,
 {
+    // Normalize paths by removing trailing slashes
+    let from = from.trim_end_matches('/');
+    let from = if from.is_empty() { "/" } else { from };
+
     // Check if source exists
     if env.fs.lstat(from).is_err() {
         return Err(format!("{}: No such file or directory", from));
@@ -217,7 +251,12 @@ where
         Err(e) => {
             // If rename fails, we could try copy+delete for cross-filesystem moves
             // For now, just report the error
-            Err(format!("rename {} to {}: {}", from, to, io_error_message(&e)))
+            Err(format!(
+                "rename {} to {}: {}",
+                from,
+                to,
+                io_error_message(&e)
+            ))
         }
     }
 }

@@ -6,9 +6,7 @@ du
 install
 link
 mktemp
-mv
 readlink
-realpath
 shuf
 split
 timeout
