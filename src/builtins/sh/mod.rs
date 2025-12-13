@@ -128,8 +128,9 @@ mod tests {
     }
 
     #[test]
-    fn c_flag_runs_echo() {
-        let env = make_env(vec!["sh", "-c", "echo hello world"]);
+    fn c_flag_runs_cat() {
+        let env = make_env(vec!["sh", "-c", "cat file.txt"]);
+        env.fs.add_file("file.txt", "hello world\n");
         let result = bin(&env).unwrap();
         // Print stdout/stderr for debugging
         println!("stdout: {:?}", env.stdout.into_string());
@@ -149,7 +150,9 @@ mod tests {
     #[test]
     fn script_file_runs() {
         let env = make_env(vec!["sh", "test.sh"]);
-        env.fs.add_file("test.sh", "echo hello\necho world");
+        env.fs.add_file("test.sh", "cat a.txt\ncat b.txt");
+        env.fs.add_file("a.txt", "hello\n");
+        env.fs.add_file("b.txt", "world\n");
         let result = bin(&env).unwrap();
         // Print stdout/stderr for debugging
         println!("stdout: {:?}", env.stdout.into_string());
@@ -163,17 +166,20 @@ mod tests {
         let env = make_env(vec!["sh", "test.sh"]);
         env.fs.add_file(
             "test.sh",
-            "# comment\n\necho hello\n  # indented comment\n\necho world\n",
+            "# comment\n\ncat a.txt\n  # indented comment\n\ncat b.txt\n",
         );
+        env.fs.add_file("a.txt", "hello\n");
+        env.fs.add_file("b.txt", "world\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\nworld\n", env.stdout.into_string());
     }
 
     #[test]
-    fn run_echo() {
+    fn run_cat() {
         let env = make_env(vec!["unused"]);
-        let result = run("echo hello".to_string(), &env).unwrap();
+        env.fs.add_file("test.txt", "hello\n");
+        let result = run("cat test.txt".to_string(), &env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
     }

@@ -16,7 +16,6 @@ where
 {
     match bin {
         "cat" | "/bin/cat" => Ok(cat::bin),
-        "echo" | "/bin/echo" => Ok(echo::bin),
         "sh" | "/bin/sh" => Ok(sh::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
