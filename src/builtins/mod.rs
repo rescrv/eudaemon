@@ -1,7 +1,9 @@
 use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
+mod basename;
 mod cat;
 mod echo;
+mod head;
 pub mod sh;
 mod truncate;
 
@@ -17,9 +19,11 @@ where
     FS: Filesystem,
 {
     match bin {
+        "basename" | "/usr/bin/basename" => Ok(basename::bin),
         "cat" | "/bin/cat" => Ok(cat::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "exit" => Ok(exit_bin),
+        "head" | "/usr/bin/head" => Ok(head::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
