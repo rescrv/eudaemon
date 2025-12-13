@@ -12,6 +12,7 @@ mod seq;
 pub mod sh;
 mod tail;
 mod tee;
+mod tr;
 mod truncate;
 mod uniq;
 mod wc;
@@ -40,6 +41,7 @@ where
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
+        "tr" | "/usr/bin/tr" => Ok(tr::bin),
         "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
