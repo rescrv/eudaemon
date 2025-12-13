@@ -5,6 +5,7 @@ mod basename;
 mod cat;
 mod comm;
 mod cut;
+mod date;
 mod echo;
 mod env;
 pub mod expand;
@@ -46,6 +47,7 @@ where
         "cat" | "/bin/cat" => Ok(cat::bin),
         "comm" | "/usr/bin/comm" => Ok(comm::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
+        "date" | "/bin/date" => Ok(date::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "env" | "/usr/bin/env" => Ok(env::bin),
         "exit" => Ok(exit_bin),
