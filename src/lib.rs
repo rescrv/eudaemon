@@ -254,6 +254,14 @@ pub trait Filesystem {
     fn write_string(&self, path: &str, contents: &str) -> Result<(), Error>;
     /// Append a string to a file, creating if it does not exist.
     fn append_string(&self, path: &str, contents: &str) -> Result<(), Error>;
+    /// Create a directory. Returns an error if the directory already exists
+    /// or if the parent directory does not exist.
+    fn mkdir(&self, path: &str) -> Result<(), Error>;
+    /// Create a directory and all parent directories as needed.
+    /// Returns Ok(()) if the directory already exists.
+    fn mkdir_all(&self, path: &str) -> Result<(), Error>;
+    /// Check if a path is a directory.
+    fn is_dir(&self, path: &str) -> bool;
 }
 
 /// A real filesystem that reads from disk.
@@ -343,6 +351,18 @@ impl Filesystem for RealFilesystem {
             .open(path)
             .map_err(Error::Io)?;
         file.write_all(contents.as_bytes()).map_err(Error::Io)
+    }
+
+    fn mkdir(&self, path: &str) -> Result<(), Error> {
+        std::fs::create_dir(path).map_err(Error::Io)
+    }
+
+    fn mkdir_all(&self, path: &str) -> Result<(), Error> {
+        std::fs::create_dir_all(path).map_err(Error::Io)
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        std::path::Path::new(path).is_dir()
     }
 }
 
@@ -462,6 +482,86 @@ impl Filesystem for MockFilesystem {
             .or_default()
             .push_str(contents);
         Ok(())
+    }
+
+    fn mkdir(&self, path: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        // Check if it already exists
+        if files.contains_key(path) {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                path,
+            )));
+        }
+        // Check if parent exists (unless root or single component)
+        let path_obj = std::path::Path::new(path);
+        if let Some(parent) = path_obj.parent() {
+            let parent_str = parent.to_str().unwrap_or("");
+            // Parent must exist and be a directory (or be empty/root)
+            if !parent_str.is_empty() && parent_str != "/" {
+                match files.get(parent_str) {
+                    Some(contents) if contents == "\0DIR\0" => {}
+                    Some(_) => {
+                        return Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotADirectory,
+                            parent_str,
+                        )));
+                    }
+                    None => {
+                        return Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            parent_str,
+                        )));
+                    }
+                }
+            }
+        }
+        files.insert(path.to_string(), "\0DIR\0".to_string());
+        Ok(())
+    }
+
+    fn mkdir_all(&self, path: &str) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        // If it already exists as a directory, success
+        if let Some(contents) = files.get(path) {
+            if contents == "\0DIR\0" {
+                return Ok(());
+            } else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    path,
+                )));
+            }
+        }
+        // Create all parent directories
+        let path_obj = std::path::Path::new(path);
+        let mut ancestors: Vec<_> = path_obj.ancestors().collect();
+        ancestors.reverse();
+        for ancestor in ancestors {
+            let ancestor_str = ancestor.to_str().unwrap_or("");
+            if ancestor_str.is_empty() || ancestor_str == "/" {
+                continue;
+            }
+            if let Some(contents) = files.get(ancestor_str) {
+                if contents != "\0DIR\0" {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotADirectory,
+                        ancestor_str,
+                    )));
+                }
+            } else {
+                files.insert(ancestor_str.to_string(), "\0DIR\0".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        self.0
+            .borrow()
+            .get(path)
+            .map(|contents| contents == "\0DIR\0")
+            .unwrap_or(false)
     }
 }
 
