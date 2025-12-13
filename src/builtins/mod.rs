@@ -8,6 +8,8 @@ mod echo;
 pub mod expand;
 mod fold;
 mod head;
+mod ls;
+mod mkdir;
 mod nl;
 mod paste;
 mod pwd;
@@ -44,6 +46,8 @@ where
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),
         "head" | "/usr/bin/head" => Ok(head::bin),
+        "ls" | "/bin/ls" => Ok(ls::bin),
+        "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
         "nl" | "/usr/bin/nl" => Ok(nl::bin),
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
