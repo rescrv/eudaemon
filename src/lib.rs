@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::Write;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use utf8path::Path;
 
@@ -221,12 +224,32 @@ impl Stderr for std::io::Stderr {
     }
 }
 
+/// Metadata about a file.
+#[derive(Clone, Copy, Debug)]
+pub struct FileMetadata {
+    /// The size of the file in bytes.
+    pub size: u64,
+}
+
 /// A trait for filesystem operations.
 pub trait Filesystem {
     /// Duplicate the filesystem handle.
     fn dup(&self) -> Self;
     /// Read a file and return its contents as a string.
     fn read_to_string(&self, path: &str) -> Result<String, Error>;
+    /// Check if a file exists.
+    fn exists(&self, path: &str) -> bool;
+    /// Get metadata about a file.
+    fn metadata(&self, path: &str) -> Result<FileMetadata, Error>;
+    /// Truncate or extend a file to the specified size.
+    /// Creates the file if it does not exist.
+    fn truncate(&self, path: &str, size: u64) -> Result<(), Error>;
+    /// Truncate or extend a file to the specified size, but only if it exists.
+    /// Returns Ok(false) if the file does not exist, Ok(true) if successful.
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error>;
+    /// Punch a hole in a file by writing spaces at the given offset for the given length.
+    /// The file must exist. If offset + length exceeds file size, extends the file.
+    fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -240,6 +263,66 @@ impl Filesystem for RealFilesystem {
 
     fn read_to_string(&self, path: &str) -> Result<String, Error> {
         std::fs::read_to_string(path).map_err(Error::Io)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
+    }
+
+    fn metadata(&self, path: &str) -> Result<FileMetadata, Error> {
+        let meta = std::fs::metadata(path).map_err(Error::Io)?;
+        Ok(FileMetadata { size: meta.len() })
+    }
+
+    fn truncate(&self, path: &str, size: u64) -> Result<(), Error> {
+        use std::fs::OpenOptions;
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(Error::Io)?;
+        file.set_len(size).map_err(Error::Io)
+    }
+
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
+        use std::fs::OpenOptions;
+        match OpenOptions::new().write(true).truncate(false).open(path) {
+            Ok(file) => {
+                file.set_len(size).map_err(Error::Io)?;
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+
+    fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
+        use std::fs::OpenOptions;
+        use std::io::Seek;
+        use std::io::SeekFrom;
+        use std::io::Write;
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .read(true)
+            .open(path)
+            .map_err(Error::Io)?;
+
+        let file_len = file.metadata().map_err(Error::Io)?.len();
+        let end = offset.saturating_add(length);
+
+        // Extend file if necessary
+        if end > file_len {
+            file.set_len(end).map_err(Error::Io)?;
+        }
+
+        // Seek to offset and write spaces
+        file.seek(SeekFrom::Start(offset)).map_err(Error::Io)?;
+        let spaces = vec![b' '; length as usize];
+        file.write_all(&spaces).map_err(Error::Io)?;
+
+        Ok(())
     }
 }
 
@@ -279,6 +362,71 @@ impl Filesystem for MockFilesystem {
             .cloned()
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
     }
+
+    fn exists(&self, path: &str) -> bool {
+        self.0.borrow().contains_key(path)
+    }
+
+    fn metadata(&self, path: &str) -> Result<FileMetadata, Error> {
+        self.0
+            .borrow()
+            .get(path)
+            .map(|contents| FileMetadata {
+                size: contents.len() as u64,
+            })
+            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
+    }
+
+    fn truncate(&self, path: &str, size: u64) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        let contents = files.entry(path.to_string()).or_default();
+        let size = size as usize;
+        if contents.len() > size {
+            contents.truncate(size);
+        } else {
+            contents.extend(std::iter::repeat_n(' ', size - contents.len()));
+        }
+        Ok(())
+    }
+
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
+        let mut files = self.0.borrow_mut();
+        if let Some(contents) = files.get_mut(path) {
+            let size = size as usize;
+            if contents.len() > size {
+                contents.truncate(size);
+            } else {
+                contents.extend(std::iter::repeat_n(' ', size - contents.len()));
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
+        let mut files = self.0.borrow_mut();
+        let contents = files
+            .get_mut(path)
+            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))?;
+
+        let offset = offset as usize;
+        let length = length as usize;
+        let end = offset.saturating_add(length);
+
+        // Extend file if necessary
+        if contents.len() < end {
+            contents.extend(std::iter::repeat_n(' ', end - contents.len()));
+        }
+
+        // Replace characters at offset..end with spaces
+        let bytes = unsafe { contents.as_bytes_mut() };
+        for byte in bytes.iter_mut().skip(offset).take(length) {
+            *byte = b' ';
+        }
+
+        Ok(())
+    }
 }
 
 /// The execution environment for a command.
@@ -303,6 +451,8 @@ where
     pub args: Vec<String>,
     /// Current working directory.
     pub cwd: Path<'static>,
+    /// Whether an exit has been signaled by the `exit` builtin.
+    pub exit_signaled: Arc<AtomicBool>,
 }
 
 impl Default for Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, RealFilesystem> {
@@ -323,6 +473,7 @@ impl Default for Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, R
             ]),
             args: vec!["/bin/synshell".to_string()],
             cwd: Path::from("/home/assistant"),
+            exit_signaled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -344,7 +495,18 @@ where
             env: self.env.clone(),
             args: self.args.clone(),
             cwd: self.cwd.clone(),
+            exit_signaled: Arc::clone(&self.exit_signaled),
         }
+    }
+
+    /// Signal that an exit has been requested.
+    pub fn signal_exit(&self) {
+        self.exit_signaled.store(true, Ordering::SeqCst);
+    }
+
+    /// Check if an exit has been signaled.
+    pub fn is_exit_signaled(&self) -> bool {
+        self.exit_signaled.load(Ordering::SeqCst)
     }
 
     /// Set the arguments for the environment.
