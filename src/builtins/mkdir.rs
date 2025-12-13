@@ -161,8 +161,7 @@ mod tests {
     ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
         let fs = MockFilesystem::new();
         // Create root directory marker
-        fs.0.borrow_mut()
-            .insert("/".to_string(), "\0DIR\0".to_string());
+        fs.add_directory("/");
         Environment {
             stdin: StringStdin::new(""),
             stdout: StringStdout::new(),

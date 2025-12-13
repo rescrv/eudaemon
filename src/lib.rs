@@ -231,6 +231,30 @@ pub struct FileMetadata {
     pub size: u64,
 }
 
+/// The type of a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileType {
+    /// A regular file.
+    RegularFile,
+    /// A directory.
+    Directory,
+    /// A symbolic link.
+    Symlink,
+    /// Some other type of file.
+    Other,
+}
+
+/// A directory entry with metadata.
+#[derive(Clone, Debug)]
+pub struct DirEntry {
+    /// The type of the file.
+    pub file_type: FileType,
+    /// The size of the file in bytes.
+    pub size: u64,
+    /// The modification time in milliseconds since UNIX epoch.
+    pub mtime_ms: i64,
+}
+
 /// A trait for filesystem operations.
 pub trait Filesystem {
     /// Duplicate the filesystem handle.
@@ -262,6 +286,10 @@ pub trait Filesystem {
     fn mkdir_all(&self, path: &str) -> Result<(), Error>;
     /// Check if a path is a directory.
     fn is_dir(&self, path: &str) -> bool;
+    /// Read the contents of a directory.
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error>;
+    /// Get detailed information about a file or directory.
+    fn stat(&self, path: &str) -> Result<DirEntry, Error>;
 }
 
 /// A real filesystem that reads from disk.
@@ -364,11 +392,77 @@ impl Filesystem for RealFilesystem {
     fn is_dir(&self, path: &str) -> bool {
         std::path::Path::new(path).is_dir()
     }
+
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error> {
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(path).map_err(Error::Io)? {
+            let entry = entry.map_err(Error::Io)?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let metadata = entry.metadata().map_err(Error::Io)?;
+            let file_type = if metadata.is_dir() {
+                FileType::Directory
+            } else if metadata.is_symlink() {
+                FileType::Symlink
+            } else if metadata.is_file() {
+                FileType::RegularFile
+            } else {
+                FileType::Other
+            };
+            let dir_entry = DirEntry {
+                file_type,
+                size: metadata.len(),
+                mtime_ms: metadata
+                    .modified()
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0),
+            };
+            entries.push((name, dir_entry));
+        }
+        Ok(entries)
+    }
+
+    fn stat(&self, path: &str) -> Result<DirEntry, Error> {
+        let metadata = std::fs::metadata(path).map_err(Error::Io)?;
+        let file_type = if metadata.is_dir() {
+            FileType::Directory
+        } else if metadata.is_symlink() {
+            FileType::Symlink
+        } else if metadata.is_file() {
+            FileType::RegularFile
+        } else {
+            FileType::Other
+        };
+        Ok(DirEntry {
+            file_type,
+            size: metadata.len(),
+            mtime_ms: metadata
+                .modified()
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
+        })
+    }
+}
+
+/// Internal entry for the mock filesystem.
+#[derive(Clone, Debug)]
+enum MockEntry {
+    /// A file with contents.
+    File(String),
+    /// A directory.
+    Directory,
 }
 
 /// A mock filesystem backed by a HashMap.
 #[derive(Clone)]
-pub struct MockFilesystem(Rc<RefCell<HashMap<String, String>>>);
+pub struct MockFilesystem(Rc<RefCell<HashMap<String, MockEntry>>>);
 
 impl MockFilesystem {
     /// Create a new empty MockFilesystem.
@@ -380,7 +474,14 @@ impl MockFilesystem {
     pub fn add_file(&self, path: &str, contents: &str) {
         self.0
             .borrow_mut()
-            .insert(path.to_string(), contents.to_string());
+            .insert(path.to_string(), MockEntry::File(contents.to_string()));
+    }
+
+    /// Add a directory to the mock filesystem.
+    pub fn add_directory(&self, path: &str) {
+        self.0
+            .borrow_mut()
+            .insert(path.to_string(), MockEntry::Directory);
     }
 }
 
@@ -399,7 +500,10 @@ impl Filesystem for MockFilesystem {
         self.0
             .borrow()
             .get(path)
-            .cloned()
+            .and_then(|entry| match entry {
+                MockEntry::File(contents) => Some(contents.clone()),
+                MockEntry::Directory => None,
+            })
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
     }
 
@@ -411,27 +515,34 @@ impl Filesystem for MockFilesystem {
         self.0
             .borrow()
             .get(path)
-            .map(|contents| FileMetadata {
-                size: contents.len() as u64,
+            .map(|entry| FileMetadata {
+                size: match entry {
+                    MockEntry::File(contents) => contents.len() as u64,
+                    MockEntry::Directory => 0,
+                },
             })
             .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
     }
 
     fn truncate(&self, path: &str, size: u64) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
-        let contents = files.entry(path.to_string()).or_default();
-        let size = size as usize;
-        if contents.len() > size {
-            contents.truncate(size);
-        } else {
-            contents.extend(std::iter::repeat_n(' ', size - contents.len()));
+        let entry = files
+            .entry(path.to_string())
+            .or_insert_with(|| MockEntry::File(String::new()));
+        if let MockEntry::File(contents) = entry {
+            let size = size as usize;
+            if contents.len() > size {
+                contents.truncate(size);
+            } else {
+                contents.extend(std::iter::repeat_n(' ', size - contents.len()));
+            }
         }
         Ok(())
     }
 
     fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
         let mut files = self.0.borrow_mut();
-        if let Some(contents) = files.get_mut(path) {
+        if let Some(MockEntry::File(contents)) = files.get_mut(path) {
             let size = size as usize;
             if contents.len() > size {
                 contents.truncate(size);
@@ -446,9 +557,15 @@ impl Filesystem for MockFilesystem {
 
     fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
-        let contents = files
-            .get_mut(path)
-            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))?;
+        let contents = match files.get_mut(path) {
+            Some(MockEntry::File(contents)) => contents,
+            _ => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    path,
+                )));
+            }
+        };
 
         let offset = offset as usize;
         let length = length as usize;
@@ -471,16 +588,24 @@ impl Filesystem for MockFilesystem {
     fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
         self.0
             .borrow_mut()
-            .insert(path.to_string(), contents.to_string());
+            .insert(path.to_string(), MockEntry::File(contents.to_string()));
         Ok(())
     }
 
     fn append_string(&self, path: &str, contents: &str) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
-        files
+        match files
             .entry(path.to_string())
-            .or_default()
-            .push_str(contents);
+            .or_insert_with(|| MockEntry::File(String::new()))
+        {
+            MockEntry::File(existing) => existing.push_str(contents),
+            MockEntry::Directory => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::IsADirectory,
+                    path,
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -500,8 +625,8 @@ impl Filesystem for MockFilesystem {
             // Parent must exist and be a directory (or be empty/root)
             if !parent_str.is_empty() && parent_str != "/" {
                 match files.get(parent_str) {
-                    Some(contents) if contents == "\0DIR\0" => {}
-                    Some(_) => {
+                    Some(MockEntry::Directory) => {}
+                    Some(MockEntry::File(_)) => {
                         return Err(Error::Io(std::io::Error::new(
                             std::io::ErrorKind::NotADirectory,
                             parent_str,
@@ -516,21 +641,22 @@ impl Filesystem for MockFilesystem {
                 }
             }
         }
-        files.insert(path.to_string(), "\0DIR\0".to_string());
+        files.insert(path.to_string(), MockEntry::Directory);
         Ok(())
     }
 
     fn mkdir_all(&self, path: &str) -> Result<(), Error> {
         let mut files = self.0.borrow_mut();
         // If it already exists as a directory, success
-        if let Some(contents) = files.get(path) {
-            if contents == "\0DIR\0" {
-                return Ok(());
-            } else {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    path,
-                )));
+        if let Some(entry) = files.get(path) {
+            match entry {
+                MockEntry::Directory => return Ok(()),
+                MockEntry::File(_) => {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        path,
+                    )));
+                }
             }
         }
         // Create all parent directories
@@ -542,15 +668,18 @@ impl Filesystem for MockFilesystem {
             if ancestor_str.is_empty() || ancestor_str == "/" {
                 continue;
             }
-            if let Some(contents) = files.get(ancestor_str) {
-                if contents != "\0DIR\0" {
-                    return Err(Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotADirectory,
-                        ancestor_str,
-                    )));
+            if let Some(entry) = files.get(ancestor_str) {
+                match entry {
+                    MockEntry::Directory => {}
+                    MockEntry::File(_) => {
+                        return Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotADirectory,
+                            ancestor_str,
+                        )));
+                    }
                 }
             } else {
-                files.insert(ancestor_str.to_string(), "\0DIR\0".to_string());
+                files.insert(ancestor_str.to_string(), MockEntry::Directory);
             }
         }
         Ok(())
@@ -560,8 +689,80 @@ impl Filesystem for MockFilesystem {
         self.0
             .borrow()
             .get(path)
-            .map(|contents| contents == "\0DIR\0")
+            .map(|entry| matches!(entry, MockEntry::Directory))
             .unwrap_or(false)
+    }
+
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error> {
+        let files = self.0.borrow();
+
+        // Check if path is a directory
+        match files.get(path) {
+            Some(MockEntry::Directory) => {}
+            Some(MockEntry::File(_)) => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    path,
+                )));
+            }
+            None => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    path,
+                )));
+            }
+        }
+
+        let prefix = if path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", path.trim_end_matches('/'))
+        };
+
+        let mut entries = Vec::new();
+        for (file_path, entry) in files.iter() {
+            if file_path == path {
+                continue;
+            }
+            if let Some(rest) = file_path.strip_prefix(&prefix) {
+                // Only include direct children (no slashes in the rest)
+                if !rest.contains('/') && !rest.is_empty() {
+                    let (file_type, size) = match entry {
+                        MockEntry::File(contents) => (FileType::RegularFile, contents.len() as u64),
+                        MockEntry::Directory => (FileType::Directory, 0),
+                    };
+                    entries.push((
+                        rest.to_string(),
+                        DirEntry {
+                            file_type,
+                            size,
+                            mtime_ms: 0,
+                        },
+                    ));
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    fn stat(&self, path: &str) -> Result<DirEntry, Error> {
+        let files = self.0.borrow();
+        match files.get(path) {
+            Some(MockEntry::File(contents)) => Ok(DirEntry {
+                file_type: FileType::RegularFile,
+                size: contents.len() as u64,
+                mtime_ms: 0,
+            }),
+            Some(MockEntry::Directory) => Ok(DirEntry {
+                file_type: FileType::Directory,
+                size: 0,
+                mtime_ms: 0,
+            }),
+            None => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                path,
+            ))),
+        }
     }
 }
 
