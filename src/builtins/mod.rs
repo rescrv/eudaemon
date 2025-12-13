@@ -16,6 +16,7 @@ mod nl;
 mod paste;
 mod printf;
 mod pwd;
+mod realpath;
 mod seq;
 pub mod sh;
 mod sort;
@@ -57,6 +58,7 @@ where
         "paste" | "/usr/bin/paste" => Ok(paste::bin),
         "printf" | "/usr/bin/printf" => Ok(printf::bin),
         "pwd" | "/bin/pwd" => Ok(pwd::bin),
+        "realpath" | "/bin/realpath" => Ok(realpath::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
