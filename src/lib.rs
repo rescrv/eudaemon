@@ -785,15 +785,35 @@ impl Filesystem for MockFilesystem {
     }
 
     fn read_to_string(&self, path: &str) -> Result<String, Error> {
-        self.0
-            .borrow()
-            .entries
-            .get(path)
-            .and_then(|entry| match entry {
-                MockEntry::File(contents, _) => Some(contents.clone()),
-                MockEntry::Directory(_) | MockEntry::Symlink(_, _) => None,
-            })
-            .ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, path)))
+        let inner = self.0.borrow();
+        let mut current_path = path.to_string();
+        let mut depth = 0;
+        loop {
+            if depth > 40 {
+                return Err(Error::Io(std::io::Error::other(
+                    "too many levels of symbolic links",
+                )));
+            }
+            match inner.entries.get(&current_path) {
+                Some(MockEntry::File(contents, _)) => return Ok(contents.clone()),
+                Some(MockEntry::Directory(_)) => {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::IsADirectory,
+                        path,
+                    )));
+                }
+                Some(MockEntry::Symlink(target, _)) => {
+                    current_path = target.clone();
+                    depth += 1;
+                }
+                None => {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        path,
+                    )));
+                }
+            }
+        }
     }
 
     fn exists(&self, path: &str) -> bool {
@@ -1065,7 +1085,13 @@ impl Filesystem for MockFilesystem {
 
     fn stat(&self, path: &str) -> Result<DirEntry, Error> {
         let inner = self.0.borrow();
-        let mut current_path = path.to_string();
+        let has_trailing_slash = path.len() > 1 && path.ends_with('/');
+        let normalized = path.trim_end_matches('/');
+        let mut current_path = if normalized.is_empty() {
+            "/".to_string()
+        } else {
+            normalized.to_string()
+        };
         let mut depth = 0;
         loop {
             if depth > 40 {
@@ -1075,6 +1101,12 @@ impl Filesystem for MockFilesystem {
             }
             match inner.entries.get(&current_path) {
                 Some(MockEntry::File(contents, ino)) => {
+                    if has_trailing_slash {
+                        return Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::NotADirectory,
+                            path,
+                        )));
+                    }
                     return Ok(DirEntry {
                         file_type: FileType::RegularFile,
                         size: contents.len() as u64,
