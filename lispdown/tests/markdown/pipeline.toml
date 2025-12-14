@@ -1,0 +1,228 @@
+[metadata]
+version = "1.0"
+description = "Full pipeline tests: markdown -> s-expr -> mutate -> markdown"
+
+# =============================================================================
+# Basic Pipeline Tests
+# =============================================================================
+
+[[test]]
+name = "add_paragraph_to_document"
+description = "Parse markdown, append a paragraph, render back"
+before = """
+# Title
+
+Existing content.
+"""
+mutation = { op = "append_child", parent = "root", node = '(p "New paragraph.")' }
+after = """
+# Title
+
+Existing content.
+
+New paragraph.
+"""
+compare = "semantic"
+
+[[test]]
+name = "add_heading_before_content"
+description = "Parse markdown, prepend a heading, render back"
+before = """
+Some content without a title.
+"""
+mutation = { op = "prepend_child", parent = "root", node = '(h1 "Added Title")' }
+after = """
+# Added Title
+
+Some content without a title.
+"""
+compare = "semantic"
+
+[[test]]
+name = "remove_first_paragraph"
+description = "Parse markdown, remove first paragraph, render back"
+before = """
+# Title
+
+Remove this paragraph.
+
+Keep this paragraph.
+"""
+mutation = { op = "prune", path = "2" }
+after = """
+# Title
+
+Keep this paragraph.
+"""
+compare = "semantic"
+
+[[test]]
+name = "demote_heading"
+description = "Parse markdown, demote h1 to h2, render back"
+before = """
+# Main Title
+
+Content here.
+"""
+mutation = { op = "hoist", path = "1", delta = 1 }
+after = """
+## Main Title
+
+Content here.
+"""
+compare = "semantic"
+
+[[test]]
+name = "promote_heading"
+description = "Parse markdown, promote h3 to h2, render back"
+before = """
+### Subsection
+
+Content here.
+"""
+mutation = { op = "hoist", path = "1", delta = -1 }
+after = """
+## Subsection
+
+Content here.
+"""
+compare = "semantic"
+
+# =============================================================================
+# Complex Pipeline Tests
+# =============================================================================
+
+[[test]]
+name = "restructure_document"
+description = "Multiple mutations to restructure a document"
+before = """
+# Old Title
+
+First paragraph.
+
+Second paragraph.
+"""
+mutations = [
+    { op = "replace_at", path = "1", node = '(h1 "New Title")' },
+    { op = "prune", path = "2" },
+    { op = "append_child", parent = "root", node = '(p "Third paragraph.")' },
+]
+after = """
+# New Title
+
+Second paragraph.
+
+Third paragraph.
+"""
+compare = "semantic"
+
+[[test]]
+name = "build_list_from_paragraphs"
+description = "Replace paragraphs with a list"
+before = """
+# Shopping
+
+Apples
+
+Bananas
+
+Oranges
+"""
+mutations = [
+    { op = "prune", path = "2" },
+    { op = "prune", path = "2" },
+    { op = "prune", path = "2" },
+    { op = "append_child", parent = "root", node = '(ul (li (p "Apples")) (li (p "Bananas")) (li (p "Oranges")))' },
+]
+after = """
+# Shopping
+
+- Apples
+- Bananas
+- Oranges
+"""
+compare = "semantic"
+
+[[test]]
+name = "add_code_block"
+description = "Add a code block to existing document"
+before = """
+# Example
+
+Here is some code:
+"""
+mutation = { op = "append_child", parent = "root", node = '(code-block "rust" "fn main() {\n    println!(\"Hello\");\n}")' }
+after = """
+# Example
+
+Here is some code:
+
+```rust
+fn main() {
+    println!("Hello");
+}
+```
+"""
+compare = "semantic"
+
+[[test]]
+name = "insert_between_sections"
+description = "Insert content between existing sections"
+before = """
+# Section 1
+
+Content 1.
+
+# Section 3
+
+Content 3.
+"""
+mutations = [
+    { op = "insert_before", path = "3", node = '(h1 "Section 2")' },
+    { op = "insert_before", path = "4", node = '(p "Content 2.")' },
+]
+after = """
+# Section 1
+
+Content 1.
+
+# Section 2
+
+Content 2.
+
+# Section 3
+
+Content 3.
+"""
+compare = "semantic"
+
+# =============================================================================
+# Edge Cases
+# =============================================================================
+
+[[test]]
+name = "empty_document_add_content"
+description = "Add content to minimal document"
+before = ""
+mutations = [
+    { op = "append_child", parent = "root", node = '(h1 "Title")' },
+    { op = "append_child", parent = "root", node = '(p "Content.")' },
+]
+after = """
+# Title
+
+Content.
+"""
+compare = "semantic"
+
+[[test]]
+name = "replace_entire_content"
+description = "Replace all content with new structure"
+before = """
+Old content that will be replaced entirely.
+"""
+mutation = { op = "replace_at", path = "1", node = '(h1 "Fresh Start")' }
+after = """
+# Fresh Start
+"""
+compare = "semantic"

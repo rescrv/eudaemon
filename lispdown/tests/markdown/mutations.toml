@@ -1,0 +1,270 @@
+[metadata]
+version = "1.0"
+description = "Mutation operation tests: s-expr transformations"
+
+# =============================================================================
+# replace_at
+# =============================================================================
+
+[[test]]
+name = "replace_at_root"
+description = "Replace entire document"
+before_sexpr = '(doc (h1 "Old"))'
+mutation = { op = "replace_at", path = "root", node = '(doc (h1 "New"))' }
+after_sexpr = '(doc (h1 "New"))'
+
+[[test]]
+name = "replace_at_child"
+description = "Replace first child"
+before_sexpr = '(doc (h1 "Old Title") (p "Content"))'
+mutation = { op = "replace_at", path = "1", node = '(h2 "New Title")' }
+after_sexpr = '(doc (h2 "New Title") (p "Content"))'
+
+[[test]]
+name = "replace_at_second_child"
+description = "Replace second child"
+before_sexpr = '(doc (h1 "Title") (p "Old Content"))'
+mutation = { op = "replace_at", path = "2", node = '(p "New Content")' }
+after_sexpr = '(doc (h1 "Title") (p "New Content"))'
+
+[[test]]
+name = "replace_at_nested"
+description = "Replace nested element (heading text)"
+before_sexpr = '(doc (h1 "Old Title"))'
+mutation = { op = "replace_at", path = "1.1", node = '"New Title"' }
+after_sexpr = '(doc (h1 "New Title"))'
+
+[[test]]
+name = "replace_at_deeply_nested"
+description = "Replace deeply nested element in list"
+before_sexpr = '(doc (ul (li (p "Item 1")) (li (p "Item 2"))))'
+mutation = { op = "replace_at", path = "1.2.1", node = '(p "Modified Item 2")' }
+after_sexpr = '(doc (ul (li (p "Item 1")) (li (p "Modified Item 2"))))'
+
+# =============================================================================
+# prune
+# =============================================================================
+
+[[test]]
+name = "prune_first_child"
+description = "Remove first child from document"
+before_sexpr = '(doc (h1 "Title") (p "Content"))'
+mutation = { op = "prune", path = "1" }
+after_sexpr = '(doc (p "Content"))'
+
+[[test]]
+name = "prune_second_child"
+description = "Remove second child from document"
+before_sexpr = '(doc (h1 "Title") (p "Remove me") (p "Keep me"))'
+mutation = { op = "prune", path = "2" }
+after_sexpr = '(doc (h1 "Title") (p "Keep me"))'
+
+[[test]]
+name = "prune_last_child"
+description = "Remove last child from document"
+before_sexpr = '(doc (h1 "Title") (p "Para 1") (p "Para 2"))'
+mutation = { op = "prune", path = "3" }
+after_sexpr = '(doc (h1 "Title") (p "Para 1"))'
+
+[[test]]
+name = "prune_nested"
+description = "Remove nested element from list"
+before_sexpr = '(doc (ul (li (p "A")) (li (p "B")) (li (p "C"))))'
+mutation = { op = "prune", path = "1.2" }
+after_sexpr = '(doc (ul (li (p "A")) (li (p "C"))))'
+
+# =============================================================================
+# insert_before
+# =============================================================================
+
+[[test]]
+name = "insert_before_first"
+description = "Insert before first child"
+before_sexpr = '(doc (p "Existing"))'
+mutation = { op = "insert_before", path = "1", node = '(h1 "Title")' }
+after_sexpr = '(doc (h1 "Title") (p "Existing"))'
+
+[[test]]
+name = "insert_before_second"
+description = "Insert before second child"
+before_sexpr = '(doc (h1 "Title") (p "Second"))'
+mutation = { op = "insert_before", path = "2", node = '(p "First")' }
+after_sexpr = '(doc (h1 "Title") (p "First") (p "Second"))'
+
+[[test]]
+name = "insert_before_nested"
+description = "Insert before nested element"
+before_sexpr = '(doc (ul (li (p "B"))))'
+mutation = { op = "insert_before", path = "1.1", node = '(li (p "A"))' }
+after_sexpr = '(doc (ul (li (p "A")) (li (p "B"))))'
+
+# =============================================================================
+# insert_after
+# =============================================================================
+
+[[test]]
+name = "insert_after_first"
+description = "Insert after first child"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "insert_after", path = "1", node = '(p "Content")' }
+after_sexpr = '(doc (h1 "Title") (p "Content"))'
+
+[[test]]
+name = "insert_after_middle"
+description = "Insert after middle child"
+before_sexpr = '(doc (h1 "A") (p "B") (p "D"))'
+mutation = { op = "insert_after", path = "2", node = '(p "C")' }
+after_sexpr = '(doc (h1 "A") (p "B") (p "C") (p "D"))'
+
+[[test]]
+name = "insert_after_nested"
+description = "Insert after nested element"
+before_sexpr = '(doc (ul (li (p "A"))))'
+mutation = { op = "insert_after", path = "1.1", node = '(li (p "B"))' }
+after_sexpr = '(doc (ul (li (p "A")) (li (p "B"))))'
+
+# =============================================================================
+# append_child
+# =============================================================================
+
+[[test]]
+name = "append_child_to_root"
+description = "Append child to document root"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "append_child", parent = "root", node = '(p "Content")' }
+after_sexpr = '(doc (h1 "Title") (p "Content"))'
+
+[[test]]
+name = "append_child_to_root_multiple"
+description = "Append multiple children sequentially"
+before_sexpr = '(doc (h1 "Title"))'
+mutations = [
+    { op = "append_child", parent = "root", node = '(p "Para 1")' },
+    { op = "append_child", parent = "root", node = '(p "Para 2")' },
+]
+after_sexpr = '(doc (h1 "Title") (p "Para 1") (p "Para 2"))'
+
+[[test]]
+name = "append_child_to_list"
+description = "Append item to list"
+before_sexpr = '(doc (ul (li (p "A"))))'
+mutation = { op = "append_child", parent = "1", node = '(li (p "B"))' }
+after_sexpr = '(doc (ul (li (p "A")) (li (p "B"))))'
+
+# =============================================================================
+# prepend_child
+# =============================================================================
+
+[[test]]
+name = "prepend_child_to_root"
+description = "Prepend child to document root"
+before_sexpr = '(doc (p "Content"))'
+mutation = { op = "prepend_child", parent = "root", node = '(h1 "Title")' }
+after_sexpr = '(doc (h1 "Title") (p "Content"))'
+
+[[test]]
+name = "prepend_child_to_list"
+description = "Prepend item to list"
+before_sexpr = '(doc (ul (li (p "B"))))'
+mutation = { op = "prepend_child", parent = "1", node = '(li (p "A"))' }
+after_sexpr = '(doc (ul (li (p "A")) (li (p "B"))))'
+
+# =============================================================================
+# hoist (change heading level)
+# =============================================================================
+
+[[test]]
+name = "hoist_demote_h1_to_h2"
+description = "Demote h1 to h2"
+before_sexpr = '(doc (h1 "Title"))'
+mutation = { op = "hoist", path = "1", delta = 1 }
+after_sexpr = '(doc (h2 "Title"))'
+
+[[test]]
+name = "hoist_demote_h2_to_h4"
+description = "Demote h2 to h4"
+before_sexpr = '(doc (h2 "Title"))'
+mutation = { op = "hoist", path = "1", delta = 2 }
+after_sexpr = '(doc (h4 "Title"))'
+
+[[test]]
+name = "hoist_promote_h3_to_h1"
+description = "Promote h3 to h1"
+before_sexpr = '(doc (h3 "Title"))'
+mutation = { op = "hoist", path = "1", delta = -2 }
+after_sexpr = '(doc (h1 "Title"))'
+
+[[test]]
+name = "hoist_clamp_at_h1"
+description = "Promote beyond h1 clamps to h1"
+before_sexpr = '(doc (h2 "Title"))'
+mutation = { op = "hoist", path = "1", delta = -10 }
+after_sexpr = '(doc (h1 "Title"))'
+
+[[test]]
+name = "hoist_clamp_at_h6"
+description = "Demote beyond h6 clamps to h6"
+before_sexpr = '(doc (h5 "Title"))'
+mutation = { op = "hoist", path = "1", delta = 10 }
+after_sexpr = '(doc (h6 "Title"))'
+
+[[test]]
+name = "hoist_no_change"
+description = "Zero delta leaves heading unchanged"
+before_sexpr = '(doc (h3 "Title"))'
+mutation = { op = "hoist", path = "1", delta = 0 }
+after_sexpr = '(doc (h3 "Title"))'
+
+# =============================================================================
+# graft (move subtree)
+# =============================================================================
+
+[[test]]
+name = "graft_move_to_root"
+description = "Move nested item to document root"
+before_sexpr = '(doc (h1 "Title") (ul (li (p "A")) (li (p "B"))))'
+mutation = { op = "graft", source = "2.2", target_parent = "root", target_index = 2 }
+after_sexpr = '(doc (h1 "Title") (li (p "B")) (ul (li (p "A"))))'
+
+[[test]]
+name = "graft_reorder_children"
+description = "Reorder children by grafting"
+before_sexpr = '(doc (p "First") (p "Second") (p "Third"))'
+mutation = { op = "graft", source = "3", target_parent = "root", target_index = 1 }
+after_sexpr = '(doc (p "Third") (p "First") (p "Second"))'
+
+# =============================================================================
+# Batch Mutations
+# =============================================================================
+
+[[test]]
+name = "batch_build_document"
+description = "Build a document from empty with batch mutations"
+before_sexpr = '(doc)'
+mutations = [
+    { op = "append_child", parent = "root", node = '(h1 "Title")' },
+    { op = "append_child", parent = "root", node = '(p "Introduction")' },
+    { op = "append_child", parent = "root", node = '(h2 "Section 1")' },
+    { op = "append_child", parent = "root", node = '(p "Content")' },
+]
+after_sexpr = '(doc (h1 "Title") (p "Introduction") (h2 "Section 1") (p "Content"))'
+
+[[test]]
+name = "batch_prune_multiple"
+description = "Prune multiple elements (indices shift!)"
+before_sexpr = '(doc (p "A") (p "B") (p "C") (p "D"))'
+mutations = [
+    { op = "prune", path = "2" },
+    { op = "prune", path = "2" },
+]
+after_sexpr = '(doc (p "A") (p "D"))'
+
+[[test]]
+name = "batch_transform_headings"
+description = "Demote all headings by one level"
+before_sexpr = '(doc (h1 "A") (p "text") (h1 "B"))'
+mutations = [
+    { op = "hoist", path = "1", delta = 1 },
+    { op = "hoist", path = "3", delta = 1 },
+]
+after_sexpr = '(doc (h2 "A") (p "text") (h2 "B"))'

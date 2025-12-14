@@ -1,0 +1,308 @@
+[metadata]
+version = "1.0"
+description = "Roundtrip tests: markdown -> s-expr -> markdown"
+
+# =============================================================================
+# Basic Elements
+# =============================================================================
+
+[[test]]
+name = "simple_paragraph"
+description = "Basic paragraph roundtrip"
+before = "Hello, world!"
+sexpr = '(doc (p "Hello, world!"))'
+compare = "semantic"
+
+[[test]]
+name = "paragraph_with_newline"
+description = "Paragraph preserves content"
+before = "Hello, world!\n"
+sexpr = '(doc (p "Hello, world!"))'
+compare = "semantic"
+
+[[test]]
+name = "multiple_paragraphs"
+description = "Multiple paragraphs separated by blank line"
+before = """
+First paragraph.
+
+Second paragraph.
+"""
+compare = "semantic"
+
+# =============================================================================
+# Headings
+# =============================================================================
+
+[[test]]
+name = "heading_h1"
+description = "Level 1 heading"
+before = "# Title"
+sexpr = '(doc (h1 "Title"))'
+compare = "semantic"
+
+[[test]]
+name = "heading_h2"
+description = "Level 2 heading"
+before = "## Subtitle"
+sexpr = '(doc (h2 "Subtitle"))'
+compare = "semantic"
+
+[[test]]
+name = "heading_h3"
+description = "Level 3 heading"
+before = "### Section"
+sexpr = '(doc (h3 "Section"))'
+compare = "semantic"
+
+[[test]]
+name = "heading_h4"
+description = "Level 4 heading"
+before = "#### Subsection"
+sexpr = '(doc (h4 "Subsection"))'
+compare = "semantic"
+
+[[test]]
+name = "heading_h5"
+description = "Level 5 heading"
+before = "##### Minor"
+sexpr = '(doc (h5 "Minor"))'
+compare = "semantic"
+
+[[test]]
+name = "heading_h6"
+description = "Level 6 heading"
+before = "###### Smallest"
+sexpr = '(doc (h6 "Smallest"))'
+compare = "semantic"
+
+[[test]]
+name = "heading_with_inline"
+description = "Heading with inline formatting"
+before = "# Hello *world*"
+compare = "semantic"
+
+# =============================================================================
+# Inline Formatting
+# =============================================================================
+
+[[test]]
+name = "emphasis"
+description = "Italic/emphasis text"
+before = "This is *emphasized* text."
+compare = "semantic"
+
+[[test]]
+name = "strong"
+description = "Bold/strong text"
+before = "This is **strong** text."
+compare = "semantic"
+
+[[test]]
+name = "strong_and_emphasis"
+description = "Combined bold and italic"
+before = "This is ***both*** formatted."
+compare = "semantic"
+
+[[test]]
+name = "inline_code"
+description = "Inline code span"
+before = "Use the `println!` macro."
+compare = "semantic"
+
+# =============================================================================
+# Links and Images
+# =============================================================================
+
+[[test]]
+name = "link_simple"
+description = "Simple link without title"
+before = "Click [here](https://example.com) for more."
+compare = "semantic"
+
+[[test]]
+name = "link_with_title"
+description = "Link with title attribute"
+before = 'Click [here](https://example.com "Example Site") for more.'
+compare = "semantic"
+
+[[test]]
+name = "image_simple"
+description = "Simple image"
+before = "![Alt text](image.png)"
+compare = "semantic"
+
+[[test]]
+name = "image_with_title"
+description = "Image with title"
+before = '![Alt text](image.png "Image Title")'
+compare = "semantic"
+
+# =============================================================================
+# Lists
+# =============================================================================
+
+[[test]]
+name = "unordered_list"
+description = "Simple unordered list"
+before = """
+- Item 1
+- Item 2
+- Item 3
+"""
+compare = "semantic"
+
+[[test]]
+name = "ordered_list"
+description = "Simple ordered list"
+before = """
+1. First
+2. Second
+3. Third
+"""
+compare = "semantic"
+
+[[test]]
+name = "ordered_list_custom_start"
+description = "Ordered list starting at 5"
+before = """
+5. Fifth
+6. Sixth
+7. Seventh
+"""
+compare = "semantic"
+
+[[test]]
+name = "nested_list"
+description = "Nested unordered list"
+before = """
+- Parent 1
+  - Child 1a
+  - Child 1b
+- Parent 2
+"""
+compare = "semantic"
+
+# =============================================================================
+# Code Blocks
+# =============================================================================
+
+[[test]]
+name = "code_block_plain"
+description = "Code block without language"
+before = """
+```
+plain code
+```
+"""
+compare = "semantic"
+
+[[test]]
+name = "code_block_rust"
+description = "Code block with rust language"
+before = """
+```rust
+fn main() {
+    println!("Hello");
+}
+```
+"""
+compare = "semantic"
+
+[[test]]
+name = "code_block_python"
+description = "Code block with python language"
+before = """
+```python
+def hello():
+    print("Hello")
+```
+"""
+compare = "semantic"
+
+# =============================================================================
+# Blockquotes
+# =============================================================================
+
+[[test]]
+name = "blockquote_simple"
+description = "Simple blockquote"
+before = "> This is a quote."
+compare = "semantic"
+
+[[test]]
+name = "blockquote_multiline"
+description = "Multi-line blockquote"
+before = """
+> Line one
+> Line two
+> Line three
+"""
+compare = "semantic"
+
+[[test]]
+name = "blockquote_with_formatting"
+description = "Blockquote with inline formatting"
+before = "> This is **important**."
+compare = "semantic"
+
+# =============================================================================
+# Thematic Breaks
+# =============================================================================
+
+[[test]]
+name = "thematic_break_dashes"
+description = "Horizontal rule with dashes"
+before = """
+Above
+
+---
+
+Below
+"""
+compare = "semantic"
+
+[[test]]
+name = "thematic_break_asterisks"
+description = "Horizontal rule with asterisks"
+before = """
+Above
+
+***
+
+Below
+"""
+compare = "semantic"
+
+# =============================================================================
+# Complex Documents
+# =============================================================================
+
+[[test]]
+name = "document_with_multiple_elements"
+description = "Document with heading, paragraph, and list"
+before = """
+# Title
+
+This is a paragraph.
+
+- Item 1
+- Item 2
+"""
+compare = "semantic"
+
+[[test]]
+name = "document_with_code_and_text"
+description = "Document mixing prose and code"
+before = """
+# Example
+
+Here is some code:
+
+```rust
+fn example() {}
+```
+
+And here is more text.
+"""
+compare = "semantic"
