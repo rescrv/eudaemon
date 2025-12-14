@@ -7,6 +7,7 @@ mod comm;
 mod cp;
 mod cut;
 mod date;
+mod du;
 mod echo;
 mod env;
 pub mod expand;
@@ -59,6 +60,7 @@ where
         "cp" | "/bin/cp" => Ok(cp::bin),
         "cut" | "/usr/bin/cut" => Ok(cut::bin),
         "date" | "/bin/date" => Ok(date::bin),
+        "du" | "/usr/bin/du" => Ok(du::bin),
         "echo" | "/bin/echo" => Ok(echo::bin),
         "env" | "/usr/bin/env" => Ok(env::bin),
         "exit" => Ok(exit_bin),
