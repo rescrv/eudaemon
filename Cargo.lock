@@ -326,6 +326,7 @@ name = "eudaemonsh"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "eudaemonfs",
  "getopts",
  "rand",
  "regex",

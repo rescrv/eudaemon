@@ -14,7 +14,9 @@ mod filesystem;
 
 pub use builtins::lookup_bin;
 pub use builtins::sh;
-pub use filesystem::{DirEntry, FileType, Filesystem, MockFilesystem, RealFilesystem, TimeSpec};
+pub use filesystem::{
+    DirEntry, EudaemonFilesystem, FileType, Filesystem, MockFilesystem, RealFilesystem, TimeSpec,
+};
 
 /// Errors that can occur during shell operations.
 #[derive(Debug)]

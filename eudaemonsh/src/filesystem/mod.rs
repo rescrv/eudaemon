@@ -1,8 +1,12 @@
+mod eu;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::Error;
+
+pub use eu::EudaemonFilesystem;
 
 /// Metadata about a file.
 #[derive(Clone, Copy, Debug)]

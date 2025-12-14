@@ -11,3 +11,5 @@ regex = "1.12.2"
 rustyline = "15"
 shvar = "0.8.0"
 utf8path = "0.9.1"
+
+eudaemonfs = { version = "0.1.0", path = "../eudaemonfs" }
