@@ -111,6 +111,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
+name = "eudaemonsh"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "getopts",
+ "rand",
+ "regex",
+ "rustyline",
+ "shvar",
+ "utf8path",
+]
+
+[[package]]
 name = "fd-lock"
 version = "4.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -420,19 +433,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "synshell"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "getopts",
- "rand",
- "regex",
- "rustyline",
- "shvar",
- "utf8path",
 ]
 
 [[package]]

@@ -314,7 +314,7 @@ where
     }
 
     if matches.opt_present("version") {
-        env.stdout.write_line("sort (synshell) 1.0")?;
+        env.stdout.write_line("sort (eudaemonsh) 1.0")?;
         return Ok(ExitCode::from(0));
     }
 
@@ -1335,7 +1335,7 @@ mod tests {
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
         println!("stdout: {:?}", stdout);
-        assert!(stdout.contains("synshell"));
+        assert!(stdout.contains("eudaemonsh"));
     }
 
     // ========================================================================

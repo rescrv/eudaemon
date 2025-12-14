@@ -10,13 +10,13 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-use synfs::BlockAddress;
-use synfs::DeviceId;
-use synfs::Error;
-use synfs::FileDescriptor;
-use synfs::Lfs;
-use synfs::MemoryBlockDevice;
-use synfs::SequentialBlockDevice;
+use eudaemonfs::BlockAddress;
+use eudaemonfs::DeviceId;
+use eudaemonfs::Error;
+use eudaemonfs::FileDescriptor;
+use eudaemonfs::Lfs;
+use eudaemonfs::MemoryBlockDevice;
+use eudaemonfs::SequentialBlockDevice;
 
 /// Block size must match the LFS implementation.
 const BLOCK_SIZE: usize = 4096;

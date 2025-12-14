@@ -24,10 +24,10 @@ use guacamole::combinators::string;
 use guacamole::combinators::to_charset;
 use guacamole::combinators::uniform;
 
-use synfs::DeviceId;
-use synfs::Error;
-use synfs::Lfs;
-use synfs::MemoryBlockDevice;
+use eudaemonfs::DeviceId;
+use eudaemonfs::Error;
+use eudaemonfs::Lfs;
+use eudaemonfs::MemoryBlockDevice;
 
 /// Block size in bytes.
 const BLOCK_SIZE: usize = 4096;
@@ -632,7 +632,7 @@ fn main() {
         }
     };
 
-    println!("Running synfs-stress-test with seed {}", config.seed);
+    println!("Running eudaemonfs-stress-test with seed {}", config.seed);
     let mut test = StressTest::new(&config);
     test.run();
 }

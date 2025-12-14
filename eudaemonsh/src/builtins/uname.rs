@@ -1,18 +1,18 @@
-//! The uname builtin: print synshell system identification.
+//! The uname builtin: print eudaemonsh system identification.
 
 use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 
 /// Synshell version, pulled from Cargo.toml at compile time.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The uname builtin: print synshell system identification.
+/// The uname builtin: print eudaemonsh system identification.
 ///
 /// Usage:
 ///   uname [-a] [-s] [-r] [-v] [-m] [-o]
 ///
 /// Options:
 ///   -a  Print all information (equivalent to -srvmo).
-///   -s  Print the system name (synshell).
+///   -s  Print the system name (eudaemonsh).
 ///   -r  Print the release version.
 ///   -v  Print the build version info.
 ///   -m  Print the machine hardware name (host architecture).
@@ -20,7 +20,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// With no options, -s is assumed.
 ///
-/// This command is designed for an LLM to identify the synshell environment it's operating in.
+/// This command is designed for an LLM to identify the eudaemonsh environment it's operating in.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
     SI: Stdin,
@@ -86,7 +86,7 @@ where
     let mut parts: Vec<&str> = Vec::new();
 
     if print_sysname {
-        parts.push("synshell");
+        parts.push("eudaemonsh");
     }
 
     if print_release {
@@ -121,7 +121,7 @@ mod tests {
         let env = make_test_env(vec!["uname"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!("synshell\n", env.stdout.into_string());
+        assert_eq!("eudaemonsh\n", env.stdout.into_string());
     }
 
     #[test]
@@ -129,7 +129,7 @@ mod tests {
         let env = make_test_env(vec!["uname", "-s"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!("synshell\n", env.stdout.into_string());
+        assert_eq!("eudaemonsh\n", env.stdout.into_string());
     }
 
     #[test]
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
         println!("output: {:?}", output);
-        assert!(output.contains("synshell"));
+        assert!(output.contains("eudaemonsh"));
         assert!(output.contains(VERSION));
         assert!(output.contains(std::env::consts::ARCH));
         assert!(output.contains(std::env::consts::OS));
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
         println!("output: {:?}", output);
-        assert!(output.starts_with("synshell "));
+        assert!(output.starts_with("eudaemonsh "));
         assert!(output.contains(VERSION));
     }
 
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
         println!("output: {:?}", output);
-        assert!(output.contains("synshell"));
+        assert!(output.contains("eudaemonsh"));
         assert!(output.contains(std::env::consts::ARCH));
     }
 
@@ -233,7 +233,7 @@ mod tests {
         let env = make_test_env(vec!["uname", "--"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!("synshell\n", env.stdout.into_string());
+        assert_eq!("eudaemonsh\n", env.stdout.into_string());
     }
 
     #[test]
@@ -259,6 +259,6 @@ mod tests {
         println!("output: {:?}", output);
         let parts: Vec<&str> = output.trim().split(' ').collect();
         assert_eq!(3, parts.len());
-        assert_eq!("synshell", parts[0]);
+        assert_eq!("eudaemonsh", parts[0]);
     }
 }

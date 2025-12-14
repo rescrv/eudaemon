@@ -4,7 +4,7 @@
 
 **NAME**
 
-uname — print synshell system identification
+uname — print eudaemonsh system identification
 
 **SYNOPSIS**
 
@@ -12,9 +12,9 @@ uname — print synshell system identification
 
 **DESCRIPTION**
 
-The **uname** utility writes synshell system identification to the
+The **uname** utility writes eudaemonsh system identification to the
 standard output. This command is designed for an LLM to identify the
-synshell environment it is operating in.
+eudaemonsh environment it is operating in.
 
 The options are as follows:
 
@@ -24,7 +24,7 @@ Print all information, equivalent to **−srvmo**.
 
 **−s**
 
-Print the system name (synshell).
+Print the system name (eudaemonsh).
 
 **−r**
 
@@ -53,12 +53,12 @@ The **uname** utility exits 0 on success, and \>0 if an error occurs.
 Print all system information:
 
 \$ uname -a  
-synshell 0.1.0 0.1.0 aarch64 macos
+eudaemonsh 0.1.0 0.1.0 aarch64 macos
 
 Print only the system name:
 
 \$ uname -s  
-synshell
+eudaemonsh
 
 Print the release version and host OS:
 
@@ -71,7 +71,7 @@ Print the release version and host OS:
 
 **HISTORY**
 
-The **uname** utility is a synshell-specific implementation designed
+The **uname** utility is a eudaemonsh-specific implementation designed
 for LLM consumption.
 
 ------------------------------------------------------------------------

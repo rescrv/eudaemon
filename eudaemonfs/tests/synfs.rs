@@ -20,9 +20,9 @@ use guacamole::combinators::string;
 use guacamole::combinators::to_charset;
 use guacamole::combinators::uniform;
 
-use synfs::DeviceId;
-use synfs::Error;
-use synfs::Lfs;
+use eudaemonfs::DeviceId;
+use eudaemonfs::Error;
+use eudaemonfs::Lfs;
 
 /// Block size in bytes (must match LFS).
 const BLOCK_SIZE: usize = 4096;
@@ -340,15 +340,15 @@ fn generate_operations(guac: &mut Guacamole, count: usize) -> Vec<Operation> {
 fn execute_operations(_seed: u64, ops: &[Operation]) {
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
     let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create LFS");
-    let mut synfs = SynFs::new();
+    let mut eudaemonfs = SynFs::new();
     // Track files that were successfully written to LFS
     let mut written_files: BTreeSet<String> = BTreeSet::new();
 
     for op in ops {
         match op {
             Operation::CreateAndWrite { path, offset, len } => {
-                // Create file in synfs
-                let syn_file = synfs.create_file(path);
+                // Create file in eudaemonfs
+                let syn_file = eudaemonfs.create_file(path);
 
                 // Generate the data to write
                 let write_data = syn_file.generate_write_data(*offset, *len);
@@ -359,8 +359,8 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
                 let fd = match lfs.open_file(&lfs_name) {
                     Ok(fd) => fd,
                     Err(Error::NoSpace) => {
-                        // Failed to create, remove from synfs tracking
-                        synfs.remove_file(path);
+                        // Failed to create, remove from eudaemonfs tracking
+                        eudaemonfs.remove_file(path);
                         continue;
                     }
                     Err(e) => panic!("Failed to open file {}: {:?}", path, e),
@@ -372,8 +372,8 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
 
                 match lfs.write(fd, &write_data) {
                     Ok(_) => {
-                        // Update synfs state only on successful write
-                        if let Some(f) = synfs.get_file_mut(path) {
+                        // Update eudaemonfs state only on successful write
+                        if let Some(f) = eudaemonfs.get_file_mut(path) {
                             f.record_write(*offset, *len);
                             let new_size = offset + *len as u64;
                             if new_size > f.size {
@@ -383,8 +383,8 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
                         written_files.insert(path.clone());
                     }
                     Err(Error::NoSpace) | Err(Error::FileTooLarge) => {
-                        // Write failed, remove from synfs tracking
-                        synfs.remove_file(path);
+                        // Write failed, remove from eudaemonfs tracking
+                        eudaemonfs.remove_file(path);
                         lfs.close(fd).expect("Failed to close");
                         continue;
                     }
@@ -395,13 +395,13 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
             }
 
             Operation::Write { path, offset, len } => {
-                // Skip if file doesn't exist in synfs or wasn't written to LFS
-                if !synfs.file_exists(path) || !written_files.contains(path) {
+                // Skip if file doesn't exist in eudaemonfs or wasn't written to LFS
+                if !eudaemonfs.file_exists(path) || !written_files.contains(path) {
                     continue;
                 }
 
-                // Get existing file from synfs
-                let syn_file = synfs.get_file_mut(path).unwrap();
+                // Get existing file from eudaemonfs
+                let syn_file = eudaemonfs.get_file_mut(path).unwrap();
 
                 // Generate the data to write
                 let write_data = syn_file.generate_write_data(*offset, *len);
@@ -418,8 +418,8 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
 
                 match lfs.write(fd, &write_data) {
                     Ok(_) => {
-                        // Update synfs state only on successful write
-                        if let Some(f) = synfs.get_file_mut(path) {
+                        // Update eudaemonfs state only on successful write
+                        if let Some(f) = eudaemonfs.get_file_mut(path) {
                             f.record_write(*offset, *len);
                             let new_size = offset + *len as u64;
                             if new_size > f.size {
@@ -441,8 +441,8 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
                 // Remove from tracking
                 written_files.remove(path);
 
-                // Remove from synfs
-                synfs.remove_file(path);
+                // Remove from eudaemonfs
+                eudaemonfs.remove_file(path);
 
                 // Remove from LFS
                 let lfs_name = path_to_lfs_name(path);
@@ -455,8 +455,8 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
                     continue;
                 }
 
-                // Get expected content from synfs
-                let syn_file = match synfs.get_file(path) {
+                // Get expected content from eudaemonfs
+                let syn_file = match eudaemonfs.get_file(path) {
                     Some(f) => f,
                     None => continue, // File was removed
                 };
@@ -480,9 +480,9 @@ fn execute_operations(_seed: u64, ops: &[Operation]) {
         }
     }
 
-    // Final verification: check all written files in synfs exist in LFS with correct content
+    // Final verification: check all written files in eudaemonfs exist in LFS with correct content
     for path in &written_files {
-        let syn_file = match synfs.get_file(path) {
+        let syn_file = match eudaemonfs.get_file(path) {
             Some(f) => f,
             None => continue, // File was removed
         };
@@ -514,7 +514,7 @@ fn path_to_lfs_name(path: &str) -> String {
 ////////////////////////////////////////////// Tests ////////////////////////////////////////////////
 
 #[test]
-fn synfs_basic() {
+fn eudaemonfs_basic() {
     let mut guac = Guacamole::new(12345);
     let ops = generate_operations(&mut guac, 50);
     println!("Generated {} operations", ops.len());
@@ -525,14 +525,14 @@ fn synfs_basic() {
 }
 
 #[test]
-fn synfs_many_operations() {
+fn eudaemonfs_many_operations() {
     let mut guac = Guacamole::new(67890);
     let ops = generate_operations(&mut guac, 200);
     execute_operations(67890, &ops);
 }
 
 #[test]
-fn synfs_seed_sweep() {
+fn eudaemonfs_seed_sweep() {
     for seed in 0..100 {
         let mut guac = Guacamole::new(seed);
         let ops = generate_operations(&mut guac, 50);
@@ -608,21 +608,21 @@ fn synfile_across_seed_boundaries() {
 }
 
 #[test]
-fn synfs_persist_and_restore() {
+fn eudaemonfs_persist_and_restore() {
     let mut guac = Guacamole::new(99999);
     let ops = generate_operations(&mut guac, 30);
 
     // Build expected state
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
     let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create LFS");
-    let mut synfs = SynFs::new();
+    let mut eudaemonfs = SynFs::new();
     let mut written_files: BTreeSet<String> = BTreeSet::new();
 
     // Execute operations (without verify ops)
     for op in &ops {
         match op {
             Operation::CreateAndWrite { path, offset, len } => {
-                let syn_file = synfs.create_file(path);
+                let syn_file = eudaemonfs.create_file(path);
                 let write_data = syn_file.generate_write_data(*offset, *len);
 
                 let lfs_name = path_to_lfs_name(path);
@@ -631,7 +631,7 @@ fn synfs_persist_and_restore() {
                         let _ = lfs.seek(fd, *offset);
                     }
                     if lfs.write(fd, &write_data).is_ok() {
-                        if let Some(f) = synfs.get_file_mut(path) {
+                        if let Some(f) = eudaemonfs.get_file_mut(path) {
                             f.record_write(*offset, *len);
                             let new_size = offset + *len as u64;
                             if new_size > f.size {
@@ -640,25 +640,25 @@ fn synfs_persist_and_restore() {
                         }
                         written_files.insert(path.clone());
                     } else {
-                        synfs.remove_file(path);
+                        eudaemonfs.remove_file(path);
                     }
                     let _ = lfs.close(fd);
                 } else {
-                    synfs.remove_file(path);
+                    eudaemonfs.remove_file(path);
                 }
             }
             Operation::Write { path, offset, len } => {
                 if !written_files.contains(path) {
                     continue;
                 }
-                if let Some(syn_file) = synfs.get_file_mut(path) {
+                if let Some(syn_file) = eudaemonfs.get_file_mut(path) {
                     let write_data = syn_file.generate_write_data(*offset, *len);
 
                     let lfs_name = path_to_lfs_name(path);
                     if let Ok(fd) = lfs.open_file(&lfs_name) {
                         let _ = lfs.seek(fd, *offset);
                         if lfs.write(fd, &write_data).is_ok()
-                            && let Some(f) = synfs.get_file_mut(path)
+                            && let Some(f) = eudaemonfs.get_file_mut(path)
                         {
                             f.record_write(*offset, *len);
                             let new_size = offset + *len as u64;
@@ -672,7 +672,7 @@ fn synfs_persist_and_restore() {
             }
             Operation::Remove { path } => {
                 written_files.remove(path);
-                synfs.remove_file(path);
+                eudaemonfs.remove_file(path);
                 let lfs_name = path_to_lfs_name(path);
                 let _ = lfs.remove(&lfs_name);
             }
@@ -687,7 +687,7 @@ fn synfs_persist_and_restore() {
 
     // Verify all written files after restore
     for path in &written_files {
-        let syn_file = match synfs.get_file(path) {
+        let syn_file = match eudaemonfs.get_file(path) {
             Some(f) => f,
             None => continue,
         };

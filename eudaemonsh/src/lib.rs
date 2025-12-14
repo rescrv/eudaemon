@@ -1860,11 +1860,11 @@ impl Default for Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, R
                 ("HOME".to_string(), "/home/assistant".to_string()),
                 ("PATH".to_string(), "/usr/bin:/bin".to_string()),
                 ("PWD".to_string(), "/".to_string()),
-                ("SHELL".to_string(), "synshell".to_string()),
+                ("SHELL".to_string(), "eudaemonsh".to_string()),
                 ("TMPDIR".to_string(), "/tmp".to_string()),
                 ("USER".to_string(), "assistant".to_string()),
             ]),
-            args: vec!["/bin/synshell".to_string()],
+            args: vec!["/bin/eudaemonsh".to_string()],
             cwd: Path::from("/home/assistant"),
             exit_signaled: Arc::new(AtomicBool::new(false)),
         }
