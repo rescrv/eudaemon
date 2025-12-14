@@ -301,23 +301,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -325,7 +309,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["wc"], "");
+        let env = make_test_env_with_stdin(vec!["wc"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -335,7 +319,7 @@ mod tests {
 
     #[test]
     fn single_line() {
-        let env = make_env(vec!["wc"], "hello world");
+        let env = make_test_env_with_stdin(vec!["wc"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -345,7 +329,7 @@ mod tests {
 
     #[test]
     fn multiple_lines() {
-        let env = make_env(vec!["wc"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["wc"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -360,7 +344,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["wc", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -370,7 +354,7 @@ mod tests {
 
     #[test]
     fn single_file() {
-        let env = make_env(vec!["wc", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "file.txt"], "");
         env.fs.add_file("file.txt", "a b\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -381,7 +365,7 @@ mod tests {
 
     #[test]
     fn multiple_files() {
-        let env = make_env(vec!["wc", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "one\n");
         env.fs.add_file("b.txt", "two three\n");
         let result = bin(&env).unwrap();
@@ -395,7 +379,7 @@ mod tests {
 
     #[test]
     fn multiple_files_with_totals() {
-        let env = make_env(vec!["wc", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "one\n"); // 1 line, 1 word, 4 bytes
         env.fs.add_file("b.txt", "two three\n"); // 1 line, 2 words, 10 bytes
         let result = bin(&env).unwrap();
@@ -412,7 +396,7 @@ mod tests {
 
     #[test]
     fn lines_only() {
-        let env = make_env(vec!["wc", "-l"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["wc", "-l"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -422,7 +406,7 @@ mod tests {
 
     #[test]
     fn words_only() {
-        let env = make_env(vec!["wc", "-w"], "one two three");
+        let env = make_test_env_with_stdin(vec!["wc", "-w"], "one two three");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -432,7 +416,7 @@ mod tests {
 
     #[test]
     fn bytes_only() {
-        let env = make_env(vec!["wc", "-c"], "hello");
+        let env = make_test_env_with_stdin(vec!["wc", "-c"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -443,7 +427,7 @@ mod tests {
 
     #[test]
     fn chars_only() {
-        let env = make_env(vec!["wc", "-m"], "hello");
+        let env = make_test_env_with_stdin(vec!["wc", "-m"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -454,7 +438,7 @@ mod tests {
 
     #[test]
     fn longest_line_only() {
-        let env = make_env(vec!["wc", "-L"], "short\nlonger line\nx");
+        let env = make_test_env_with_stdin(vec!["wc", "-L"], "short\nlonger line\nx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -469,7 +453,7 @@ mod tests {
 
     #[test]
     fn lines_and_words() {
-        let env = make_env(vec!["wc", "-lw"], "one two\nthree");
+        let env = make_test_env_with_stdin(vec!["wc", "-lw"], "one two\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -480,7 +464,7 @@ mod tests {
 
     #[test]
     fn all_flags() {
-        let env = make_env(vec!["wc", "-lwcL"], "hello\nworld");
+        let env = make_test_env_with_stdin(vec!["wc", "-lwcL"], "hello\nworld");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -495,7 +479,7 @@ mod tests {
 
     #[test]
     fn chars_overrides_bytes() {
-        let env = make_env(vec!["wc", "-cm"], "hello");
+        let env = make_test_env_with_stdin(vec!["wc", "-cm"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // -m comes after -c, so chars wins
@@ -506,7 +490,7 @@ mod tests {
 
     #[test]
     fn bytes_overrides_chars() {
-        let env = make_env(vec!["wc", "-mc"], "hello");
+        let env = make_test_env_with_stdin(vec!["wc", "-mc"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // -c comes after -m, so bytes wins
@@ -521,7 +505,7 @@ mod tests {
 
     #[test]
     fn empty_file() {
-        let env = make_env(vec!["wc", "empty.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "empty.txt"], "");
         env.fs.add_file("empty.txt", "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -532,7 +516,7 @@ mod tests {
 
     #[test]
     fn blank_lines() {
-        let env = make_env(vec!["wc"], "\n\n\n");
+        let env = make_test_env_with_stdin(vec!["wc"], "\n\n\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -543,7 +527,7 @@ mod tests {
 
     #[test]
     fn whitespace_only() {
-        let env = make_env(vec!["wc"], " \t \n  \n");
+        let env = make_test_env_with_stdin(vec!["wc"], " \t \n  \n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -554,7 +538,7 @@ mod tests {
 
     #[test]
     fn no_trailing_newline_file() {
-        let env = make_env(vec!["wc", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "file.txt"], "");
         env.fs.add_file("file.txt", "no newline");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -566,7 +550,7 @@ mod tests {
 
     #[test]
     fn multiple_files_one_missing() {
-        let env = make_env(vec!["wc", "a.txt", "missing.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "a.txt", "missing.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -586,7 +570,7 @@ mod tests {
 
     #[test]
     fn longest_line_with_bytes() {
-        let env = make_env(vec!["wc", "-cL"], "short\nlonger line here\nx");
+        let env = make_test_env_with_stdin(vec!["wc", "-cL"], "short\nlonger line here\nx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -597,7 +581,7 @@ mod tests {
 
     #[test]
     fn longest_line_across_files() {
-        let env = make_env(vec!["wc", "-L", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "-L", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "short\n");
         env.fs.add_file("b.txt", "this is a longer line\n");
         let result = bin(&env).unwrap();
@@ -691,7 +675,7 @@ mod tests {
 
     #[test]
     fn illegal_option() {
-        let env = make_env(vec!["wc", "-x"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "-x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -705,7 +689,7 @@ mod tests {
 
     #[test]
     fn file_shows_filename() {
-        let env = make_env(vec!["wc", "-l", "myfile.txt"], "");
+        let env = make_test_env_with_stdin(vec!["wc", "-l", "myfile.txt"], "");
         env.fs.add_file("myfile.txt", "line1\nline2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -716,7 +700,7 @@ mod tests {
 
     #[test]
     fn stdin_no_filename() {
-        let env = make_env(vec!["wc", "-l"], "line1\nline2");
+        let env = make_test_env_with_stdin(vec!["wc", "-l"], "line1\nline2");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();

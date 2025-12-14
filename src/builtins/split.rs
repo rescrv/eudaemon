@@ -581,23 +581,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Helper function tests
@@ -678,7 +662,7 @@ mod tests {
         for i in 1..=2500 {
             input.push_str(&format!("line{}\n", i));
         }
-        let env = make_env(vec!["split"], &input);
+        let env = make_test_env_with_stdin(vec!["split"], &input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -696,7 +680,8 @@ mod tests {
 
     #[test]
     fn split_stdin_two_lines_each() {
-        let env = make_env(vec!["split", "-l", "2"], "one\ntwo\nthree\nfour\nfive\n");
+        let env =
+            make_test_env_with_stdin(vec!["split", "-l", "2"], "one\ntwo\nthree\nfour\nfive\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -707,7 +692,7 @@ mod tests {
 
     #[test]
     fn split_from_file() {
-        let env = make_env(vec!["split", "-l", "2", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "2", "input.txt"], "");
         env.fs.add_file("input.txt", "a\nb\nc\nd\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -718,7 +703,7 @@ mod tests {
 
     #[test]
     fn split_with_custom_prefix() {
-        let env = make_env(vec!["split", "-l", "1", "-", "out_"], "foo\nbar\n");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "1", "-", "out_"], "foo\nbar\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -728,7 +713,7 @@ mod tests {
 
     #[test]
     fn split_file_with_prefix() {
-        let env = make_env(vec!["split", "-l", "1", "in.txt", "chunk_"], "");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "1", "in.txt", "chunk_"], "");
         env.fs.add_file("in.txt", "x\ny\nz\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -744,7 +729,7 @@ mod tests {
 
     #[test]
     fn split_by_bytes_simple() {
-        let env = make_env(vec!["split", "-b", "5"], "0123456789");
+        let env = make_test_env_with_stdin(vec!["split", "-b", "5"], "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -754,7 +739,7 @@ mod tests {
 
     #[test]
     fn split_by_bytes_with_remainder() {
-        let env = make_env(vec!["split", "-b", "3", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["split", "-b", "3", "input.txt"], "");
         env.fs.add_file("input.txt", "12345678");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -767,7 +752,7 @@ mod tests {
     #[test]
     fn split_by_bytes_k_suffix() {
         let input = "x".repeat(2048);
-        let env = make_env(vec!["split", "-b", "1k"], &input);
+        let env = make_test_env_with_stdin(vec!["split", "-b", "1k"], &input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -781,7 +766,7 @@ mod tests {
 
     #[test]
     fn split_into_chunks() {
-        let env = make_env(vec!["split", "-n", "3"], "123456789");
+        let env = make_test_env_with_stdin(vec!["split", "-n", "3"], "123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -792,7 +777,7 @@ mod tests {
 
     #[test]
     fn split_into_chunks_more_than_bytes() {
-        let env = make_env(vec!["split", "-n", "100"], "abc");
+        let env = make_test_env_with_stdin(vec!["split", "-n", "100"], "abc");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -807,7 +792,7 @@ mod tests {
     #[test]
     fn split_by_pattern() {
         let input = "header\ndata1\ndata2\nheader\ndata3\n";
-        let env = make_env(vec!["split", "-p", "^header"], input);
+        let env = make_test_env_with_stdin(vec!["split", "-p", "^header"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -821,7 +806,7 @@ mod tests {
     #[test]
     fn split_by_pattern_no_initial_match() {
         let input = "prelude\nchapter\ntext\nchapter\nmore\n";
-        let env = make_env(vec!["split", "-p", "^chapter"], input);
+        let env = make_test_env_with_stdin(vec!["split", "-p", "^chapter"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -836,7 +821,7 @@ mod tests {
 
     #[test]
     fn numeric_suffix() {
-        let env = make_env(vec!["split", "-d", "-l", "1"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["split", "-d", "-l", "1"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -851,7 +836,7 @@ mod tests {
 
     #[test]
     fn custom_suffix_length() {
-        let env = make_env(vec!["split", "-a", "3", "-l", "1"], "a\nb\n");
+        let env = make_test_env_with_stdin(vec!["split", "-a", "3", "-l", "1"], "a\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -861,7 +846,7 @@ mod tests {
 
     #[test]
     fn suffix_length_one() {
-        let env = make_env(vec!["split", "-a", "1", "-l", "1"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["split", "-a", "1", "-l", "1"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
 
@@ -876,7 +861,7 @@ mod tests {
 
     #[test]
     fn no_clobber_skips_existing() {
-        let env = make_env(vec!["split", "-c", "-l", "1"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["split", "-c", "-l", "1"], "a\nb\nc\n");
         env.fs.add_file("xab", "existing");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -893,7 +878,7 @@ mod tests {
 
     #[test]
     fn invalid_line_count() {
-        let env = make_env(vec!["split", "-l", "0"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "0"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -903,7 +888,7 @@ mod tests {
 
     #[test]
     fn invalid_line_count_negative() {
-        let env = make_env(vec!["split", "-l", "-5"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "-5"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -913,7 +898,7 @@ mod tests {
 
     #[test]
     fn invalid_byte_count() {
-        let env = make_env(vec!["split", "-b", "0"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-b", "0"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -923,7 +908,7 @@ mod tests {
 
     #[test]
     fn invalid_chunk_count() {
-        let env = make_env(vec!["split", "-n", "0"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-n", "0"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -933,7 +918,7 @@ mod tests {
 
     #[test]
     fn invalid_regex() {
-        let env = make_env(vec!["split", "-p", "[invalid"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-p", "[invalid"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -943,7 +928,7 @@ mod tests {
 
     #[test]
     fn mutually_exclusive_b_n() {
-        let env = make_env(vec!["split", "-b", "10", "-n", "5"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-b", "10", "-n", "5"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -953,7 +938,7 @@ mod tests {
 
     #[test]
     fn pattern_incompatible_with_lines() {
-        let env = make_env(vec!["split", "-p", "test", "-l", "10"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-p", "test", "-l", "10"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -963,7 +948,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["split", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["split", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -973,7 +958,7 @@ mod tests {
 
     #[test]
     fn too_many_arguments() {
-        let env = make_env(vec!["split", "a", "b", "c"], "");
+        let env = make_test_env_with_stdin(vec!["split", "a", "b", "c"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -983,7 +968,7 @@ mod tests {
 
     #[test]
     fn invalid_suffix_length() {
-        let env = make_env(vec!["split", "-a", "abc"], "test");
+        let env = make_test_env_with_stdin(vec!["split", "-a", "abc"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -997,7 +982,7 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let env = make_env(vec!["split"], "");
+        let env = make_test_env_with_stdin(vec!["split"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("xaa"));
@@ -1005,7 +990,7 @@ mod tests {
 
     #[test]
     fn single_line_input() {
-        let env = make_env(vec!["split", "-l", "10"], "single line\n");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "10"], "single line\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("single line\n", env.fs.read_to_string("xaa").unwrap());
@@ -1013,7 +998,7 @@ mod tests {
 
     #[test]
     fn dash_means_stdin() {
-        let env = make_env(vec!["split", "-l", "1", "-"], "from stdin\n");
+        let env = make_test_env_with_stdin(vec!["split", "-l", "1", "-"], "from stdin\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("from stdin\n", env.fs.read_to_string("xaa").unwrap());
@@ -1021,7 +1006,7 @@ mod tests {
 
     #[test]
     fn suffix_a_zero_enables_auto() {
-        let env = make_env(vec!["split", "-a", "0", "-l", "1"], "a\nb\n");
+        let env = make_test_env_with_stdin(vec!["split", "-a", "0", "-l", "1"], "a\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\n", env.fs.read_to_string("xaa").unwrap());

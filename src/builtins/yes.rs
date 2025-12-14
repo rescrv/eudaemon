@@ -38,26 +38,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn default_outputs_y() {
-        let env = make_env(vec!["yes"]);
+        let env = make_test_env(vec!["yes"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -70,7 +55,7 @@ mod tests {
 
     #[test]
     fn custom_expletive() {
-        let env = make_env(vec!["yes", "hello"]);
+        let env = make_test_env(vec!["yes", "hello"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -83,7 +68,7 @@ mod tests {
 
     #[test]
     fn multiple_words_joined() {
-        let env = make_env(vec!["yes", "hello", "world"]);
+        let env = make_test_env(vec!["yes", "hello", "world"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -96,7 +81,7 @@ mod tests {
 
     #[test]
     fn empty_string_expletive() {
-        let env = make_env(vec!["yes", ""]);
+        let env = make_test_env(vec!["yes", ""]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -109,7 +94,7 @@ mod tests {
 
     #[test]
     fn respects_exit_signal() {
-        let env = make_env(vec!["yes"]);
+        let env = make_test_env(vec!["yes"]);
         env.signal_exit();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -120,7 +105,7 @@ mod tests {
 
     #[test]
     fn special_characters() {
-        let env = make_env(vec!["yes", "!@#$%"]);
+        let env = make_test_env(vec!["yes", "!@#$%"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -133,14 +118,14 @@ mod tests {
 
     #[test]
     fn produces_no_stderr() {
-        let env = make_env(vec!["yes"]);
+        let env = make_test_env(vec!["yes"]);
         let _ = bin(&env).unwrap();
         assert_eq!("", env.stderr.into_string());
     }
 
     #[test]
     fn unicode_expletive() {
-        let env = make_env(vec!["yes", "日本語"]);
+        let env = make_test_env(vec!["yes", "日本語"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -153,7 +138,7 @@ mod tests {
 
     #[test]
     fn newline_in_expletive() {
-        let env = make_env(vec!["yes", "line1\\nline2"]);
+        let env = make_test_env(vec!["yes", "line1\\nline2"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();

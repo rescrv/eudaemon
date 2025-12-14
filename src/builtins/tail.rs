@@ -433,23 +433,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -457,7 +441,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["tail"], "");
+        let env = make_test_env_with_stdin(vec!["tail"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -465,7 +449,7 @@ mod tests {
 
     #[test]
     fn single_line() {
-        let env = make_env(vec!["tail"], "hello");
+        let env = make_test_env_with_stdin(vec!["tail"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -474,7 +458,7 @@ mod tests {
     #[test]
     fn default_ten_lines() {
         let input = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";
-        let env = make_env(vec!["tail"], input);
+        let env = make_test_env_with_stdin(vec!["tail"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Always adds trailing newline if not present
@@ -485,7 +469,7 @@ mod tests {
     #[test]
     fn fewer_than_ten_lines() {
         let input = "one\ntwo\nthree";
-        let env = make_env(vec!["tail"], input);
+        let env = make_test_env_with_stdin(vec!["tail"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("one\ntwo\nthree\n", env.stdout.into_string());
@@ -498,7 +482,7 @@ mod tests {
     #[test]
     fn n_flag_five_lines() {
         let input = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10";
-        let env = make_env(vec!["tail", "-n", "5"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "5"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Always adds trailing newline if not present
@@ -508,7 +492,7 @@ mod tests {
     #[test]
     fn n_flag_one_line() {
         let input = "first\nsecond\nthird";
-        let env = make_env(vec!["tail", "-n", "1"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "1"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("third\n", env.stdout.into_string());
@@ -517,7 +501,7 @@ mod tests {
     #[test]
     fn n_flag_more_than_available() {
         let input = "one\ntwo\nthree";
-        let env = make_env(vec!["tail", "-n", "100"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "100"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("one\ntwo\nthree\n", env.stdout.into_string());
@@ -526,7 +510,7 @@ mod tests {
     #[test]
     fn n_flag_long_form() {
         let input = "1\n2\n3\n4\n5";
-        let env = make_env(vec!["tail", "--lines=2"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "--lines=2"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Always adds trailing newline if not present
@@ -535,7 +519,7 @@ mod tests {
 
     #[test]
     fn n_flag_zero_shows_nothing() {
-        let env = make_env(vec!["tail", "-n", "0"], "hello\nworld");
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "0"], "hello\nworld");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -544,7 +528,7 @@ mod tests {
     #[test]
     fn n_flag_negative_is_same_as_positive() {
         let input = "1\n2\n3\n4\n5";
-        let env = make_env(vec!["tail", "-n", "-2"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "-2"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Always adds trailing newline if not present
@@ -553,7 +537,7 @@ mod tests {
 
     #[test]
     fn n_flag_non_numeric_is_error() {
-        let env = make_env(vec!["tail", "-n", "abc"], "hello");
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "abc"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -568,7 +552,7 @@ mod tests {
     #[test]
     fn n_plus_from_beginning() {
         let input = "1\n2\n3\n4\n5";
-        let env = make_env(vec!["tail", "-n", "+3"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "+3"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // +3 means start at line 3, always adds trailing newline
@@ -578,7 +562,7 @@ mod tests {
     #[test]
     fn n_plus_one_shows_all() {
         let input = "1\n2\n3";
-        let env = make_env(vec!["tail", "-n", "+1"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "+1"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n2\n3\n", env.stdout.into_string());
@@ -587,7 +571,7 @@ mod tests {
     #[test]
     fn n_plus_beyond_file() {
         let input = "1\n2\n3";
-        let env = make_env(vec!["tail", "-n", "+100"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "+100"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -595,7 +579,7 @@ mod tests {
 
     #[test]
     fn c_plus_from_beginning() {
-        let env = make_env(vec!["tail", "-c", "+6"], "hello world");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "+6"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // +6 means start at byte 6 (1-indexed), so skip first 5 bytes
@@ -608,7 +592,7 @@ mod tests {
 
     #[test]
     fn c_flag_five_bytes() {
-        let env = make_env(vec!["tail", "-c", "5"], "hello world");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "5"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("orld\n", env.stdout.into_string());
@@ -616,7 +600,7 @@ mod tests {
 
     #[test]
     fn c_flag_from_file() {
-        let env = make_env(vec!["tail", "-c", "6", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "6", "file.txt"], "");
         env.fs.add_file("file.txt", "hello world\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -626,7 +610,7 @@ mod tests {
 
     #[test]
     fn c_flag_more_than_available() {
-        let env = make_env(vec!["tail", "-c", "100", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "100", "file.txt"], "");
         env.fs.add_file("file.txt", "short\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -635,7 +619,7 @@ mod tests {
 
     #[test]
     fn c_flag_long_form() {
-        let env = make_env(vec!["tail", "--bytes=3", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "--bytes=3", "file.txt"], "");
         env.fs.add_file("file.txt", "hello\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -645,7 +629,7 @@ mod tests {
 
     #[test]
     fn c_flag_zero_shows_nothing() {
-        let env = make_env(vec!["tail", "-c", "0"], "hello");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "0"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -653,7 +637,7 @@ mod tests {
 
     #[test]
     fn c_and_n_together_is_error() {
-        let env = make_env(vec!["tail", "-c", "5", "-n", "3"], "hello");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "5", "-n", "3"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -669,7 +653,7 @@ mod tests {
     fn b_flag_one_block() {
         // Create content larger than 512 bytes
         let content: String = (0..600).map(|i| ((i % 10) as u8 + b'0') as char).collect();
-        let env = make_env(vec!["tail", "-b", "1", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-b", "1", "file.txt"], "");
         env.fs.add_file("file.txt", &content);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -694,7 +678,7 @@ mod tests {
     #[test]
     fn r_flag_reverses_lines() {
         let input = "1\n2\n3";
-        let env = make_env(vec!["tail", "-r"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-r"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("3\n2\n1\n", env.stdout.into_string());
@@ -703,7 +687,7 @@ mod tests {
     #[test]
     fn r_flag_with_n() {
         let input = "1\n2\n3\n4\n5";
-        let env = make_env(vec!["tail", "-r", "-n", "3"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-r", "-n", "3"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Last 3 lines reversed
@@ -713,7 +697,7 @@ mod tests {
     #[test]
     fn r_flag_shows_all_by_default() {
         let input = "a\nb\nc";
-        let env = make_env(vec!["tail", "-r"], input);
+        let env = make_test_env_with_stdin(vec!["tail", "-r"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("c\nb\na\n", env.stdout.into_string());
@@ -793,7 +777,7 @@ mod tests {
 
     #[test]
     fn single_file() {
-        let env = make_env(vec!["tail", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "file.txt"], "");
         env.fs.add_file("file.txt", "line1\nline2\nline3\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -802,7 +786,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["tail", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -812,7 +796,7 @@ mod tests {
 
     #[test]
     fn multiple_files_with_headers() {
-        let env = make_env(vec!["tail", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -827,7 +811,7 @@ mod tests {
 
     #[test]
     fn single_file_no_header() {
-        let env = make_env(vec!["tail", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "file.txt"], "");
         env.fs.add_file("file.txt", "content\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -843,7 +827,7 @@ mod tests {
 
     #[test]
     fn q_flag_suppresses_headers() {
-        let env = make_env(vec!["tail", "-q", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-q", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -857,7 +841,7 @@ mod tests {
 
     #[test]
     fn quiet_long_form() {
-        let env = make_env(vec!["tail", "--quiet", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "--quiet", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -869,7 +853,7 @@ mod tests {
 
     #[test]
     fn silent_long_form() {
-        let env = make_env(vec!["tail", "--silent", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "--silent", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -885,7 +869,7 @@ mod tests {
 
     #[test]
     fn v_flag_forces_header() {
-        let env = make_env(vec!["tail", "-v", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-v", "file.txt"], "");
         env.fs.add_file("file.txt", "content\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -897,7 +881,7 @@ mod tests {
 
     #[test]
     fn verbose_long_form() {
-        let env = make_env(vec!["tail", "--verbose", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "--verbose", "file.txt"], "");
         env.fs.add_file("file.txt", "content\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -908,7 +892,7 @@ mod tests {
 
     #[test]
     fn q_overrides_v() {
-        let env = make_env(vec!["tail", "-v", "-q", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-v", "-q", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -924,7 +908,7 @@ mod tests {
 
     #[test]
     fn dash_means_stdin() {
-        let env = make_env(vec!["tail", "-"], "from stdin");
+        let env = make_test_env_with_stdin(vec!["tail", "-"], "from stdin");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("from stdin\n", env.stdout.into_string());
@@ -932,7 +916,7 @@ mod tests {
 
     #[test]
     fn dash_with_file() {
-        let env = make_env(vec!["tail", "a.txt", "-", "b.txt"], "stdin content");
+        let env = make_test_env_with_stdin(vec!["tail", "a.txt", "-", "b.txt"], "stdin content");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -953,7 +937,7 @@ mod tests {
 
     #[test]
     fn empty_file() {
-        let env = make_env(vec!["tail", "empty.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "empty.txt"], "");
         env.fs.add_file("empty.txt", "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -962,7 +946,7 @@ mod tests {
 
     #[test]
     fn file_no_trailing_newline() {
-        let env = make_env(vec!["tail", "-n", "1", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "1", "file.txt"], "");
         env.fs.add_file("file.txt", "line1\nno newline");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -972,7 +956,7 @@ mod tests {
 
     #[test]
     fn multiple_files_one_missing() {
-        let env = make_env(vec!["tail", "a.txt", "missing.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "a.txt", "missing.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -988,7 +972,7 @@ mod tests {
 
     #[test]
     fn illegal_option() {
-        let env = make_env(vec!["tail", "-x"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1002,7 +986,7 @@ mod tests {
 
     #[test]
     fn header_format_with_newline_between() {
-        let env = make_env(vec!["tail", "-n", "1", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "1", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -1019,7 +1003,7 @@ mod tests {
 
     #[test]
     fn combined_nq() {
-        let env = make_env(vec!["tail", "-n", "1", "-q", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-n", "1", "-q", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "a1\na2\na3\n");
         env.fs.add_file("b.txt", "b1\nb2\nb3\n");
         let result = bin(&env).unwrap();
@@ -1033,7 +1017,7 @@ mod tests {
 
     #[test]
     fn combined_cv() {
-        let env = make_env(vec!["tail", "-c", "3", "-v", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["tail", "-c", "3", "-v", "file.txt"], "");
         env.fs.add_file("file.txt", "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -1051,7 +1035,7 @@ mod tests {
     fn tail_vs_head_default() {
         // With 12 lines, head shows first 10, tail shows last 10
         let input = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";
-        let env = make_env(vec!["tail"], input);
+        let env = make_test_env_with_stdin(vec!["tail"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();

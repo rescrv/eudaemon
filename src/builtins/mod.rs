@@ -139,22 +139,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::make_test_env;
     use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
 
     // ========================================================================
     // exit builtin tests
@@ -162,7 +148,7 @@ mod tests {
 
     #[test]
     fn exit_no_args_returns_zero() {
-        let env = make_env(vec!["exit"]);
+        let env = make_test_env(vec!["exit"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(env.is_exit_signaled());
@@ -170,7 +156,7 @@ mod tests {
 
     #[test]
     fn exit_zero_returns_zero() {
-        let env = make_env(vec!["exit", "0"]);
+        let env = make_test_env(vec!["exit", "0"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(env.is_exit_signaled());
@@ -178,7 +164,7 @@ mod tests {
 
     #[test]
     fn exit_one_returns_one() {
-        let env = make_env(vec!["exit", "1"]);
+        let env = make_test_env(vec!["exit", "1"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(1, result.code());
         assert!(env.is_exit_signaled());
@@ -186,7 +172,7 @@ mod tests {
 
     #[test]
     fn exit_42_returns_42() {
-        let env = make_env(vec!["exit", "42"]);
+        let env = make_test_env(vec!["exit", "42"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(42, result.code());
         assert!(env.is_exit_signaled());
@@ -194,7 +180,7 @@ mod tests {
 
     #[test]
     fn exit_negative_returns_negative() {
-        let env = make_env(vec!["exit", "-1"]);
+        let env = make_test_env(vec!["exit", "-1"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(-1, result.code());
         assert!(env.is_exit_signaled());
@@ -202,7 +188,7 @@ mod tests {
 
     #[test]
     fn exit_127_returns_127() {
-        let env = make_env(vec!["exit", "127"]);
+        let env = make_test_env(vec!["exit", "127"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(127, result.code());
         assert!(env.is_exit_signaled());
@@ -210,7 +196,7 @@ mod tests {
 
     #[test]
     fn exit_non_numeric_returns_error() {
-        let env = make_env(vec!["exit", "abc"]);
+        let env = make_test_env(vec!["exit", "abc"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(2, result.code());
         assert!(!env.is_exit_signaled());
@@ -222,7 +208,7 @@ mod tests {
 
     #[test]
     fn exit_empty_string_returns_error() {
-        let env = make_env(vec!["exit", ""]);
+        let env = make_test_env(vec!["exit", ""]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(2, result.code());
         assert!(!env.is_exit_signaled());
@@ -230,7 +216,7 @@ mod tests {
 
     #[test]
     fn exit_overflow_returns_error() {
-        let env = make_env(vec!["exit", "999"]);
+        let env = make_test_env(vec!["exit", "999"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(2, result.code());
         assert!(!env.is_exit_signaled());
@@ -241,7 +227,7 @@ mod tests {
 
     #[test]
     fn exit_extra_args_ignored() {
-        let env = make_env(vec!["exit", "5", "extra", "args"]);
+        let env = make_test_env(vec!["exit", "5", "extra", "args"]);
         let result = exit_bin(&env).unwrap();
         assert_eq!(5, result.code());
         assert!(env.is_exit_signaled());
@@ -253,7 +239,7 @@ mod tests {
 
     #[test]
     fn true_returns_zero() {
-        let env = make_env(vec!["true"]);
+        let env = make_test_env(vec!["true"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
         let result = bin(&env).unwrap();
@@ -262,7 +248,7 @@ mod tests {
 
     #[test]
     fn true_with_args_returns_zero() {
-        let env = make_env(vec!["true", "ignored", "arguments"]);
+        let env = make_test_env(vec!["true", "ignored", "arguments"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
         let result = bin(&env).unwrap();
@@ -271,7 +257,7 @@ mod tests {
 
     #[test]
     fn true_via_path_returns_zero() {
-        let env = make_env(vec!["/bin/true"]);
+        let env = make_test_env(vec!["/bin/true"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("/bin/true")
                 .unwrap();
@@ -281,7 +267,7 @@ mod tests {
 
     #[test]
     fn true_produces_no_output() {
-        let env = make_env(vec!["true"]);
+        let env = make_test_env(vec!["true"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
         let _ = bin(&env).unwrap();
@@ -295,7 +281,7 @@ mod tests {
 
     #[test]
     fn false_returns_one() {
-        let env = make_env(vec!["false"]);
+        let env = make_test_env(vec!["false"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
         let result = bin(&env).unwrap();
@@ -304,7 +290,7 @@ mod tests {
 
     #[test]
     fn false_with_args_returns_one() {
-        let env = make_env(vec!["false", "ignored", "arguments"]);
+        let env = make_test_env(vec!["false", "ignored", "arguments"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
         let result = bin(&env).unwrap();
@@ -313,7 +299,7 @@ mod tests {
 
     #[test]
     fn false_via_path_returns_one() {
-        let env = make_env(vec!["/bin/false"]);
+        let env = make_test_env(vec!["/bin/false"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("/bin/false")
                 .unwrap();
@@ -323,7 +309,7 @@ mod tests {
 
     #[test]
     fn false_produces_no_output() {
-        let env = make_env(vec!["false"]);
+        let env = make_test_env(vec!["false"]);
         let bin =
             lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
         let _ = bin(&env).unwrap();

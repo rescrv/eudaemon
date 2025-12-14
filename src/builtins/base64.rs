@@ -259,23 +259,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // encode_base64 unit tests
@@ -420,7 +404,7 @@ mod tests {
 
     #[test]
     fn encode_stdin_simple() {
-        let env = make_env(vec!["base64"], "Hello");
+        let env = make_test_env_with_stdin(vec!["base64"], "Hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("SGVsbG8=\n", env.stdout.into_string());
@@ -428,7 +412,7 @@ mod tests {
 
     #[test]
     fn encode_stdin_empty() {
-        let env = make_env(vec!["base64"], "");
+        let env = make_test_env_with_stdin(vec!["base64"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("\n", env.stdout.into_string());
@@ -436,7 +420,7 @@ mod tests {
 
     #[test]
     fn encode_file() {
-        let env = make_env(vec!["base64", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["base64", "input.txt"], "");
         env.fs.add_file("input.txt", "Hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -445,7 +429,7 @@ mod tests {
 
     #[test]
     fn encode_file_not_found() {
-        let env = make_env(vec!["base64", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["base64", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -457,7 +441,7 @@ mod tests {
     fn encode_with_wrap_0() {
         // Generate a long string that would normally wrap
         let input = "a".repeat(100);
-        let env = make_env(vec!["base64", "-w", "0"], &input);
+        let env = make_test_env_with_stdin(vec!["base64", "-w", "0"], &input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -469,7 +453,7 @@ mod tests {
     #[test]
     fn encode_with_wrap_20() {
         let input = "a".repeat(30);
-        let env = make_env(vec!["base64", "-w", "20"], &input);
+        let env = make_test_env_with_stdin(vec!["base64", "-w", "20"], &input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -482,7 +466,7 @@ mod tests {
 
     #[test]
     fn encode_with_invalid_wrap() {
-        let env = make_env(vec!["base64", "-w", "abc"], "Hello");
+        let env = make_test_env_with_stdin(vec!["base64", "-w", "abc"], "Hello");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -496,7 +480,7 @@ mod tests {
 
     #[test]
     fn decode_stdin_simple() {
-        let env = make_env(vec!["base64", "-d"], "SGVsbG8=");
+        let env = make_test_env_with_stdin(vec!["base64", "-d"], "SGVsbG8=");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Hello", env.stdout.into_string());
@@ -504,7 +488,7 @@ mod tests {
 
     #[test]
     fn decode_stdin_empty() {
-        let env = make_env(vec!["base64", "-d"], "");
+        let env = make_test_env_with_stdin(vec!["base64", "-d"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -512,7 +496,7 @@ mod tests {
 
     #[test]
     fn decode_file() {
-        let env = make_env(vec!["base64", "-d", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["base64", "-d", "input.txt"], "");
         env.fs.add_file("input.txt", "SGVsbG8=");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -521,7 +505,7 @@ mod tests {
 
     #[test]
     fn decode_invalid_input() {
-        let env = make_env(vec!["base64", "-d"], "!!!invalid!!!");
+        let env = make_test_env_with_stdin(vec!["base64", "-d"], "!!!invalid!!!");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -531,7 +515,7 @@ mod tests {
 
     #[test]
     fn decode_with_ignore_garbage() {
-        let env = make_env(vec!["base64", "-d", "-i"], "SGVs!!!bG8=");
+        let env = make_test_env_with_stdin(vec!["base64", "-d", "-i"], "SGVs!!!bG8=");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Hello", env.stdout.into_string());
@@ -539,7 +523,7 @@ mod tests {
 
     #[test]
     fn decode_stdin_with_whitespace() {
-        let env = make_env(vec!["base64", "-d"], "SGVs\nbG8=");
+        let env = make_test_env_with_stdin(vec!["base64", "-d"], "SGVs\nbG8=");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Hello", env.stdout.into_string());
@@ -551,7 +535,7 @@ mod tests {
 
     #[test]
     fn help_flag() {
-        let env = make_env(vec!["base64", "-h"], "");
+        let env = make_test_env_with_stdin(vec!["base64", "-h"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -594,7 +578,7 @@ mod tests {
 
     #[test]
     fn dash_means_stdin() {
-        let env = make_env(vec!["base64", "-"], "Hello");
+        let env = make_test_env_with_stdin(vec!["base64", "-"], "Hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("SGVsbG8=\n", env.stdout.into_string());
@@ -602,7 +586,7 @@ mod tests {
 
     #[test]
     fn illegal_option() {
-        let env = make_env(vec!["base64", "-x"], "");
+        let env = make_test_env_with_stdin(vec!["base64", "-x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -612,7 +596,7 @@ mod tests {
 
     #[test]
     fn long_option_decode() {
-        let env = make_env(vec!["base64", "--decode"], "SGVsbG8=");
+        let env = make_test_env_with_stdin(vec!["base64", "--decode"], "SGVsbG8=");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Hello", env.stdout.into_string());
@@ -621,7 +605,7 @@ mod tests {
     #[test]
     fn long_option_wrap() {
         let input = "a".repeat(30);
-        let env = make_env(vec!["base64", "--wrap=10"], &input);
+        let env = make_test_env_with_stdin(vec!["base64", "--wrap=10"], &input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();

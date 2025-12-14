@@ -448,23 +448,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic byte mode tests (-b)
@@ -472,7 +456,7 @@ mod tests {
 
     #[test]
     fn bytes_single_position() {
-        let env = make_env(vec!["cut", "-b", "1"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("h\n", env.stdout.into_string());
@@ -480,7 +464,7 @@ mod tests {
 
     #[test]
     fn bytes_multiple_positions() {
-        let env = make_env(vec!["cut", "-b", "1,3,5"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1,3,5"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hlo\n", env.stdout.into_string());
@@ -488,7 +472,7 @@ mod tests {
 
     #[test]
     fn bytes_range() {
-        let env = make_env(vec!["cut", "-b", "2-4"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "2-4"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("ell\n", env.stdout.into_string());
@@ -496,7 +480,7 @@ mod tests {
 
     #[test]
     fn bytes_range_from_start() {
-        let env = make_env(vec!["cut", "-b", "-3"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "-3"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hel\n", env.stdout.into_string());
@@ -504,7 +488,7 @@ mod tests {
 
     #[test]
     fn bytes_range_to_end() {
-        let env = make_env(vec!["cut", "-b", "3-"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "3-"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("llo\n", env.stdout.into_string());
@@ -512,7 +496,7 @@ mod tests {
 
     #[test]
     fn bytes_mixed_ranges() {
-        let env = make_env(vec!["cut", "-b", "1,3-4"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1,3-4"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hll\n", env.stdout.into_string());
@@ -520,7 +504,7 @@ mod tests {
 
     #[test]
     fn bytes_beyond_line_length() {
-        let env = make_env(vec!["cut", "-b", "1,10"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1,10"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("h\n", env.stdout.into_string());
@@ -528,7 +512,7 @@ mod tests {
 
     #[test]
     fn bytes_multiple_lines() {
-        let env = make_env(vec!["cut", "-b", "1-3"], "hello\nworld");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1-3"], "hello\nworld");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hel\nwor\n", env.stdout.into_string());
@@ -540,7 +524,7 @@ mod tests {
 
     #[test]
     fn chars_single_position() {
-        let env = make_env(vec!["cut", "-c", "1"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-c", "1"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("h\n", env.stdout.into_string());
@@ -548,7 +532,7 @@ mod tests {
 
     #[test]
     fn chars_range() {
-        let env = make_env(vec!["cut", "-c", "1-3"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-c", "1-3"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hel\n", env.stdout.into_string());
@@ -557,7 +541,7 @@ mod tests {
     #[test]
     fn chars_unicode() {
         // Test with multi-byte UTF-8 characters
-        let env = make_env(vec!["cut", "-c", "1-3"], "héllo");
+        let env = make_test_env_with_stdin(vec!["cut", "-c", "1-3"], "héllo");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hél\n", env.stdout.into_string());
@@ -565,7 +549,7 @@ mod tests {
 
     #[test]
     fn chars_unicode_range_to_end() {
-        let env = make_env(vec!["cut", "-c", "2-"], "日本語");
+        let env = make_test_env_with_stdin(vec!["cut", "-c", "2-"], "日本語");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("本語\n", env.stdout.into_string());
@@ -577,7 +561,7 @@ mod tests {
 
     #[test]
     fn fields_single_field() {
-        let env = make_env(vec!["cut", "-f", "1"], "a\tb\tc");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1"], "a\tb\tc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\n", env.stdout.into_string());
@@ -585,7 +569,7 @@ mod tests {
 
     #[test]
     fn fields_multiple_fields() {
-        let env = make_env(vec!["cut", "-f", "1,3"], "a\tb\tc");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1,3"], "a\tb\tc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\tc\n", env.stdout.into_string());
@@ -593,7 +577,7 @@ mod tests {
 
     #[test]
     fn fields_range() {
-        let env = make_env(vec!["cut", "-f", "2-3"], "a\tb\tc\td");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "2-3"], "a\tb\tc\td");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("b\tc\n", env.stdout.into_string());
@@ -601,7 +585,7 @@ mod tests {
 
     #[test]
     fn fields_custom_delimiter() {
-        let env = make_env(vec!["cut", "-f", "1,3", "-d", ":"], "a:b:c");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1,3", "-d", ":"], "a:b:c");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a:c\n", env.stdout.into_string());
@@ -609,7 +593,7 @@ mod tests {
 
     #[test]
     fn fields_no_delimiter_passthrough() {
-        let env = make_env(vec!["cut", "-f", "1"], "no tabs here");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1"], "no tabs here");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("no tabs here\n", env.stdout.into_string());
@@ -617,7 +601,7 @@ mod tests {
 
     #[test]
     fn fields_no_delimiter_suppress() {
-        let env = make_env(vec!["cut", "-f", "1", "-s"], "no tabs here");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1", "-s"], "no tabs here");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -625,7 +609,7 @@ mod tests {
 
     #[test]
     fn fields_range_to_end() {
-        let env = make_env(vec!["cut", "-f", "2-"], "a\tb\tc\td");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "2-"], "a\tb\tc\td");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("b\tc\td\n", env.stdout.into_string());
@@ -634,7 +618,7 @@ mod tests {
     #[test]
     fn fields_passwd_example() {
         // Classic /etc/passwd example: extract login and shell
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["cut", "-d", ":", "-f", "1,7"],
             "root:x:0:0:root:/root:/bin/bash",
         );
@@ -649,7 +633,7 @@ mod tests {
 
     #[test]
     fn whitespace_single_field() {
-        let env = make_env(vec!["cut", "-f", "2", "-w"], "one   two   three");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "2", "-w"], "one   two   three");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("two\n", env.stdout.into_string());
@@ -657,7 +641,7 @@ mod tests {
 
     #[test]
     fn whitespace_multiple_fields() {
-        let env = make_env(vec!["cut", "-f", "1,3", "-w"], "one   two   three");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1,3", "-w"], "one   two   three");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("one\tthree\n", env.stdout.into_string());
@@ -665,7 +649,7 @@ mod tests {
 
     #[test]
     fn whitespace_tabs_and_spaces() {
-        let env = make_env(vec!["cut", "-f", "2", "-w"], "one \t two");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "2", "-w"], "one \t two");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("two\n", env.stdout.into_string());
@@ -677,7 +661,7 @@ mod tests {
 
     #[test]
     fn file_single() {
-        let env = make_env(vec!["cut", "-b", "1-3", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1-3", "file.txt"], "");
         env.fs.add_file("file.txt", "hello\nworld\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -686,7 +670,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["cut", "-b", "1", "missing.txt"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "missing.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -696,7 +680,7 @@ mod tests {
 
     #[test]
     fn file_multiple() {
-        let env = make_env(vec!["cut", "-b", "1", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -706,7 +690,7 @@ mod tests {
 
     #[test]
     fn stdin_dash() {
-        let env = make_env(vec!["cut", "-b", "1", "-"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "-"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("h\n", env.stdout.into_string());
@@ -718,7 +702,7 @@ mod tests {
 
     #[test]
     fn error_no_list() {
-        let env = make_env(vec!["cut"], "");
+        let env = make_test_env_with_stdin(vec!["cut"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -728,7 +712,7 @@ mod tests {
 
     #[test]
     fn error_multiple_modes() {
-        let env = make_env(vec!["cut", "-b", "1", "-c", "1"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "-c", "1"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -738,7 +722,7 @@ mod tests {
 
     #[test]
     fn error_zero_in_list() {
-        let env = make_env(vec!["cut", "-b", "0"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "0"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -748,7 +732,7 @@ mod tests {
 
     #[test]
     fn error_d_without_f() {
-        let env = make_env(vec!["cut", "-b", "1", "-d", ":"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "-d", ":"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -758,7 +742,7 @@ mod tests {
 
     #[test]
     fn error_s_without_f() {
-        let env = make_env(vec!["cut", "-b", "1", "-s"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "-s"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -768,7 +752,7 @@ mod tests {
 
     #[test]
     fn error_w_without_f() {
-        let env = make_env(vec!["cut", "-b", "1", "-w"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "-w"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -778,7 +762,7 @@ mod tests {
 
     #[test]
     fn error_w_and_d_together() {
-        let env = make_env(vec!["cut", "-f", "1", "-w", "-d", ":"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1", "-w", "-d", ":"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -788,7 +772,7 @@ mod tests {
 
     #[test]
     fn error_bad_delimiter() {
-        let env = make_env(vec!["cut", "-f", "1", "-d", "ab"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1", "-d", "ab"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -798,7 +782,7 @@ mod tests {
 
     #[test]
     fn error_empty_delimiter() {
-        let env = make_env(vec!["cut", "-f", "1", "-d", ""], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-f", "1", "-d", ""], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -812,7 +796,7 @@ mod tests {
 
     #[test]
     fn list_overlapping_ranges() {
-        let env = make_env(vec!["cut", "-b", "1-3,2-4"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1-3,2-4"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Should output positions 1,2,3,4 without duplication
@@ -821,7 +805,7 @@ mod tests {
 
     #[test]
     fn list_out_of_order() {
-        let env = make_env(vec!["cut", "-b", "3,1"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "3,1"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Output should be in natural order (position order), not list order
@@ -830,7 +814,7 @@ mod tests {
 
     #[test]
     fn list_repeated_positions() {
-        let env = make_env(vec!["cut", "-b", "1,1,1"], "hello");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1,1,1"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("h\n", env.stdout.into_string());
@@ -842,7 +826,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["cut", "-b", "1"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -850,7 +834,7 @@ mod tests {
 
     #[test]
     fn empty_line() {
-        let env = make_env(vec!["cut", "-b", "1"], "\n");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1"], "\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("\n", env.stdout.into_string());
@@ -858,7 +842,7 @@ mod tests {
 
     #[test]
     fn empty_file() {
-        let env = make_env(vec!["cut", "-b", "1", "empty.txt"], "");
+        let env = make_test_env_with_stdin(vec!["cut", "-b", "1", "empty.txt"], "");
         env.fs.add_file("empty.txt", "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -872,7 +856,7 @@ mod tests {
     #[test]
     fn who_output_example() {
         // Simulating: who | cut -c 1-16,26-38
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["cut", "-c", "1-16,26-38"],
             "alice           pts/0        2024-01-15 09:00",
         );
@@ -885,7 +869,7 @@ mod tests {
 
     #[test]
     fn csv_extraction() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["cut", "-d", ",", "-f", "1,3"],
             "name,age,city\nalice,30,london\nbob,25,paris",
         );

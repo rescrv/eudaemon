@@ -594,23 +594,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic translation tests
@@ -618,7 +602,7 @@ mod tests {
 
     #[test]
     fn translate_single_chars() {
-        let env = make_env(vec!["tr", "abc", "xyz"], "aabbcc");
+        let env = make_test_env_with_stdin(vec!["tr", "abc", "xyz"], "aabbcc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("xxyyzz\n", env.stdout.into_string());
@@ -626,7 +610,7 @@ mod tests {
 
     #[test]
     fn translate_range() {
-        let env = make_env(vec!["tr", "a-z", "A-Z"], "hello");
+        let env = make_test_env_with_stdin(vec!["tr", "a-z", "A-Z"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("HELLO\n", env.stdout.into_string());
@@ -634,7 +618,7 @@ mod tests {
 
     #[test]
     fn translate_mixed() {
-        let env = make_env(vec!["tr", "aeiou", "12345"], "hello world");
+        let env = make_test_env_with_stdin(vec!["tr", "aeiou", "12345"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("h2ll4 w4rld\n", env.stdout.into_string());
@@ -647,7 +631,7 @@ mod tests {
     #[test]
     fn regress_00_translate_abcde_12345() {
         let input = "quick brown\nfox jumped\nover the lazy\ndog";
-        let env = make_env(vec!["tr", "abcde", "12345"], input);
+        let env = make_test_env_with_stdin(vec!["tr", "abcde", "12345"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -659,7 +643,7 @@ mod tests {
     #[test]
     fn regress_01_translate_12345_abcde() {
         let input = "qui3k 2rown\nfox jump54\nov5r th5 l1zy\n4og";
-        let env = make_env(vec!["tr", "12345", "abcde"], input);
+        let env = make_test_env_with_stdin(vec!["tr", "12345", "abcde"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -671,7 +655,7 @@ mod tests {
     #[test]
     fn regress_02_delete_aceg() {
         let input = "quick brown\nfox jumped\nover the lazy\ndog";
-        let env = make_env(vec!["tr", "-d", "aceg"], input);
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "aceg"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -687,7 +671,7 @@ mod tests {
     #[test]
     fn regress_03_lower_to_upper() {
         let input = "quick brown\nfox jumped\nover the lazy\ndog";
-        let env = make_env(vec!["tr", "[:lower:]", "[:upper:]"], input);
+        let env = make_test_env_with_stdin(vec!["tr", "[:lower:]", "[:upper:]"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -700,7 +684,7 @@ mod tests {
     #[test]
     fn regress_04_alpha_to_dot() {
         let input = "quick brown\nfox jumped\nover the lazy\ndog";
-        let env = make_env(vec!["tr", "[:alpha:]", "."], input);
+        let env = make_test_env_with_stdin(vec!["tr", "[:alpha:]", "."], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -712,7 +696,7 @@ mod tests {
     #[test]
     fn regress_06_digit_to_question() {
         let input = "100 bottles of beer";
-        let env = make_env(vec!["tr", "[:digit:]", "?"], input);
+        let env = make_test_env_with_stdin(vec!["tr", "[:digit:]", "?"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -723,7 +707,7 @@ mod tests {
     #[test]
     fn regress_07_alnum_to_hash() {
         let input = "100 bottles of beer";
-        let env = make_env(vec!["tr", "[:alnum:]", "#"], input);
+        let env = make_test_env_with_stdin(vec!["tr", "[:alnum:]", "#"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -737,7 +721,7 @@ mod tests {
 
     #[test]
     fn delete_single_char() {
-        let env = make_env(vec!["tr", "-d", "a"], "abracadabra");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "a"], "abracadabra");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("brcdbr\n", env.stdout.into_string());
@@ -745,7 +729,7 @@ mod tests {
 
     #[test]
     fn delete_multiple_chars() {
-        let env = make_env(vec!["tr", "-d", "aeiou"], "hello world");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "aeiou"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hll wrld\n", env.stdout.into_string());
@@ -753,7 +737,7 @@ mod tests {
 
     #[test]
     fn delete_range() {
-        let env = make_env(vec!["tr", "-d", "a-z"], "Hello World 123");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "a-z"], "Hello World 123");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("H W 123\n", env.stdout.into_string());
@@ -761,7 +745,7 @@ mod tests {
 
     #[test]
     fn delete_complement() {
-        let env = make_env(vec!["tr", "-cd", "a-z"], "Hello World 123");
+        let env = make_test_env_with_stdin(vec!["tr", "-cd", "a-z"], "Hello World 123");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("elloorld\n", env.stdout.into_string());
@@ -773,7 +757,7 @@ mod tests {
 
     #[test]
     fn squeeze_only() {
-        let env = make_env(vec!["tr", "-s", "o"], "foooobar");
+        let env = make_test_env_with_stdin(vec!["tr", "-s", "o"], "foooobar");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("fobar\n", env.stdout.into_string());
@@ -781,7 +765,7 @@ mod tests {
 
     #[test]
     fn squeeze_multiple() {
-        let env = make_env(vec!["tr", "-s", "ab"], "aaabbbccc");
+        let env = make_test_env_with_stdin(vec!["tr", "-s", "ab"], "aaabbbccc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abccc\n", env.stdout.into_string());
@@ -789,7 +773,7 @@ mod tests {
 
     #[test]
     fn squeeze_with_translate() {
-        let env = make_env(vec!["tr", "-s", "a-z", "A-Z"], "hello   world");
+        let env = make_test_env_with_stdin(vec!["tr", "-s", "a-z", "A-Z"], "hello   world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("HELO   WORLD\n", env.stdout.into_string());
@@ -801,7 +785,7 @@ mod tests {
 
     #[test]
     fn delete_and_squeeze() {
-        let env = make_env(vec!["tr", "-ds", "aeiou", " "], "hello   world");
+        let env = make_test_env_with_stdin(vec!["tr", "-ds", "aeiou", " "], "hello   world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hll wrld\n", env.stdout.into_string());
@@ -813,7 +797,7 @@ mod tests {
 
     #[test]
     fn escape_newline() {
-        let env = make_env(vec!["tr", "\\n", "X"], "hello");
+        let env = make_test_env_with_stdin(vec!["tr", "\\n", "X"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -821,7 +805,7 @@ mod tests {
 
     #[test]
     fn escape_tab() {
-        let env = make_env(vec!["tr", "\\t", " "], "hello\tworld");
+        let env = make_test_env_with_stdin(vec!["tr", "\\t", " "], "hello\tworld");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello world\n", env.stdout.into_string());
@@ -829,7 +813,7 @@ mod tests {
 
     #[test]
     fn escape_octal() {
-        let env = make_env(vec!["tr", "\\141", "X"], "abc");
+        let env = make_test_env_with_stdin(vec!["tr", "\\141", "X"], "abc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Xbc\n", env.stdout.into_string());
@@ -841,7 +825,7 @@ mod tests {
 
     #[test]
     fn class_digit() {
-        let env = make_env(vec!["tr", "-d", "[:digit:]"], "abc123def456");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "[:digit:]"], "abc123def456");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abcdef\n", env.stdout.into_string());
@@ -849,7 +833,7 @@ mod tests {
 
     #[test]
     fn class_lower() {
-        let env = make_env(vec!["tr", "-d", "[:lower:]"], "Hello World");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "[:lower:]"], "Hello World");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("H W\n", env.stdout.into_string());
@@ -857,7 +841,7 @@ mod tests {
 
     #[test]
     fn class_upper() {
-        let env = make_env(vec!["tr", "-d", "[:upper:]"], "Hello World");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "[:upper:]"], "Hello World");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("ello orld\n", env.stdout.into_string());
@@ -865,7 +849,7 @@ mod tests {
 
     #[test]
     fn class_space() {
-        let env = make_env(vec!["tr", "-d", "[:space:]"], "hello world\tfoo");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "[:space:]"], "hello world\tfoo");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("helloworldfoo\n", env.stdout.into_string());
@@ -873,7 +857,7 @@ mod tests {
 
     #[test]
     fn class_xdigit() {
-        let env = make_env(vec!["tr", "-cd", "[:xdigit:]"], "0xDEADBEEF!");
+        let env = make_test_env_with_stdin(vec!["tr", "-cd", "[:xdigit:]"], "0xDEADBEEF!");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0DEADBEEF\n", env.stdout.into_string());
@@ -885,7 +869,7 @@ mod tests {
 
     #[test]
     fn error_no_operand() {
-        let env = make_env(vec!["tr"], "");
+        let env = make_test_env_with_stdin(vec!["tr"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -895,7 +879,7 @@ mod tests {
 
     #[test]
     fn error_single_operand_without_flags() {
-        let env = make_env(vec!["tr", "abc"], "");
+        let env = make_test_env_with_stdin(vec!["tr", "abc"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -905,7 +889,7 @@ mod tests {
 
     #[test]
     fn error_unknown_class() {
-        let env = make_env(vec!["tr", "[:bogus:]", "x"], "hello");
+        let env = make_test_env_with_stdin(vec!["tr", "[:bogus:]", "x"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -919,7 +903,7 @@ mod tests {
 
     #[test]
     fn multi_line_translate() {
-        let env = make_env(vec!["tr", "a-z", "A-Z"], "hello\nworld\nfoo");
+        let env = make_test_env_with_stdin(vec!["tr", "a-z", "A-Z"], "hello\nworld\nfoo");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("HELLO\nWORLD\nFOO\n", env.stdout.into_string());
@@ -927,7 +911,7 @@ mod tests {
 
     #[test]
     fn multi_line_delete() {
-        let env = make_env(vec!["tr", "-d", "aeiou"], "hello\nworld");
+        let env = make_test_env_with_stdin(vec!["tr", "-d", "aeiou"], "hello\nworld");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hll\nwrld\n", env.stdout.into_string());
@@ -939,7 +923,7 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let env = make_env(vec!["tr", "a", "b"], "");
+        let env = make_test_env_with_stdin(vec!["tr", "a", "b"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -947,7 +931,7 @@ mod tests {
 
     #[test]
     fn no_matching_chars() {
-        let env = make_env(vec!["tr", "xyz", "123"], "hello");
+        let env = make_test_env_with_stdin(vec!["tr", "xyz", "123"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -955,7 +939,7 @@ mod tests {
 
     #[test]
     fn string2_shorter_than_string1() {
-        let env = make_env(vec!["tr", "abc", "x"], "aabbcc");
+        let env = make_test_env_with_stdin(vec!["tr", "abc", "x"], "aabbcc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("xxxxxx\n", env.stdout.into_string());
@@ -963,7 +947,7 @@ mod tests {
 
     #[test]
     fn string2_longer_than_string1() {
-        let env = make_env(vec!["tr", "ab", "xyz"], "aabbcc");
+        let env = make_test_env_with_stdin(vec!["tr", "ab", "xyz"], "aabbcc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("xxyycc\n", env.stdout.into_string());

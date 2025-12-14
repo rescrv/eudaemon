@@ -335,23 +335,7 @@ fn process_uniq(input: &str, opts: &UniqOptions) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -359,7 +343,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let env = make_env(vec!["uniq"], "a\na\nb\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq"], "a\na\nb\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -369,7 +353,7 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let env = make_env(vec!["uniq"], "");
+        let env = make_test_env_with_stdin(vec!["uniq"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -377,7 +361,7 @@ mod tests {
 
     #[test]
     fn single_line() {
-        let env = make_env(vec!["uniq"], "hello\n");
+        let env = make_test_env_with_stdin(vec!["uniq"], "hello\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -385,7 +369,7 @@ mod tests {
 
     #[test]
     fn all_unique() {
-        let env = make_env(vec!["uniq"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["uniq"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\nc\n", env.stdout.into_string());
@@ -393,7 +377,7 @@ mod tests {
 
     #[test]
     fn all_same() {
-        let env = make_env(vec!["uniq"], "a\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq"], "a\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\n", env.stdout.into_string());
@@ -405,7 +389,7 @@ mod tests {
 
     #[test]
     fn count() {
-        let env = make_env(vec!["uniq", "-c"], "a\na\nb\nb\nb\na\na\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-c"], "a\na\nb\nb\nb\na\na\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -415,7 +399,7 @@ mod tests {
 
     #[test]
     fn count_long_form() {
-        let env = make_env(vec!["uniq", "--count"], "a\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "--count"], "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -429,7 +413,7 @@ mod tests {
 
     #[test]
     fn repeated() {
-        let env = make_env(vec!["uniq", "-d"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-d"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -439,7 +423,7 @@ mod tests {
 
     #[test]
     fn repeated_long_form() {
-        let env = make_env(vec!["uniq", "--repeated"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "--repeated"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\na\n", env.stdout.into_string());
@@ -451,7 +435,7 @@ mod tests {
 
     #[test]
     fn count_repeated() {
-        let env = make_env(vec!["uniq", "-c", "-d"], "a\na\nb\nb\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-c", "-d"], "a\na\nb\nb\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -465,7 +449,7 @@ mod tests {
 
     #[test]
     fn all_repeated_none() {
-        let env = make_env(vec!["uniq", "-D"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-D"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -475,7 +459,7 @@ mod tests {
 
     #[test]
     fn all_repeated_explicit_none() {
-        let env = make_env(vec!["uniq", "-Dnone"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-Dnone"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\na\na\na\n", env.stdout.into_string());
@@ -483,7 +467,7 @@ mod tests {
 
     #[test]
     fn all_repeated_prepend() {
-        let env = make_env(vec!["uniq", "-Dprepend"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-Dprepend"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -493,7 +477,7 @@ mod tests {
 
     #[test]
     fn all_repeated_separate() {
-        let env = make_env(vec!["uniq", "-Dseparate"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-Dseparate"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -503,7 +487,8 @@ mod tests {
 
     #[test]
     fn all_repeated_long_form() {
-        let env = make_env(vec!["uniq", "--all-repeated=separate"], "a\na\nb\na\na\n");
+        let env =
+            make_test_env_with_stdin(vec!["uniq", "--all-repeated=separate"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\na\n\na\na\n", env.stdout.into_string());
@@ -511,7 +496,7 @@ mod tests {
 
     #[test]
     fn all_repeated_invalid_septype() {
-        let env = make_env(vec!["uniq", "-Dinvalid"], "a\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-Dinvalid"], "a\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -525,7 +510,7 @@ mod tests {
 
     #[test]
     fn count_all_repeated() {
-        let env = make_env(vec!["uniq", "-D", "-c"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-D", "-c"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -539,7 +524,8 @@ mod tests {
 
     #[test]
     fn skip_fields() {
-        let env = make_env(vec!["uniq", "-f", "1"], "1 a\n2 a\n3 b\n4 b\n5 a\n6 a\n");
+        let env =
+            make_test_env_with_stdin(vec!["uniq", "-f", "1"], "1 a\n2 a\n3 b\n4 b\n5 a\n6 a\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -549,7 +535,7 @@ mod tests {
 
     #[test]
     fn skip_fields_long_form() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["uniq", "--skip-fields", "1"],
             "1 a\n2 a\n3 b\n4 b\n5 a\n6 a\n",
         );
@@ -560,7 +546,7 @@ mod tests {
 
     #[test]
     fn skip_fields_tab() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["uniq", "-f", "1"],
             "1\ta\n2\ta\n3\tb\n4\tb\n5\ta\n6\ta\n",
         );
@@ -573,7 +559,7 @@ mod tests {
 
     #[test]
     fn skip_fields_invalid() {
-        let env = make_env(vec!["uniq", "-f", "abc"], "a\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-f", "abc"], "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -587,7 +573,7 @@ mod tests {
 
     #[test]
     fn ignore_case() {
-        let env = make_env(vec!["uniq", "-i"], "a\nA\nb\nB\na\nA\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-i"], "a\nA\nb\nB\na\nA\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -597,7 +583,7 @@ mod tests {
 
     #[test]
     fn ignore_case_long_form() {
-        let env = make_env(vec!["uniq", "--ignore-case"], "a\nA\nb\nB\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "--ignore-case"], "a\nA\nb\nB\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\n", env.stdout.into_string());
@@ -609,7 +595,8 @@ mod tests {
 
     #[test]
     fn skip_chars() {
-        let env = make_env(vec!["uniq", "-s", "2"], "1 a\n2 a\n3 b\n4 b\n5 a\n6 a\n");
+        let env =
+            make_test_env_with_stdin(vec!["uniq", "-s", "2"], "1 a\n2 a\n3 b\n4 b\n5 a\n6 a\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -619,7 +606,7 @@ mod tests {
 
     #[test]
     fn skip_chars_long_form() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["uniq", "--skip-chars", "2"],
             "1 a\n2 a\n3 b\n4 b\n5 a\n6 a\n",
         );
@@ -630,7 +617,7 @@ mod tests {
 
     #[test]
     fn skip_chars_invalid() {
-        let env = make_env(vec!["uniq", "-s", "abc"], "a\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-s", "abc"], "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -644,7 +631,7 @@ mod tests {
 
     #[test]
     fn unique() {
-        let env = make_env(vec!["uniq", "-u"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-u"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -654,7 +641,7 @@ mod tests {
 
     #[test]
     fn unique_long_form() {
-        let env = make_env(vec!["uniq", "--unique"], "a\na\nb\na\na\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "--unique"], "a\na\nb\na\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("b\n", env.stdout.into_string());
@@ -666,7 +653,7 @@ mod tests {
 
     #[test]
     fn count_unique() {
-        let env = make_env(vec!["uniq", "-c", "-u"], "a\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-c", "-u"], "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -680,7 +667,7 @@ mod tests {
 
     #[test]
     fn read_from_file() {
-        let env = make_env(vec!["uniq", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["uniq", "input.txt"], "");
         env.fs.add_file("input.txt", "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -689,7 +676,7 @@ mod tests {
 
     #[test]
     fn write_to_file() {
-        let env = make_env(vec!["uniq", "input.txt", "output.txt"], "");
+        let env = make_test_env_with_stdin(vec!["uniq", "input.txt", "output.txt"], "");
         env.fs.add_file("input.txt", "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -699,7 +686,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["uniq", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["uniq", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -709,7 +696,7 @@ mod tests {
 
     #[test]
     fn dash_means_stdin() {
-        let env = make_env(vec!["uniq", "-"], "a\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-"], "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\n", env.stdout.into_string());
@@ -717,7 +704,7 @@ mod tests {
 
     #[test]
     fn extra_operand() {
-        let env = make_env(vec!["uniq", "a", "b", "c"], "");
+        let env = make_test_env_with_stdin(vec!["uniq", "a", "b", "c"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -731,7 +718,7 @@ mod tests {
 
     #[test]
     fn no_trailing_newline() {
-        let env = make_env(vec!["uniq"], "a\na\nb");
+        let env = make_test_env_with_stdin(vec!["uniq"], "a\na\nb");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\n", env.stdout.into_string());
@@ -739,7 +726,7 @@ mod tests {
 
     #[test]
     fn mixed_whitespace_fields() {
-        let env = make_env(vec!["uniq", "-f", "1"], "  a b\n  a b\nc d\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-f", "1"], "  a b\n  a b\nc d\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -749,7 +736,7 @@ mod tests {
 
     #[test]
     fn skip_chars_beyond_line() {
-        let env = make_env(vec!["uniq", "-s", "100"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["uniq", "-s", "100"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();

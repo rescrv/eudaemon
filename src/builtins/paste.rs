@@ -315,23 +315,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Delimiter parsing tests
@@ -404,7 +388,7 @@ mod tests {
 
     #[test]
     fn parallel_two_files() {
-        let env = make_env(vec!["paste", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n3\n");
         env.fs.add_file("b.txt", "a\nb\nc\n");
         let result = bin(&env).unwrap();
@@ -414,7 +398,7 @@ mod tests {
 
     #[test]
     fn parallel_three_files() {
-        let env = make_env(vec!["paste", "a.txt", "b.txt", "c.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "a.txt", "b.txt", "c.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n");
         env.fs.add_file("b.txt", "a\nb\n");
         env.fs.add_file("c.txt", "x\ny\n");
@@ -425,7 +409,7 @@ mod tests {
 
     #[test]
     fn parallel_unequal_lengths() {
-        let env = make_env(vec!["paste", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n3\n");
         env.fs.add_file("b.txt", "a\n");
         let result = bin(&env).unwrap();
@@ -435,7 +419,7 @@ mod tests {
 
     #[test]
     fn parallel_custom_delimiter() {
-        let env = make_env(vec!["paste", "-d", ":", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-d", ":", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n");
         env.fs.add_file("b.txt", "a\nb\n");
         let result = bin(&env).unwrap();
@@ -445,7 +429,8 @@ mod tests {
 
     #[test]
     fn parallel_cycling_delimiters() {
-        let env = make_env(vec!["paste", "-d", ",:", "a.txt", "b.txt", "c.txt"], "");
+        let env =
+            make_test_env_with_stdin(vec!["paste", "-d", ",:", "a.txt", "b.txt", "c.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n");
         env.fs.add_file("b.txt", "a\nb\n");
         env.fs.add_file("c.txt", "x\ny\n");
@@ -456,7 +441,7 @@ mod tests {
 
     #[test]
     fn parallel_stdin_single() {
-        let env = make_env(vec!["paste", "-"], "line1\nline2\n");
+        let env = make_test_env_with_stdin(vec!["paste", "-"], "line1\nline2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("line1\nline2\n", env.stdout.into_string());
@@ -464,7 +449,7 @@ mod tests {
 
     #[test]
     fn parallel_stdin_dash_with_file() {
-        let env = make_env(vec!["paste", "-", "b.txt"], "1\n2\n");
+        let env = make_test_env_with_stdin(vec!["paste", "-", "b.txt"], "1\n2\n");
         env.fs.add_file("b.txt", "a\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -477,7 +462,7 @@ mod tests {
 
     #[test]
     fn sequential_single_file() {
-        let env = make_env(vec!["paste", "-s", "a.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "a.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n3\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -486,7 +471,7 @@ mod tests {
 
     #[test]
     fn sequential_two_files() {
-        let env = make_env(vec!["paste", "-s", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n3\n");
         env.fs.add_file("b.txt", "a\nb\nc\n");
         let result = bin(&env).unwrap();
@@ -496,7 +481,7 @@ mod tests {
 
     #[test]
     fn sequential_custom_delimiter() {
-        let env = make_env(vec!["paste", "-s", "-d", ",", "a.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "-d", ",", "a.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n3\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -505,7 +490,7 @@ mod tests {
 
     #[test]
     fn sequential_cycling_delimiters() {
-        let env = make_env(vec!["paste", "-s", "-d", "\\t\\n", "a.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "-d", "\\t\\n", "a.txt"], "");
         env.fs.add_file("a.txt", "1\n2\n3\n4\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -514,7 +499,7 @@ mod tests {
 
     #[test]
     fn sequential_stdin() {
-        let env = make_env(vec!["paste", "-s", "-"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "-"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\tb\tc\n", env.stdout.into_string());
@@ -526,7 +511,7 @@ mod tests {
 
     #[test]
     fn null_delimiter_parallel() {
-        let env = make_env(vec!["paste", "-d", "\\0", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-d", "\\0", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "foo\n");
         env.fs.add_file("b.txt", "bar\n");
         let result = bin(&env).unwrap();
@@ -536,7 +521,7 @@ mod tests {
 
     #[test]
     fn null_delimiter_sequential() {
-        let env = make_env(vec!["paste", "-s", "-d", "\\0", "a.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "-d", "\\0", "a.txt"], "");
         env.fs.add_file("a.txt", "foo\nbar\nbaz\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -549,7 +534,7 @@ mod tests {
 
     #[test]
     fn error_no_files() {
-        let env = make_env(vec!["paste"], "");
+        let env = make_test_env_with_stdin(vec!["paste"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -559,7 +544,7 @@ mod tests {
 
     #[test]
     fn error_file_not_found() {
-        let env = make_env(vec!["paste", "missing.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "missing.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -569,7 +554,7 @@ mod tests {
 
     #[test]
     fn error_file_not_found_sequential_continues() {
-        let env = make_env(vec!["paste", "-s", "missing.txt", "good.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "missing.txt", "good.txt"], "");
         env.fs.add_file("good.txt", "ok\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -587,7 +572,7 @@ mod tests {
 
     #[test]
     fn empty_file_parallel() {
-        let env = make_env(vec!["paste", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "");
         env.fs.add_file("b.txt", "x\n");
         let result = bin(&env).unwrap();
@@ -597,7 +582,7 @@ mod tests {
 
     #[test]
     fn empty_file_sequential() {
-        let env = make_env(vec!["paste", "-s", "a.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "a.txt"], "");
         env.fs.add_file("a.txt", "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -606,7 +591,7 @@ mod tests {
 
     #[test]
     fn single_line_no_trailing_newline() {
-        let env = make_env(vec!["paste", "a.txt"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "a.txt"], "");
         env.fs.add_file("a.txt", "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -620,7 +605,7 @@ mod tests {
     #[test]
     fn manpage_example_ls_three_columns() {
         // ls | paste - - -
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["paste", "-", "-", "-"],
             "file1\nfile2\nfile3\nfile4\nfile5\n",
         );
@@ -634,7 +619,7 @@ mod tests {
     #[test]
     fn manpage_example_combine_pairs() {
         // paste -s -d '\t\n' myfile
-        let env = make_env(vec!["paste", "-s", "-d", "\\t\\n", "myfile"], "");
+        let env = make_test_env_with_stdin(vec!["paste", "-s", "-d", "\\t\\n", "myfile"], "");
         env.fs.add_file("myfile", "line1\nline2\nline3\nline4\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -644,7 +629,7 @@ mod tests {
     #[test]
     fn manpage_example_colon_list() {
         // find / -name bin -type d | paste -s -d : -
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["paste", "-s", "-d", ":", "-"],
             "/bin\n/usr/bin\n/usr/local/bin\n",
         );

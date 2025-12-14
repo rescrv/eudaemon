@@ -623,22 +623,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     // ========================================================================
     // parse_time_offset tests
@@ -791,7 +776,7 @@ mod tests {
 
     #[test]
     fn no_files_shows_usage() {
-        let env = make_env(vec!["touch"]);
+        let env = make_test_env(vec!["touch"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -801,7 +786,7 @@ mod tests {
 
     #[test]
     fn creates_new_file() {
-        let env = make_env(vec!["touch", "newfile.txt"]);
+        let env = make_test_env(vec!["touch", "newfile.txt"]);
         assert!(!env.fs.exists("newfile.txt"));
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -810,7 +795,7 @@ mod tests {
 
     #[test]
     fn creates_multiple_files() {
-        let env = make_env(vec!["touch", "a.txt", "b.txt", "c.txt"]);
+        let env = make_test_env(vec!["touch", "a.txt", "b.txt", "c.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(env.fs.exists("a.txt"));
@@ -820,7 +805,7 @@ mod tests {
 
     #[test]
     fn c_flag_does_not_create() {
-        let env = make_env(vec!["touch", "-c", "nonexistent.txt"]);
+        let env = make_test_env(vec!["touch", "-c", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("nonexistent.txt"));
@@ -828,7 +813,7 @@ mod tests {
 
     #[test]
     fn c_flag_updates_existing() {
-        let env = make_env(vec!["touch", "-c", "existing.txt"]);
+        let env = make_test_env(vec!["touch", "-c", "existing.txt"]);
         env.fs
             .add_file_with_times("existing.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
@@ -845,7 +830,7 @@ mod tests {
 
     #[test]
     fn a_flag_only_changes_atime() {
-        let env = make_env(vec!["touch", "-a", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-a", "file.txt"]);
         env.fs
             .add_file_with_times("file.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
@@ -858,7 +843,7 @@ mod tests {
 
     #[test]
     fn m_flag_only_changes_mtime() {
-        let env = make_env(vec!["touch", "-m", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-m", "file.txt"]);
         env.fs
             .add_file_with_times("file.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
@@ -871,7 +856,7 @@ mod tests {
 
     #[test]
     fn am_flags_change_both() {
-        let env = make_env(vec!["touch", "-a", "-m", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-a", "-m", "file.txt"]);
         env.fs
             .add_file_with_times("file.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
@@ -887,7 +872,7 @@ mod tests {
 
     #[test]
     fn r_flag_copies_times_from_reference() {
-        let env = make_env(vec!["touch", "-r", "ref.txt", "target.txt"]);
+        let env = make_test_env(vec!["touch", "-r", "ref.txt", "target.txt"]);
         env.fs
             .add_file_with_times("ref.txt", "reference", 5000000, 6000000);
         env.fs
@@ -901,7 +886,7 @@ mod tests {
 
     #[test]
     fn r_flag_creates_file_with_ref_times() {
-        let env = make_env(vec!["touch", "-r", "ref.txt", "newfile.txt"]);
+        let env = make_test_env(vec!["touch", "-r", "ref.txt", "newfile.txt"]);
         env.fs
             .add_file_with_times("ref.txt", "reference", 5000000, 6000000);
         let result = bin(&env).unwrap();
@@ -914,7 +899,7 @@ mod tests {
 
     #[test]
     fn r_flag_nonexistent_ref_fails() {
-        let env = make_env(vec!["touch", "-r", "nonexistent.txt", "target.txt"]);
+        let env = make_test_env(vec!["touch", "-r", "nonexistent.txt", "target.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -928,7 +913,7 @@ mod tests {
 
     #[test]
     fn t_flag_sets_specific_time() {
-        let env = make_env(vec!["touch", "-t", "202001011200", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-t", "202001011200", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stat = env.fs.stat("file.txt").unwrap();
@@ -940,7 +925,7 @@ mod tests {
 
     #[test]
     fn t_flag_with_seconds() {
-        let env = make_env(vec!["touch", "-t", "202001011200.30", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-t", "202001011200.30", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stat = env.fs.stat("file.txt").unwrap();
@@ -955,7 +940,7 @@ mod tests {
 
     #[test]
     fn d_flag_sets_iso_time() {
-        let env = make_env(vec!["touch", "-d", "2020-01-01T12:00:00", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-d", "2020-01-01T12:00:00", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stat = env.fs.stat("file.txt").unwrap();
@@ -966,7 +951,7 @@ mod tests {
 
     #[test]
     fn d_flag_with_fractional_seconds() {
-        let env = make_env(vec!["touch", "-d", "2020-01-01T12:00:00.500", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-d", "2020-01-01T12:00:00.500", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stat = env.fs.stat("file.txt").unwrap();
@@ -981,7 +966,7 @@ mod tests {
 
     #[test]
     fn a_offset_adjusts_times() {
-        let env = make_env(vec!["touch", "-A", "0100", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-A", "0100", "file.txt"]);
         env.fs
             .add_file_with_times("file.txt", "content", 1000000, 2000000);
         let result = bin(&env).unwrap();
@@ -994,7 +979,7 @@ mod tests {
 
     #[test]
     fn a_offset_negative() {
-        let env = make_env(vec!["touch", "-A", "-0100", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-A", "-0100", "file.txt"]);
         env.fs
             .add_file_with_times("file.txt", "content", 1000000, 2000000);
         let result = bin(&env).unwrap();
@@ -1006,7 +991,7 @@ mod tests {
 
     #[test]
     fn a_offset_implies_c() {
-        let env = make_env(vec!["touch", "-A", "0100", "nonexistent.txt"]);
+        let env = make_test_env(vec!["touch", "-A", "0100", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("nonexistent.txt")); // -A implies -c
@@ -1018,7 +1003,7 @@ mod tests {
 
     #[test]
     fn h_flag_implies_c() {
-        let env = make_env(vec!["touch", "-h", "nonexistent.txt"]);
+        let env = make_test_env(vec!["touch", "-h", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("nonexistent.txt"));
@@ -1026,7 +1011,7 @@ mod tests {
 
     #[test]
     fn h_flag_changes_symlink_times() {
-        let env = make_env(vec!["touch", "-h", "-t", "202001011200", "link"]);
+        let env = make_test_env(vec!["touch", "-h", "-t", "202001011200", "link"]);
         env.fs.add_file("target.txt", "content");
         env.fs.add_symlink("link", "target.txt");
         let result = bin(&env).unwrap();
@@ -1044,7 +1029,7 @@ mod tests {
     #[test]
     fn obsolescent_8_digit_time() {
         // MMDDhhmm format with current year
-        let env = make_env(vec!["touch", "01011200", "file.txt"]);
+        let env = make_test_env(vec!["touch", "01011200", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(env.fs.exists("file.txt"));
@@ -1057,7 +1042,7 @@ mod tests {
     #[test]
     fn obsolescent_10_digit_time() {
         // MMDDhhmmYY format
-        let env = make_env(vec!["touch", "0101120024", "file.txt"]);
+        let env = make_test_env(vec!["touch", "0101120024", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(env.fs.exists("file.txt"));
@@ -1072,7 +1057,7 @@ mod tests {
 
     #[test]
     fn invalid_t_arg_shows_error() {
-        let env = make_env(vec!["touch", "-t", "invalid", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-t", "invalid", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1082,7 +1067,7 @@ mod tests {
 
     #[test]
     fn invalid_d_arg_shows_error() {
-        let env = make_env(vec!["touch", "-d", "invalid", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-d", "invalid", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1092,7 +1077,7 @@ mod tests {
 
     #[test]
     fn invalid_a_offset_shows_error() {
-        let env = make_env(vec!["touch", "-A", "invalid", "file.txt"]);
+        let env = make_test_env(vec!["touch", "-A", "invalid", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();

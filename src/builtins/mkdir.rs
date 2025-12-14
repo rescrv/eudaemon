@@ -154,24 +154,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TestEnvBuilder;
     use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
     ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        let fs = MockFilesystem::new();
-        // Create root directory marker
-        fs.add_directory("/");
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs,
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        TestEnvBuilder::new().args(args).with_root_dir().build()
     }
 
     // ========================================================================

@@ -95,26 +95,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn simple_path() {
-        let env = make_env(vec!["basename", "/usr/bin/sort"]);
+        let env = make_test_env(vec!["basename", "/usr/bin/sort"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("sort\n", env.stdout.into_string());
@@ -122,7 +107,7 @@ mod tests {
 
     #[test]
     fn with_suffix() {
-        let env = make_env(vec!["basename", "include/stdio.h", ".h"]);
+        let env = make_test_env(vec!["basename", "include/stdio.h", ".h"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("stdio\n", env.stdout.into_string());
@@ -130,7 +115,7 @@ mod tests {
 
     #[test]
     fn suffix_not_present() {
-        let env = make_env(vec!["basename", "include/stdio.h", ".c"]);
+        let env = make_test_env(vec!["basename", "include/stdio.h", ".c"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("stdio.h\n", env.stdout.into_string());
@@ -139,7 +124,7 @@ mod tests {
     #[test]
     fn suffix_equals_basename() {
         // Suffix should not be removed if it equals the entire basename
-        let env = make_env(vec!["basename", "/foo/.h", ".h"]);
+        let env = make_test_env(vec!["basename", "/foo/.h", ".h"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!(".h\n", env.stdout.into_string());
@@ -147,7 +132,7 @@ mod tests {
 
     #[test]
     fn trailing_slash() {
-        let env = make_env(vec!["basename", "/usr/bin/"]);
+        let env = make_test_env(vec!["basename", "/usr/bin/"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -158,7 +143,7 @@ mod tests {
 
     #[test]
     fn root_path() {
-        let env = make_env(vec!["basename", "/"]);
+        let env = make_test_env(vec!["basename", "/"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -169,7 +154,7 @@ mod tests {
 
     #[test]
     fn simple_filename() {
-        let env = make_env(vec!["basename", "stdio.h"]);
+        let env = make_test_env(vec!["basename", "stdio.h"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("stdio.h\n", env.stdout.into_string());
@@ -177,7 +162,7 @@ mod tests {
 
     #[test]
     fn aflag_multiple_paths() {
-        let env = make_env(vec!["basename", "-a", "/usr/bin/sort", "/usr/bin/cat"]);
+        let env = make_test_env(vec!["basename", "-a", "/usr/bin/sort", "/usr/bin/cat"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("sort\ncat\n", env.stdout.into_string());
@@ -185,7 +170,7 @@ mod tests {
 
     #[test]
     fn sflag_with_suffix() {
-        let env = make_env(vec!["basename", "-s", ".h", "stdio.h", "stdlib.h"]);
+        let env = make_test_env(vec!["basename", "-s", ".h", "stdio.h", "stdlib.h"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("stdio\nstdlib\n", env.stdout.into_string());
@@ -193,7 +178,7 @@ mod tests {
 
     #[test]
     fn missing_operand() {
-        let env = make_env(vec!["basename"]);
+        let env = make_test_env(vec!["basename"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -203,7 +188,7 @@ mod tests {
 
     #[test]
     fn extra_operand_without_aflag() {
-        let env = make_env(vec!["basename", "a", "b", "c"]);
+        let env = make_test_env(vec!["basename", "a", "b", "c"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -213,7 +198,7 @@ mod tests {
 
     #[test]
     fn sflag_missing_argument() {
-        let env = make_env(vec!["basename", "-s"]);
+        let env = make_test_env(vec!["basename", "-s"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -223,7 +208,7 @@ mod tests {
 
     #[test]
     fn empty_string() {
-        let env = make_env(vec!["basename", ""]);
+        let env = make_test_env(vec!["basename", ""]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();

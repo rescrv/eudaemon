@@ -80,23 +80,7 @@ fn format_io_error(e: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -104,7 +88,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["tee"], "");
+        let env = make_test_env_with_stdin(vec!["tee"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -112,7 +96,7 @@ mod tests {
 
     #[test]
     fn single_line_no_files() {
-        let env = make_env(vec!["tee"], "hello");
+        let env = make_test_env_with_stdin(vec!["tee"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -120,7 +104,7 @@ mod tests {
 
     #[test]
     fn multiple_lines_no_files() {
-        let env = make_env(vec!["tee"], "line1\nline2\nline3");
+        let env = make_test_env_with_stdin(vec!["tee"], "line1\nline2\nline3");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("line1\nline2\nline3\n", env.stdout.into_string());
@@ -128,7 +112,7 @@ mod tests {
 
     #[test]
     fn single_file() {
-        let env = make_env(vec!["tee", "output.txt"], "hello world");
+        let env = make_test_env_with_stdin(vec!["tee", "output.txt"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello world\n", env.stdout.into_string());
@@ -140,7 +124,7 @@ mod tests {
 
     #[test]
     fn multiple_files() {
-        let env = make_env(vec!["tee", "a.txt", "b.txt", "c.txt"], "data");
+        let env = make_test_env_with_stdin(vec!["tee", "a.txt", "b.txt", "c.txt"], "data");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("data\n", env.stdout.into_string());
@@ -151,7 +135,7 @@ mod tests {
 
     #[test]
     fn multiple_lines_to_file() {
-        let env = make_env(vec!["tee", "output.txt"], "line1\nline2\nline3");
+        let env = make_test_env_with_stdin(vec!["tee", "output.txt"], "line1\nline2\nline3");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("line1\nline2\nline3\n", env.stdout.into_string());
@@ -167,7 +151,7 @@ mod tests {
 
     #[test]
     fn append_to_existing_file() {
-        let env = make_env(vec!["tee", "-a", "output.txt"], "new data");
+        let env = make_test_env_with_stdin(vec!["tee", "-a", "output.txt"], "new data");
         env.fs.add_file("output.txt", "existing\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -180,7 +164,7 @@ mod tests {
 
     #[test]
     fn append_to_nonexistent_file() {
-        let env = make_env(vec!["tee", "-a", "new.txt"], "data");
+        let env = make_test_env_with_stdin(vec!["tee", "-a", "new.txt"], "data");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("data\n", env.stdout.into_string());
@@ -189,7 +173,7 @@ mod tests {
 
     #[test]
     fn append_multiple_files() {
-        let env = make_env(vec!["tee", "-a", "a.txt", "b.txt"], "appended");
+        let env = make_test_env_with_stdin(vec!["tee", "-a", "a.txt", "b.txt"], "appended");
         env.fs.add_file("a.txt", "file a\n");
         env.fs.add_file("b.txt", "file b\n");
         let result = bin(&env).unwrap();
@@ -206,7 +190,7 @@ mod tests {
 
     #[test]
     fn overwrite_existing_file() {
-        let env = make_env(vec!["tee", "output.txt"], "new data");
+        let env = make_test_env_with_stdin(vec!["tee", "output.txt"], "new data");
         env.fs
             .add_file("output.txt", "old data that should be gone\n");
         let result = bin(&env).unwrap();
@@ -220,7 +204,7 @@ mod tests {
 
     #[test]
     fn ignore_sigint_flag() {
-        let env = make_env(vec!["tee", "-i", "output.txt"], "data");
+        let env = make_test_env_with_stdin(vec!["tee", "-i", "output.txt"], "data");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("data\n", env.stdout.into_string());
@@ -229,7 +213,7 @@ mod tests {
 
     #[test]
     fn both_flags() {
-        let env = make_env(vec!["tee", "-ai", "output.txt"], "new");
+        let env = make_test_env_with_stdin(vec!["tee", "-ai", "output.txt"], "new");
         env.fs.add_file("output.txt", "old\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -242,7 +226,7 @@ mod tests {
 
     #[test]
     fn illegal_option() {
-        let env = make_env(vec!["tee", "-x"], "");
+        let env = make_test_env_with_stdin(vec!["tee", "-x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -252,7 +236,7 @@ mod tests {
 
     #[test]
     fn double_dash_ends_options() {
-        let env = make_env(vec!["tee", "--", "-a"], "data");
+        let env = make_test_env_with_stdin(vec!["tee", "--", "-a"], "data");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // "-a" should be treated as a filename, not an option
@@ -265,7 +249,7 @@ mod tests {
 
     #[test]
     fn empty_filename() {
-        let env = make_env(vec!["tee", ""], "data");
+        let env = make_test_env_with_stdin(vec!["tee", ""], "data");
         let result = bin(&env).unwrap();
         // Empty filename writes to a file named ""
         assert_eq!(0, result.code());
@@ -274,7 +258,7 @@ mod tests {
 
     #[test]
     fn same_file_twice() {
-        let env = make_env(vec!["tee", "dup.txt", "dup.txt"], "data");
+        let env = make_test_env_with_stdin(vec!["tee", "dup.txt", "dup.txt"], "data");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Writing to the same file twice should result in double the data
@@ -283,7 +267,7 @@ mod tests {
 
     #[test]
     fn preserves_blank_lines() {
-        let env = make_env(vec!["tee", "output.txt"], "a\n\nb");
+        let env = make_test_env_with_stdin(vec!["tee", "output.txt"], "a\n\nb");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\n\nb\n", env.stdout.into_string());
@@ -292,7 +276,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_lines() {
-        let env = make_env(vec!["tee", "output.txt"], "  \n\t\n   ");
+        let env = make_test_env_with_stdin(vec!["tee", "output.txt"], "  \n\t\n   ");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("  \n\t\n   \n", env.stdout.into_string());

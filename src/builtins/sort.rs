@@ -841,23 +841,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -865,7 +849,7 @@ mod tests {
 
     #[test]
     fn basic_sort() {
-        let env = make_env(vec!["sort"], "banana\napple\ncherry\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "banana\napple\ncherry\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -875,7 +859,7 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let env = make_env(vec!["sort"], "");
+        let env = make_test_env_with_stdin(vec!["sort"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -883,7 +867,7 @@ mod tests {
 
     #[test]
     fn single_line() {
-        let env = make_env(vec!["sort"], "hello\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "hello\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -891,7 +875,7 @@ mod tests {
 
     #[test]
     fn already_sorted() {
-        let env = make_env(vec!["sort"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\nc\n", env.stdout.into_string());
@@ -899,7 +883,7 @@ mod tests {
 
     #[test]
     fn reverse_sorted() {
-        let env = make_env(vec!["sort"], "c\nb\na\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "c\nb\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\nc\n", env.stdout.into_string());
@@ -907,7 +891,7 @@ mod tests {
 
     #[test]
     fn duplicate_lines() {
-        let env = make_env(vec!["sort"], "b\na\nb\na\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "b\na\nb\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\na\nb\nb\n", env.stdout.into_string());
@@ -919,7 +903,7 @@ mod tests {
 
     #[test]
     fn reverse() {
-        let env = make_env(vec!["sort", "-r"], "apple\nbanana\ncherry\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-r"], "apple\nbanana\ncherry\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -929,7 +913,7 @@ mod tests {
 
     #[test]
     fn reverse_long_form() {
-        let env = make_env(vec!["sort", "--reverse"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "--reverse"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("c\nb\na\n", env.stdout.into_string());
@@ -941,7 +925,7 @@ mod tests {
 
     #[test]
     fn numeric() {
-        let env = make_env(vec!["sort", "-n"], "10\n2\n1\n20\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "10\n2\n1\n20\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -951,7 +935,7 @@ mod tests {
 
     #[test]
     fn numeric_long_form() {
-        let env = make_env(vec!["sort", "--numeric-sort"], "10\n2\n1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "--numeric-sort"], "10\n2\n1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n2\n10\n", env.stdout.into_string());
@@ -959,7 +943,7 @@ mod tests {
 
     #[test]
     fn numeric_negative() {
-        let env = make_env(vec!["sort", "-n"], "5\n-3\n0\n-10\n10\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "5\n-3\n0\n-10\n10\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -969,7 +953,7 @@ mod tests {
 
     #[test]
     fn numeric_with_text() {
-        let env = make_env(vec!["sort", "-n"], "10\nabc\n2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "10\nabc\n2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -984,7 +968,7 @@ mod tests {
 
     #[test]
     fn ignore_case() {
-        let env = make_env(vec!["sort", "-f"], "Banana\napple\nCherry\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-f"], "Banana\napple\nCherry\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -994,7 +978,7 @@ mod tests {
 
     #[test]
     fn ignore_case_long_form() {
-        let env = make_env(vec!["sort", "--ignore-case"], "B\na\nC\n");
+        let env = make_test_env_with_stdin(vec!["sort", "--ignore-case"], "B\na\nC\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nB\nC\n", env.stdout.into_string());
@@ -1006,7 +990,7 @@ mod tests {
 
     #[test]
     fn ignore_leading_blanks() {
-        let env = make_env(vec!["sort", "-b"], "  b\na\n   c\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-b"], "  b\na\n   c\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1020,7 +1004,7 @@ mod tests {
 
     #[test]
     fn unique() {
-        let env = make_env(vec!["sort", "-u"], "b\na\nb\na\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-u"], "b\na\nb\na\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1030,7 +1014,7 @@ mod tests {
 
     #[test]
     fn unique_long_form() {
-        let env = make_env(vec!["sort", "--unique"], "a\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "--unique"], "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\n", env.stdout.into_string());
@@ -1042,7 +1026,7 @@ mod tests {
 
     #[test]
     fn key_second_field() {
-        let env = make_env(vec!["sort", "-k2"], "1 b\n2 a\n3 c\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k2"], "1 b\n2 a\n3 c\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1052,7 +1036,7 @@ mod tests {
 
     #[test]
     fn key_numeric_second_field() {
-        let env = make_env(vec!["sort", "-k2n"], "a 10\nb 2\nc 1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k2n"], "a 10\nb 2\nc 1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1062,7 +1046,7 @@ mod tests {
 
     #[test]
     fn key_with_range() {
-        let env = make_env(vec!["sort", "-k1,1"], "ab x\naa y\nac z\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k1,1"], "ab x\naa y\nac z\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1077,7 +1061,7 @@ mod tests {
 
     #[test]
     fn field_separator() {
-        let env = make_env(vec!["sort", "-t:", "-k2"], "a:b\nc:a\ne:c\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-t:", "-k2"], "a:b\nc:a\ne:c\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1087,7 +1071,7 @@ mod tests {
 
     #[test]
     fn field_separator_comma() {
-        let env = make_env(vec!["sort", "-t,", "-k2n"], "a,10\nb,2\nc,1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-t,", "-k2n"], "a,10\nb,2\nc,1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1101,14 +1085,14 @@ mod tests {
 
     #[test]
     fn check_sorted_ok() {
-        let env = make_env(vec!["sort", "-c"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-c"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn check_sorted_fail() {
-        let env = make_env(vec!["sort", "-c"], "b\na\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-c"], "b\na\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1118,7 +1102,7 @@ mod tests {
 
     #[test]
     fn check_sorted_silent_fail() {
-        let env = make_env(vec!["sort", "-C"], "b\na\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-C"], "b\na\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         assert_eq!("", env.stderr.into_string());
@@ -1130,7 +1114,7 @@ mod tests {
 
     #[test]
     fn human_numeric() {
-        let env = make_env(vec!["sort", "-h"], "1G\n1K\n1M\n1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-h"], "1G\n1K\n1M\n1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1144,7 +1128,7 @@ mod tests {
 
     #[test]
     fn month_sort() {
-        let env = make_env(vec!["sort", "-M"], "Mar\nJan\nFeb\nDec\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-M"], "Mar\nJan\nFeb\nDec\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1154,7 +1138,7 @@ mod tests {
 
     #[test]
     fn month_sort_case_insensitive() {
-        let env = make_env(vec!["sort", "-M"], "mar\nJAN\nfeb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-M"], "mar\nJAN\nfeb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1168,7 +1152,7 @@ mod tests {
 
     #[test]
     fn version_sort() {
-        let env = make_env(vec!["sort", "-V"], "1.10\n1.2\n1.1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-V"], "1.10\n1.2\n1.1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1178,7 +1162,7 @@ mod tests {
 
     #[test]
     fn version_sort_with_prefix() {
-        let env = make_env(vec!["sort", "-V"], "v2.0\nv1.10\nv1.2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-V"], "v2.0\nv1.10\nv1.2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1192,7 +1176,7 @@ mod tests {
 
     #[test]
     fn output_file() {
-        let env = make_env(vec!["sort", "-o", "output.txt"], "c\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-o", "output.txt"], "c\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -1205,7 +1189,7 @@ mod tests {
 
     #[test]
     fn read_from_file() {
-        let env = make_env(vec!["sort", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["sort", "input.txt"], "");
         env.fs.add_file("input.txt", "c\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -1214,7 +1198,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["sort", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["sort", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         // sort continues on file errors, returning success but with error message
         assert_eq!(0, result.code());
@@ -1225,7 +1209,7 @@ mod tests {
 
     #[test]
     fn multiple_files() {
-        let env = make_env(vec!["sort", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["sort", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "c\na\n");
         env.fs.add_file("b.txt", "d\nb\n");
         let result = bin(&env).unwrap();
@@ -1241,7 +1225,7 @@ mod tests {
 
     #[test]
     fn numeric_reverse() {
-        let env = make_env(vec!["sort", "-nr"], "1\n10\n2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-nr"], "1\n10\n2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1251,7 +1235,7 @@ mod tests {
 
     #[test]
     fn key_reverse() {
-        let env = make_env(vec!["sort", "-k2r"], "a 1\nb 3\nc 2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k2r"], "a 1\nb 3\nc 2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1316,7 +1300,7 @@ mod tests {
 
     #[test]
     fn no_trailing_newline() {
-        let env = make_env(vec!["sort"], "b\na");
+        let env = make_test_env_with_stdin(vec!["sort"], "b\na");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1326,7 +1310,7 @@ mod tests {
 
     #[test]
     fn empty_lines() {
-        let env = make_env(vec!["sort"], "b\n\na\n\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "b\n\na\n\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1336,7 +1320,7 @@ mod tests {
 
     #[test]
     fn help_flag() {
-        let env = make_env(vec!["sort", "--help"], "");
+        let env = make_test_env_with_stdin(vec!["sort", "--help"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1346,7 +1330,7 @@ mod tests {
 
     #[test]
     fn version_flag() {
-        let env = make_env(vec!["sort", "--version"], "");
+        let env = make_test_env_with_stdin(vec!["sort", "--version"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1360,7 +1344,7 @@ mod tests {
 
     #[test]
     fn numeric_with_leading_spaces() {
-        let env = make_env(vec!["sort", "-n"], "  10\n 2\n1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "  10\n 2\n1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1370,7 +1354,7 @@ mod tests {
 
     #[test]
     fn numeric_with_decimals() {
-        let env = make_env(vec!["sort", "-n"], "1.5\n1.25\n1.1\n2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "1.5\n1.25\n1.1\n2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1380,7 +1364,7 @@ mod tests {
 
     #[test]
     fn numeric_all_zeros() {
-        let env = make_env(vec!["sort", "-n"], "0\n0\n0\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "0\n0\n0\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0\n0\n0\n", env.stdout.into_string());
@@ -1388,7 +1372,7 @@ mod tests {
 
     #[test]
     fn numeric_large_numbers() {
-        let env = make_env(vec!["sort", "-n"], "1000000\n100\n10000\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-n"], "1000000\n100\n10000\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("100\n10000\n1000000\n", env.stdout.into_string());
@@ -1400,7 +1384,7 @@ mod tests {
 
     #[test]
     fn key_third_field() {
-        let env = make_env(vec!["sort", "-k3"], "a b c\nd e a\ng h b\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k3"], "a b c\nd e a\ng h b\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1410,7 +1394,7 @@ mod tests {
 
     #[test]
     fn key_beyond_fields_empty() {
-        let env = make_env(vec!["sort", "-k5"], "a b\nc d\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k5"], "a b\nc d\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1421,7 +1405,7 @@ mod tests {
 
     #[test]
     fn key_with_char_position() {
-        let env = make_env(vec!["sort", "-k1.2"], "abc\naaa\nabc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k1.2"], "abc\naaa\nabc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1432,7 +1416,7 @@ mod tests {
 
     #[test]
     fn multiple_keys() {
-        let env = make_env(vec!["sort", "-k1,1", "-k2n"], "a 10\na 2\nb 1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k1,1", "-k2n"], "a 10\na 2\nb 1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1443,7 +1427,7 @@ mod tests {
 
     #[test]
     fn multiple_keys_with_reverse() {
-        let env = make_env(vec!["sort", "-k1,1", "-k2nr"], "a 10\na 2\nb 1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k1,1", "-k2nr"], "a 10\na 2\nb 1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1454,7 +1438,7 @@ mod tests {
 
     #[test]
     fn key_invalid_zero_field() {
-        let env = make_env(vec!["sort", "-k0"], "a\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k0"], "a\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(2, result.code());
         let stderr = env.stderr.into_string();
@@ -1468,7 +1452,7 @@ mod tests {
 
     #[test]
     fn field_separator_tab() {
-        let env = make_env(vec!["sort", "-t\t", "-k2"], "a\tb\nc\ta\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-t\t", "-k2"], "a\tb\nc\ta\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1478,7 +1462,7 @@ mod tests {
 
     #[test]
     fn field_separator_empty_fields() {
-        let env = make_env(vec!["sort", "-t:", "-k3"], "a::c\nb::a\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-t:", "-k3"], "a::c\nb::a\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1488,7 +1472,7 @@ mod tests {
 
     #[test]
     fn field_separator_empty_error() {
-        let env = make_env(vec!["sort", "-t", ""], "a\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-t", ""], "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(2, result.code());
         let stderr = env.stderr.into_string();
@@ -1502,7 +1486,7 @@ mod tests {
 
     #[test]
     fn unique_case_insensitive() {
-        let env = make_env(vec!["sort", "-uf"], "A\na\nB\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-uf"], "A\na\nB\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1513,7 +1497,7 @@ mod tests {
 
     #[test]
     fn unique_numeric() {
-        let env = make_env(vec!["sort", "-un"], "10\n2\n10\n2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-un"], "10\n2\n10\n2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1523,7 +1507,7 @@ mod tests {
 
     #[test]
     fn unique_by_key() {
-        let env = make_env(vec!["sort", "-u", "-k1,1"], "a 1\na 2\nb 1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-u", "-k1,1"], "a 1\na 2\nb 1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1538,28 +1522,28 @@ mod tests {
 
     #[test]
     fn check_sorted_numeric() {
-        let env = make_env(vec!["sort", "-cn"], "1\n2\n10\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-cn"], "1\n2\n10\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn check_sorted_numeric_fail() {
-        let env = make_env(vec!["sort", "-cn"], "1\n10\n2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-cn"], "1\n10\n2\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
 
     #[test]
     fn check_sorted_with_duplicates() {
-        let env = make_env(vec!["sort", "-c"], "a\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-c"], "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn check_sorted_unique_with_duplicates() {
-        let env = make_env(vec!["sort", "-cu"], "a\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-cu"], "a\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1569,14 +1553,14 @@ mod tests {
 
     #[test]
     fn check_sorted_reverse() {
-        let env = make_env(vec!["sort", "-cr"], "c\nb\na\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-cr"], "c\nb\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn check_sorted_reverse_fail() {
-        let env = make_env(vec!["sort", "-cr"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-cr"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
@@ -1587,7 +1571,7 @@ mod tests {
 
     #[test]
     fn human_numeric_mixed() {
-        let env = make_env(vec!["sort", "-h"], "500\n1K\n2K\n100\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-h"], "500\n1K\n2K\n100\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1597,7 +1581,7 @@ mod tests {
 
     #[test]
     fn human_numeric_terabytes() {
-        let env = make_env(vec!["sort", "-h"], "1T\n1G\n1M\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-h"], "1T\n1G\n1M\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1607,7 +1591,7 @@ mod tests {
 
     #[test]
     fn human_numeric_with_decimals() {
-        let env = make_env(vec!["sort", "-h"], "1.5K\n1K\n2K\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-h"], "1.5K\n1K\n2K\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1621,7 +1605,7 @@ mod tests {
 
     #[test]
     fn month_sort_all_months() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["sort", "-M"],
             "Jul\nJan\nMar\nNov\nMay\nSep\nFeb\nApr\nJun\nAug\nOct\nDec\n",
         );
@@ -1637,7 +1621,7 @@ mod tests {
 
     #[test]
     fn month_sort_unknown_first() {
-        let env = make_env(vec!["sort", "-M"], "Jan\nFoo\nFeb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-M"], "Jan\nFoo\nFeb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1648,7 +1632,7 @@ mod tests {
 
     #[test]
     fn month_sort_full_names() {
-        let env = make_env(vec!["sort", "-M"], "March\nJanuary\nFebruary\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-M"], "March\nJanuary\nFebruary\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1662,7 +1646,7 @@ mod tests {
 
     #[test]
     fn version_sort_complex() {
-        let env = make_env(vec!["sort", "-V"], "1.0.0\n1.0.10\n1.0.2\n1.0.1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-V"], "1.0.0\n1.0.10\n1.0.2\n1.0.1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1672,7 +1656,7 @@ mod tests {
 
     #[test]
     fn version_sort_with_suffix() {
-        let env = make_env(vec!["sort", "-V"], "1.0-beta\n1.0-alpha\n1.0\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-V"], "1.0-beta\n1.0-alpha\n1.0\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1682,7 +1666,7 @@ mod tests {
 
     #[test]
     fn version_sort_leading_zeros() {
-        let env = make_env(vec!["sort", "-V"], "1.01\n1.1\n1.001\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-V"], "1.01\n1.1\n1.001\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1697,7 +1681,7 @@ mod tests {
 
     #[test]
     fn dictionary_order() {
-        let env = make_env(vec!["sort", "-d"], "a-b\nab\na b\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-d"], "a-b\nab\na b\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1708,7 +1692,7 @@ mod tests {
 
     #[test]
     fn dictionary_order_with_numbers() {
-        let env = make_env(vec!["sort", "-d"], "a1\na-1\na 1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-d"], "a1\na-1\na 1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1724,7 +1708,7 @@ mod tests {
 
     #[test]
     fn ignore_nonprinting() {
-        let env = make_env(vec!["sort", "-i"], "a\x01b\nab\nac\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-i"], "a\x01b\nab\nac\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1739,7 +1723,7 @@ mod tests {
 
     #[test]
     fn stable_sort() {
-        let env = make_env(vec!["sort", "-s", "-k1,1"], "a 2\na 1\nb 1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-s", "-k1,1"], "a 2\na 1\nb 1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1750,7 +1734,7 @@ mod tests {
 
     #[test]
     fn stable_sort_preserves_order() {
-        let env = make_env(vec!["sort", "-s", "-k1,1"], "a 3\na 1\na 2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-s", "-k1,1"], "a 3\na 1\na 2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1765,7 +1749,7 @@ mod tests {
 
     #[test]
     fn stdin_with_dash() {
-        let env = make_env(vec!["sort", "-"], "c\na\nb\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-"], "c\na\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\nc\n", env.stdout.into_string());
@@ -1773,7 +1757,7 @@ mod tests {
 
     #[test]
     fn stdin_and_file_combined() {
-        let env = make_env(vec!["sort", "-", "file.txt"], "c\na\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-", "file.txt"], "c\na\n");
         env.fs.add_file("file.txt", "d\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -1784,7 +1768,7 @@ mod tests {
 
     #[test]
     fn multiple_files_interleaved() {
-        let env = make_env(vec!["sort", "a.txt", "b.txt", "c.txt"], "");
+        let env = make_test_env_with_stdin(vec!["sort", "a.txt", "b.txt", "c.txt"], "");
         env.fs.add_file("a.txt", "z\n");
         env.fs.add_file("b.txt", "a\n");
         env.fs.add_file("c.txt", "m\n");
@@ -1801,7 +1785,7 @@ mod tests {
     fn very_long_line() {
         let long_line = "a".repeat(10000);
         let input = format!("{}\nb\n", long_line);
-        let env = make_env(vec!["sort"], &input);
+        let env = make_test_env_with_stdin(vec!["sort"], &input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1810,7 +1794,7 @@ mod tests {
 
     #[test]
     fn unicode_characters() {
-        let env = make_env(vec!["sort"], "café\nカフェ\nalpha\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "café\nカフェ\nalpha\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1821,7 +1805,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_lines() {
-        let env = make_env(vec!["sort"], "   \n\t\n \n");
+        let env = make_test_env_with_stdin(vec!["sort"], "   \n\t\n \n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1832,7 +1816,7 @@ mod tests {
 
     #[test]
     fn single_character_lines() {
-        let env = make_env(vec!["sort"], "z\na\nm\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "z\na\nm\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nm\nz\n", env.stdout.into_string());
@@ -1840,7 +1824,7 @@ mod tests {
 
     #[test]
     fn lines_with_only_numbers() {
-        let env = make_env(vec!["sort"], "3\n1\n2\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "3\n1\n2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Lexicographic sort, not numeric
@@ -1849,7 +1833,7 @@ mod tests {
 
     #[test]
     fn lexicographic_vs_numeric() {
-        let env = make_env(vec!["sort"], "9\n10\n100\n");
+        let env = make_test_env_with_stdin(vec!["sort"], "9\n10\n100\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Lexicographic: "10" < "100" < "9"
@@ -1862,7 +1846,7 @@ mod tests {
 
     #[test]
     fn invalid_option() {
-        let env = make_env(vec!["sort", "--invalid-option"], "a\n");
+        let env = make_test_env_with_stdin(vec!["sort", "--invalid-option"], "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(2, result.code());
         let stderr = env.stderr.into_string();
@@ -1873,7 +1857,7 @@ mod tests {
     #[test]
     fn output_file_error() {
         // MockFilesystem always succeeds on write, so we just verify the path is used
-        let env = make_env(vec!["sort", "-o", "/some/path/output.txt"], "b\na\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-o", "/some/path/output.txt"], "b\na\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!(
@@ -1888,7 +1872,7 @@ mod tests {
 
     #[test]
     fn numeric_unique_reverse() {
-        let env = make_env(vec!["sort", "-nur"], "1\n2\n2\n3\n1\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-nur"], "1\n2\n2\n3\n1\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1898,7 +1882,7 @@ mod tests {
 
     #[test]
     fn key_with_all_modifiers() {
-        let env = make_env(vec!["sort", "-k2,2bf"], "a  B\nb  a\nc  C\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-k2,2bf"], "a  B\nb  a\nc  C\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1909,14 +1893,14 @@ mod tests {
 
     #[test]
     fn check_with_key() {
-        let env = make_env(vec!["sort", "-c", "-k2n"], "a 1\nb 2\nc 3\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-c", "-k2n"], "a 1\nb 2\nc 3\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn check_with_key_fail() {
-        let env = make_env(vec!["sort", "-c", "-k2n"], "a 1\nb 3\nc 2\n");
+        let env = make_test_env_with_stdin(vec!["sort", "-c", "-k2n"], "a 1\nb 3\nc 2\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }

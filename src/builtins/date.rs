@@ -899,22 +899,7 @@ fn expand_nanoseconds(format: &str, nsecs: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     // ========================================================================
     // Basic functionality tests
@@ -922,7 +907,7 @@ mod tests {
 
     #[test]
     fn default_output_produces_something() {
-        let env = make_env(vec!["date"]);
+        let env = make_test_env(vec!["date"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -933,7 +918,7 @@ mod tests {
 
     #[test]
     fn seconds_since_epoch_format() {
-        let env = make_env(vec!["date", "-r", "0", "+%s"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%s"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -943,7 +928,7 @@ mod tests {
 
     #[test]
     fn specific_timestamp_format() {
-        let env = make_env(vec!["date", "-r", "1000000000", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "1000000000", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -953,7 +938,7 @@ mod tests {
 
     #[test]
     fn unix_epoch_year() {
-        let env = make_env(vec!["date", "-r", "0", "+%Y"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%Y"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970\n", env.stdout.into_string());
@@ -965,7 +950,7 @@ mod tests {
 
     #[test]
     fn utc_flag_accepted() {
-        let env = make_env(vec!["date", "-u", "-r", "0", "+%H:%M:%S"]);
+        let env = make_test_env(vec!["date", "-u", "-r", "0", "+%H:%M:%S"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -979,7 +964,7 @@ mod tests {
 
     #[test]
     fn rfc2822_format() {
-        let env = make_env(vec!["date", "-R", "-r", "0"]);
+        let env = make_test_env(vec!["date", "-R", "-r", "0"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -994,7 +979,7 @@ mod tests {
 
     #[test]
     fn iso8601_date_only() {
-        let env = make_env(vec!["date", "-I", "-r", "1000000000"]);
+        let env = make_test_env(vec!["date", "-I", "-r", "1000000000"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1004,7 +989,7 @@ mod tests {
 
     #[test]
     fn iso8601_date_explicit() {
-        let env = make_env(vec!["date", "-Idate", "-r", "1000000000"]);
+        let env = make_test_env(vec!["date", "-Idate", "-r", "1000000000"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("2001-09-09\n", env.stdout.into_string());
@@ -1012,7 +997,7 @@ mod tests {
 
     #[test]
     fn iso8601_hours() {
-        let env = make_env(vec!["date", "-Ihours", "-r", "1000000000"]);
+        let env = make_test_env(vec!["date", "-Ihours", "-r", "1000000000"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1023,7 +1008,7 @@ mod tests {
 
     #[test]
     fn iso8601_minutes() {
-        let env = make_env(vec!["date", "-Iminutes", "-r", "1000000000"]);
+        let env = make_test_env(vec!["date", "-Iminutes", "-r", "1000000000"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1033,7 +1018,7 @@ mod tests {
 
     #[test]
     fn iso8601_seconds() {
-        let env = make_env(vec!["date", "-Iseconds", "-r", "1000000000"]);
+        let env = make_test_env(vec!["date", "-Iseconds", "-r", "1000000000"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1043,7 +1028,7 @@ mod tests {
 
     #[test]
     fn iso8601_nanoseconds() {
-        let env = make_env(vec!["date", "-Ins", "-r", "1000000000"]);
+        let env = make_test_env(vec!["date", "-Ins", "-r", "1000000000"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1053,7 +1038,7 @@ mod tests {
 
     #[test]
     fn iso8601_invalid_format() {
-        let env = make_env(vec!["date", "-Iinvalid"]);
+        let env = make_test_env(vec!["date", "-Iinvalid"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1067,7 +1052,7 @@ mod tests {
 
     #[test]
     fn multiple_formats_iso_and_rfc() {
-        let env = make_env(vec!["date", "-I", "-R"]);
+        let env = make_test_env(vec!["date", "-I", "-R"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1079,7 +1064,7 @@ mod tests {
     fn multiple_formats_iso_and_plus() {
         // Use -Idate to ensure -I gets a valid optional argument,
         // then +%Y is a separate output format
-        let env = make_env(vec!["date", "-Idate", "+%Y"]);
+        let env = make_test_env(vec!["date", "-Idate", "+%Y"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1093,7 +1078,7 @@ mod tests {
 
     #[test]
     fn reference_seconds() {
-        let env = make_env(vec!["date", "-r", "86400", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "86400", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970-01-02\n", env.stdout.into_string());
@@ -1101,7 +1086,7 @@ mod tests {
 
     #[test]
     fn reference_negative_seconds() {
-        let env = make_env(vec!["date", "-r", "-86400", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "-86400", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1969-12-31\n", env.stdout.into_string());
@@ -1109,7 +1094,7 @@ mod tests {
 
     #[test]
     fn reference_file() {
-        let env = make_env(vec!["date", "-r", "test.txt", "+%s"]);
+        let env = make_test_env(vec!["date", "-r", "test.txt", "+%s"]);
         env.fs.add_file("test.txt", "content");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -1120,7 +1105,7 @@ mod tests {
 
     #[test]
     fn reference_file_not_found() {
-        let env = make_env(vec!["date", "-r", "nonexistent.txt"]);
+        let env = make_test_env(vec!["date", "-r", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1134,7 +1119,7 @@ mod tests {
 
     #[test]
     fn format_year_month_day() {
-        let env = make_env(vec!["date", "-r", "1234567890", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "1234567890", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1144,7 +1129,7 @@ mod tests {
 
     #[test]
     fn format_hour_minute_second() {
-        let env = make_env(vec!["date", "-r", "0", "+%H:%M:%S"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%H:%M:%S"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("00:00:00\n", env.stdout.into_string());
@@ -1152,7 +1137,7 @@ mod tests {
 
     #[test]
     fn format_weekday() {
-        let env = make_env(vec!["date", "-r", "0", "+%A"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%A"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Thursday\n", env.stdout.into_string());
@@ -1160,7 +1145,7 @@ mod tests {
 
     #[test]
     fn format_month_name() {
-        let env = make_env(vec!["date", "-r", "0", "+%B"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%B"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("January\n", env.stdout.into_string());
@@ -1168,7 +1153,7 @@ mod tests {
 
     #[test]
     fn format_nanoseconds() {
-        let env = make_env(vec!["date", "-r", "0", "+%N"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%N"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1178,7 +1163,7 @@ mod tests {
 
     #[test]
     fn format_milliseconds() {
-        let env = make_env(vec!["date", "-r", "0", "+%3N"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%3N"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("000\n", env.stdout.into_string());
@@ -1186,7 +1171,7 @@ mod tests {
 
     #[test]
     fn format_percent_literal() {
-        let env = make_env(vec!["date", "-r", "0", "+%%"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%%"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("%\n", env.stdout.into_string());
@@ -1194,7 +1179,7 @@ mod tests {
 
     #[test]
     fn format_with_text() {
-        let env = make_env(vec!["date", "-r", "0", "+DATE: %Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+DATE: %Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("DATE: 1970-01-01\n", env.stdout.into_string());
@@ -1202,7 +1187,7 @@ mod tests {
 
     #[test]
     fn format_newline() {
-        let env = make_env(vec!["date", "-r", "0", "+%Y%n%m"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%Y%n%m"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970\n01\n", env.stdout.into_string());
@@ -1210,7 +1195,7 @@ mod tests {
 
     #[test]
     fn format_tab() {
-        let env = make_env(vec!["date", "-r", "0", "+%Y%t%m"]);
+        let env = make_test_env(vec!["date", "-r", "0", "+%Y%t%m"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970\t01\n", env.stdout.into_string());
@@ -1222,7 +1207,7 @@ mod tests {
 
     #[test]
     fn no_set_flag_accepted() {
-        let env = make_env(vec!["date", "-j", "-r", "0", "+%Y"]);
+        let env = make_test_env(vec!["date", "-j", "-r", "0", "+%Y"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970\n", env.stdout.into_string());
@@ -1234,7 +1219,7 @@ mod tests {
 
     #[test]
     fn input_format_parse() {
-        let env = make_env(vec!["date", "-j", "-f", "%Y-%m-%d", "2020-06-15", "+%Y"]);
+        let env = make_test_env(vec!["date", "-j", "-f", "%Y-%m-%d", "2020-06-15", "+%Y"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("2020\n", env.stdout.into_string());
@@ -1242,7 +1227,7 @@ mod tests {
 
     #[test]
     fn input_format_convert() {
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "date",
             "-j",
             "-f",
@@ -1257,7 +1242,7 @@ mod tests {
 
     #[test]
     fn input_format_missing_date_string() {
-        let env = make_env(vec!["date", "-j", "-f", "%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-j", "-f", "%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1271,7 +1256,7 @@ mod tests {
 
     #[test]
     fn adjust_add_day() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+1d", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+1d", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970-01-02\n", env.stdout.into_string());
@@ -1279,7 +1264,7 @@ mod tests {
 
     #[test]
     fn adjust_subtract_day() {
-        let env = make_env(vec!["date", "-r", "86400", "-v", "-1d", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "86400", "-v", "-1d", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970-01-01\n", env.stdout.into_string());
@@ -1287,7 +1272,7 @@ mod tests {
 
     #[test]
     fn adjust_add_month() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+1m", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+1m", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970-02-01\n", env.stdout.into_string());
@@ -1295,7 +1280,7 @@ mod tests {
 
     #[test]
     fn adjust_add_year() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+1y", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+1y", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1971-01-01\n", env.stdout.into_string());
@@ -1303,7 +1288,7 @@ mod tests {
 
     #[test]
     fn adjust_add_week() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+1w", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+1w", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1970-01-08\n", env.stdout.into_string());
@@ -1311,7 +1296,7 @@ mod tests {
 
     #[test]
     fn adjust_add_hour() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+1H", "+%H"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+1H", "+%H"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("01\n", env.stdout.into_string());
@@ -1319,7 +1304,7 @@ mod tests {
 
     #[test]
     fn adjust_add_minute() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+30M", "+%M"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+30M", "+%M"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("30\n", env.stdout.into_string());
@@ -1327,7 +1312,7 @@ mod tests {
 
     #[test]
     fn adjust_add_second() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "+45S", "+%S"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "+45S", "+%S"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("45\n", env.stdout.into_string());
@@ -1335,7 +1320,7 @@ mod tests {
 
     #[test]
     fn adjust_set_month() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "6m", "+%m"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "6m", "+%m"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("06\n", env.stdout.into_string());
@@ -1343,7 +1328,7 @@ mod tests {
 
     #[test]
     fn adjust_set_day() {
-        let env = make_env(vec!["date", "-r", "0", "-v", "15d", "+%d"]);
+        let env = make_test_env(vec!["date", "-r", "0", "-v", "15d", "+%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("15\n", env.stdout.into_string());
@@ -1351,7 +1336,7 @@ mod tests {
 
     #[test]
     fn adjust_multiple() {
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "date",
             "-r",
             "0",
@@ -1370,7 +1355,7 @@ mod tests {
 
     #[test]
     fn adjust_invalid() {
-        let env = make_env(vec!["date", "-v", "xyz"]);
+        let env = make_test_env(vec!["date", "-v", "xyz"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1385,7 +1370,7 @@ mod tests {
     #[test]
     fn leap_year_feb_29() {
         // 2020 is a leap year, Feb 29 exists
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "date",
             "-j",
             "-f",
@@ -1403,7 +1388,7 @@ mod tests {
         // Jan 31 + 1 month should give Feb 28 or 29
         // Using a non-leap year timestamp for Jan 31
         // Jan 31, 2019 00:00:00 UTC = 1548892800
-        let env = make_env(vec!["date", "-r", "1548892800", "-v", "+1m", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "1548892800", "-v", "+1m", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -1413,7 +1398,7 @@ mod tests {
 
     #[test]
     fn year_2000() {
-        let env = make_env(vec!["date", "-r", "946684800", "+%Y-%m-%d"]);
+        let env = make_test_env(vec!["date", "-r", "946684800", "+%Y-%m-%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("2000-01-01\n", env.stdout.into_string());
@@ -1422,7 +1407,7 @@ mod tests {
     #[test]
     fn large_timestamp() {
         // Year 2100
-        let env = make_env(vec!["date", "-r", "4102444800", "+%Y"]);
+        let env = make_test_env(vec!["date", "-r", "4102444800", "+%Y"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("2100\n", env.stdout.into_string());

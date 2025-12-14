@@ -157,49 +157,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TestEnvBuilder;
     use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-    use std::collections::HashMap;
 
     fn make_env(
         args: Vec<&str>,
     ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        let fs = MockFilesystem::new();
-        fs.add_directory("/");
-        fs.add_directory("/tmp");
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs,
-            env: HashMap::from([("TMPDIR".to_string(), "/tmp".to_string())]),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        let env = TestEnvBuilder::new()
+            .args(args)
+            .with_root_dir()
+            .env_var("TMPDIR", "/tmp")
+            .build();
+        env.fs.add_directory("/tmp");
+        env
     }
 
     fn make_env_with_tmpdir(
         args: Vec<&str>,
         tmpdir: Option<&str>,
     ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        let fs = MockFilesystem::new();
-        fs.add_directory("/");
-        fs.add_directory("/tmp");
-        fs.add_directory("/custom");
-        let mut env_vars = HashMap::new();
+        let mut builder = TestEnvBuilder::new().args(args).with_root_dir();
         if let Some(dir) = tmpdir {
-            env_vars.insert("TMPDIR".to_string(), dir.to_string());
+            builder = builder.env_var("TMPDIR", dir);
         }
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs,
-            env: env_vars,
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        let env = builder.build();
+        env.fs.add_directory("/tmp");
+        env.fs.add_directory("/custom");
+        env
     }
 
     #[test]

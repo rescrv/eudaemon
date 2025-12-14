@@ -1,4 +1,0 @@
-df
-install
-timeout
-uname

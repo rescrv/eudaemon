@@ -1969,3 +1969,182 @@ where
         (self.bin)(&self.env)
     }
 }
+
+/// Resolve a path relative to a current working directory.
+///
+/// This function handles:
+/// - Absolute paths (starting with `/`)
+/// - Current directory (`.`)
+/// - Parent directory (`..`)
+/// - Relative paths with `./` or `../` prefixes
+/// - Simple relative paths
+pub fn resolve_path(cwd: &str, path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else if path == "." {
+        cwd.to_string()
+    } else if path == ".." {
+        let mut parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
+        parts.pop();
+        if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    } else if let Some(rest) = path.strip_prefix("./") {
+        format!("{}/{}", cwd.trim_end_matches('/'), rest)
+    } else if let Some(rest) = path.strip_prefix("../") {
+        let mut parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
+        parts.pop();
+        let parent = if parts.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", parts.join("/"))
+        };
+        resolve_path(&parent, rest)
+    } else {
+        format!("{}/{}", cwd.trim_end_matches('/'), path)
+    }
+}
+
+/// Format a byte size in human-readable form using powers of 1024.
+///
+/// Returns a string like "100B", "1.5K", "10M", etc.
+pub fn format_human_size(size: u64) -> String {
+    format_human_size_with_base(size, 1024)
+}
+
+/// Format a byte size in human-readable form using a custom base.
+///
+/// Use base 1024 for traditional units (KiB, MiB, etc.) or 1000 for SI units (KB, MB, etc.).
+pub fn format_human_size_with_base(size: u64, base: u64) -> String {
+    const UNITS: &[&str] = &["B", "K", "M", "G", "T", "P"];
+    let mut size = size as f64;
+    let mut unit_idx = 0;
+    let base = base as f64;
+
+    while size >= base && unit_idx < UNITS.len() - 1 {
+        size /= base;
+        unit_idx += 1;
+    }
+
+    if unit_idx == 0 || size >= 10.0 {
+        format!("{:>4}{}", size as u64, UNITS[unit_idx])
+    } else {
+        format!("{:>4.1}{}", size, UNITS[unit_idx])
+    }
+}
+
+/// Test utilities for creating mock environments.
+#[cfg(test)]
+pub mod test_utils {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use utf8path::Path;
+
+    use crate::{Environment, MockFilesystem, StringStderr, StringStdin, StringStdout};
+
+    /// A builder for creating test environments with mock I/O.
+    pub struct TestEnvBuilder {
+        args: Vec<String>,
+        stdin: String,
+        env_vars: HashMap<String, String>,
+        cwd: String,
+        setup_root_dir: bool,
+    }
+
+    impl Default for TestEnvBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl TestEnvBuilder {
+        /// Create a new test environment builder with default settings.
+        pub fn new() -> Self {
+            Self {
+                args: Vec::new(),
+                stdin: String::new(),
+                env_vars: HashMap::new(),
+                cwd: "/".to_string(),
+                setup_root_dir: false,
+            }
+        }
+
+        /// Set the command-line arguments.
+        pub fn args(mut self, args: Vec<&str>) -> Self {
+            self.args = args.into_iter().map(|s| s.to_string()).collect();
+            self
+        }
+
+        /// Set the stdin content.
+        pub fn stdin(mut self, stdin: &str) -> Self {
+            self.stdin = stdin.to_string();
+            self
+        }
+
+        /// Set environment variables.
+        pub fn env_vars(mut self, vars: HashMap<String, String>) -> Self {
+            self.env_vars = vars;
+            self
+        }
+
+        /// Add a single environment variable.
+        pub fn env_var(mut self, key: &str, value: &str) -> Self {
+            self.env_vars.insert(key.to_string(), value.to_string());
+            self
+        }
+
+        /// Set the current working directory.
+        pub fn cwd(mut self, cwd: &str) -> Self {
+            self.cwd = cwd.to_string();
+            self
+        }
+
+        /// Automatically add the root directory to the mock filesystem.
+        pub fn with_root_dir(mut self) -> Self {
+            self.setup_root_dir = true;
+            self
+        }
+
+        /// Build the test environment.
+        pub fn build(self) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+            let fs = MockFilesystem::new();
+            if self.setup_root_dir {
+                fs.add_directory("/");
+            }
+            Environment {
+                stdin: StringStdin::new(&self.stdin),
+                stdout: StringStdout::new(),
+                stderr: StringStderr::new(),
+                fs,
+                env: self.env_vars,
+                args: self.args,
+                cwd: Path::from(self.cwd.as_str()).into_owned(),
+                exit_signaled: Arc::new(AtomicBool::new(false)),
+            }
+        }
+    }
+
+    /// Create a simple test environment with just arguments.
+    ///
+    /// This is a convenience function for the common case of needing
+    /// a test environment with only command-line arguments.
+    pub fn make_test_env(
+        args: Vec<&str>,
+    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+        TestEnvBuilder::new().args(args).build()
+    }
+
+    /// Create a test environment with arguments and stdin.
+    ///
+    /// This is a convenience function for commands that read from stdin.
+    pub fn make_test_env_with_stdin(
+        args: Vec<&str>,
+        stdin: &str,
+    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+        TestEnvBuilder::new().args(args).stdin(stdin).build()
+    }
+}

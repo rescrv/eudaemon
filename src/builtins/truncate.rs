@@ -324,22 +324,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     // ========================================================================
     // parse_size tests
@@ -509,7 +494,7 @@ mod tests {
 
     #[test]
     fn no_options_shows_error() {
-        let env = make_env(vec!["truncate", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -519,7 +504,7 @@ mod tests {
 
     #[test]
     fn no_files_shows_error() {
-        let env = make_env(vec!["truncate", "-s", "100"]);
+        let env = make_test_env(vec!["truncate", "-s", "100"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -529,7 +514,7 @@ mod tests {
 
     #[test]
     fn both_r_and_s_shows_error() {
-        let env = make_env(vec!["truncate", "-r", "ref.txt", "-s", "100", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-r", "ref.txt", "-s", "100", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -539,7 +524,7 @@ mod tests {
 
     #[test]
     fn d_and_s_shows_error() {
-        let env = make_env(vec!["truncate", "-d", "-s", "100", "-l", "10", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-s", "100", "-l", "10", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -549,7 +534,7 @@ mod tests {
 
     #[test]
     fn d_and_r_shows_error() {
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "truncate", "-d", "-r", "ref.txt", "-l", "10", "file.txt",
         ]);
         let result = bin(&env).unwrap();
@@ -565,7 +550,7 @@ mod tests {
 
     #[test]
     fn truncate_s_creates_file() {
-        let env = make_env(vec!["truncate", "-s", "10", "newfile.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "10", "newfile.txt"]);
         assert!(!env.fs.exists("newfile.txt"));
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -575,7 +560,7 @@ mod tests {
 
     #[test]
     fn truncate_s_absolute_shrinks() {
-        let env = make_env(vec!["truncate", "-s", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -585,7 +570,7 @@ mod tests {
 
     #[test]
     fn truncate_s_absolute_extends() {
-        let env = make_env(vec!["truncate", "-s", "15", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "15", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -598,7 +583,7 @@ mod tests {
 
     #[test]
     fn truncate_s_with_suffix() {
-        let env = make_env(vec!["truncate", "-s", "1K", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "1K", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!(env.fs.metadata("file.txt").unwrap().size, 1024);
@@ -606,7 +591,7 @@ mod tests {
 
     #[test]
     fn truncate_s_extend() {
-        let env = make_env(vec!["truncate", "-s", "+5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "+5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -615,7 +600,7 @@ mod tests {
 
     #[test]
     fn truncate_s_reduce() {
-        let env = make_env(vec!["truncate", "-s", "-5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "-5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -624,7 +609,7 @@ mod tests {
 
     #[test]
     fn truncate_s_reduce_below_zero() {
-        let env = make_env(vec!["truncate", "-s", "-100", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "-100", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -633,7 +618,7 @@ mod tests {
 
     #[test]
     fn truncate_s_round_up() {
-        let env = make_env(vec!["truncate", "-s", "%100", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "%100", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789"); // 10 bytes
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -642,7 +627,7 @@ mod tests {
 
     #[test]
     fn truncate_s_round_up_already_multiple() {
-        let env = make_env(vec!["truncate", "-s", "%10", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "%10", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789"); // 10 bytes
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -651,7 +636,7 @@ mod tests {
 
     #[test]
     fn truncate_s_round_down() {
-        let env = make_env(vec!["truncate", "-s", "/100", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "/100", "file.txt"]);
         env.fs.add_file("file.txt", "x".repeat(150).as_str()); // 150 bytes
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -660,7 +645,7 @@ mod tests {
 
     #[test]
     fn truncate_s_round_down_to_zero() {
-        let env = make_env(vec!["truncate", "-s", "/100", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "/100", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789"); // 10 bytes
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -673,7 +658,7 @@ mod tests {
 
     #[test]
     fn truncate_c_does_not_create() {
-        let env = make_env(vec!["truncate", "-c", "-s", "100", "nonexistent.txt"]);
+        let env = make_test_env(vec!["truncate", "-c", "-s", "100", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("nonexistent.txt"));
@@ -681,7 +666,7 @@ mod tests {
 
     #[test]
     fn truncate_c_modifies_existing() {
-        let env = make_env(vec!["truncate", "-c", "-s", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-c", "-s", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -690,7 +675,7 @@ mod tests {
 
     #[test]
     fn truncate_c_extend_nonexistent() {
-        let env = make_env(vec!["truncate", "-c", "-s", "+100", "nonexistent.txt"]);
+        let env = make_test_env(vec!["truncate", "-c", "-s", "+100", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("nonexistent.txt"));
@@ -702,7 +687,7 @@ mod tests {
 
     #[test]
     fn truncate_r_reference_file() {
-        let env = make_env(vec!["truncate", "-r", "ref.txt", "target.txt"]);
+        let env = make_test_env(vec!["truncate", "-r", "ref.txt", "target.txt"]);
         env.fs.add_file("ref.txt", "0123456789"); // 10 bytes
         env.fs.add_file("target.txt", "abc"); // 3 bytes
         let result = bin(&env).unwrap();
@@ -712,7 +697,7 @@ mod tests {
 
     #[test]
     fn truncate_r_creates_file() {
-        let env = make_env(vec!["truncate", "-r", "ref.txt", "newfile.txt"]);
+        let env = make_test_env(vec!["truncate", "-r", "ref.txt", "newfile.txt"]);
         env.fs.add_file("ref.txt", "0123456789"); // 10 bytes
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -722,7 +707,7 @@ mod tests {
 
     #[test]
     fn truncate_r_nonexistent_ref() {
-        let env = make_env(vec!["truncate", "-r", "nonexistent.txt", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-r", "nonexistent.txt", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -732,7 +717,7 @@ mod tests {
 
     #[test]
     fn truncate_r_with_c_flag() {
-        let env = make_env(vec!["truncate", "-c", "-r", "ref.txt", "nonexistent.txt"]);
+        let env = make_test_env(vec!["truncate", "-c", "-r", "ref.txt", "nonexistent.txt"]);
         env.fs.add_file("ref.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -745,7 +730,7 @@ mod tests {
 
     #[test]
     fn truncate_multiple_files() {
-        let env = make_env(vec!["truncate", "-s", "5", "a.txt", "b.txt", "c.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "5", "a.txt", "b.txt", "c.txt"]);
         env.fs.add_file("a.txt", "0123456789");
         env.fs.add_file("b.txt", "0123456789");
         env.fs.add_file("c.txt", "0123456789");
@@ -758,7 +743,7 @@ mod tests {
 
     #[test]
     fn truncate_multiple_files_creates_missing() {
-        let env = make_env(vec!["truncate", "-s", "10", "existing.txt", "new.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "10", "existing.txt", "new.txt"]);
         env.fs.add_file("existing.txt", "abc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -769,7 +754,7 @@ mod tests {
 
     #[test]
     fn truncate_extend_new_file() {
-        let env = make_env(vec!["truncate", "-s", "+100", "newfile.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "+100", "newfile.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(env.fs.exists("newfile.txt"));
@@ -782,7 +767,7 @@ mod tests {
 
     #[test]
     fn truncate_invalid_size() {
-        let env = make_env(vec!["truncate", "-s", "abc", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "abc", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -792,7 +777,7 @@ mod tests {
 
     #[test]
     fn truncate_invalid_size_negative() {
-        let env = make_env(vec!["truncate", "-s", "--5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-s", "--5", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
@@ -803,7 +788,7 @@ mod tests {
 
     #[test]
     fn dealloc_requires_length() {
-        let env = make_env(vec!["truncate", "-d", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -814,7 +799,7 @@ mod tests {
 
     #[test]
     fn dealloc_length_must_be_positive() {
-        let env = make_env(vec!["truncate", "-d", "-l", "0", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-l", "0", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -825,7 +810,7 @@ mod tests {
 
     #[test]
     fn dealloc_punches_hole_at_start() {
-        let env = make_env(vec!["truncate", "-d", "-l", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-l", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -834,7 +819,7 @@ mod tests {
 
     #[test]
     fn dealloc_punches_hole_at_offset() {
-        let env = make_env(vec!["truncate", "-d", "-o", "3", "-l", "4", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-o", "3", "-l", "4", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -843,7 +828,7 @@ mod tests {
 
     #[test]
     fn dealloc_punches_hole_at_end() {
-        let env = make_env(vec!["truncate", "-d", "-o", "7", "-l", "3", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-o", "7", "-l", "3", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -852,7 +837,7 @@ mod tests {
 
     #[test]
     fn dealloc_extends_file_if_needed() {
-        let env = make_env(vec!["truncate", "-d", "-o", "8", "-l", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-o", "8", "-l", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789"); // 10 bytes
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -865,7 +850,7 @@ mod tests {
 
     #[test]
     fn dealloc_with_suffix() {
-        let env = make_env(vec!["truncate", "-d", "-o", "0", "-l", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-o", "0", "-l", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -874,7 +859,7 @@ mod tests {
 
     #[test]
     fn dealloc_entire_file() {
-        let env = make_env(vec!["truncate", "-d", "-l", "10", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-l", "10", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -883,7 +868,7 @@ mod tests {
 
     #[test]
     fn dealloc_nonexistent_file_error() {
-        let env = make_env(vec!["truncate", "-d", "-l", "10", "nonexistent.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-l", "10", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -893,7 +878,7 @@ mod tests {
 
     #[test]
     fn dealloc_with_c_flag_skips_nonexistent() {
-        let env = make_env(vec!["truncate", "-c", "-d", "-l", "10", "nonexistent.txt"]);
+        let env = make_test_env(vec!["truncate", "-c", "-d", "-l", "10", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert!(!env.fs.exists("nonexistent.txt"));
@@ -901,7 +886,7 @@ mod tests {
 
     #[test]
     fn dealloc_multiple_files() {
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "truncate", "-d", "-o", "2", "-l", "3", "a.txt", "b.txt",
         ]);
         env.fs.add_file("a.txt", "0123456789");
@@ -914,7 +899,7 @@ mod tests {
 
     #[test]
     fn dealloc_offset_with_suffix() {
-        let env = make_env(vec!["truncate", "-d", "-o", "0", "-l", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-o", "0", "-l", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -923,7 +908,7 @@ mod tests {
 
     #[test]
     fn dealloc_invalid_length() {
-        let env = make_env(vec!["truncate", "-d", "-l", "abc", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-l", "abc", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -934,7 +919,7 @@ mod tests {
 
     #[test]
     fn dealloc_invalid_offset() {
-        let env = make_env(vec!["truncate", "-d", "-o", "abc", "-l", "5", "file.txt"]);
+        let env = make_test_env(vec!["truncate", "-d", "-o", "abc", "-l", "5", "file.txt"]);
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());

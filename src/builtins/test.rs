@@ -608,22 +608,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::make_test_env;
     use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
 
     fn make_env_with_fs(
         args: Vec<&str>,
@@ -647,7 +633,7 @@ mod tests {
 
     #[test]
     fn no_expression_returns_false() {
-        let env = make_env(vec!["test"]);
+        let env = make_test_env(vec!["test"]);
         let result = bin(&env).unwrap();
         println!("no_expression_returns_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -655,7 +641,7 @@ mod tests {
 
     #[test]
     fn bracket_empty_returns_false() {
-        let env = make_env(vec!["[", "]"]);
+        let env = make_test_env(vec!["[", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_empty_returns_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -663,7 +649,7 @@ mod tests {
 
     #[test]
     fn bracket_missing_close_returns_error() {
-        let env = make_env(vec!["[", "-n", "foo"]);
+        let env = make_test_env(vec!["[", "-n", "foo"]);
         let result = bin(&env).unwrap();
         println!(
             "bracket_missing_close_returns_error: exit code = {}",
@@ -681,7 +667,7 @@ mod tests {
 
     #[test]
     fn string_nonzero_nonempty() {
-        let env = make_env(vec!["test", "-n", "hello"]);
+        let env = make_test_env(vec!["test", "-n", "hello"]);
         let result = bin(&env).unwrap();
         println!("string_nonzero_nonempty: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -689,7 +675,7 @@ mod tests {
 
     #[test]
     fn string_nonzero_empty() {
-        let env = make_env(vec!["test", "-n", ""]);
+        let env = make_test_env(vec!["test", "-n", ""]);
         let result = bin(&env).unwrap();
         println!("string_nonzero_empty: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -697,7 +683,7 @@ mod tests {
 
     #[test]
     fn string_zero_empty() {
-        let env = make_env(vec!["test", "-z", ""]);
+        let env = make_test_env(vec!["test", "-z", ""]);
         let result = bin(&env).unwrap();
         println!("string_zero_empty: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -705,7 +691,7 @@ mod tests {
 
     #[test]
     fn string_zero_nonempty() {
-        let env = make_env(vec!["test", "-z", "hello"]);
+        let env = make_test_env(vec!["test", "-z", "hello"]);
         let result = bin(&env).unwrap();
         println!("string_zero_nonempty: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -717,7 +703,7 @@ mod tests {
 
     #[test]
     fn bare_string_nonempty() {
-        let env = make_env(vec!["test", "hello"]);
+        let env = make_test_env(vec!["test", "hello"]);
         let result = bin(&env).unwrap();
         println!("bare_string_nonempty: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -725,7 +711,7 @@ mod tests {
 
     #[test]
     fn bare_string_empty() {
-        let env = make_env(vec!["test", ""]);
+        let env = make_test_env(vec!["test", ""]);
         let result = bin(&env).unwrap();
         println!("bare_string_empty: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -737,7 +723,7 @@ mod tests {
 
     #[test]
     fn string_equal_true() {
-        let env = make_env(vec!["test", "abc", "=", "abc"]);
+        let env = make_test_env(vec!["test", "abc", "=", "abc"]);
         let result = bin(&env).unwrap();
         println!("string_equal_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -745,7 +731,7 @@ mod tests {
 
     #[test]
     fn string_equal_false() {
-        let env = make_env(vec!["test", "abc", "=", "def"]);
+        let env = make_test_env(vec!["test", "abc", "=", "def"]);
         let result = bin(&env).unwrap();
         println!("string_equal_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -753,7 +739,7 @@ mod tests {
 
     #[test]
     fn string_equal_double_equals() {
-        let env = make_env(vec!["test", "abc", "==", "abc"]);
+        let env = make_test_env(vec!["test", "abc", "==", "abc"]);
         let result = bin(&env).unwrap();
         println!("string_equal_double_equals: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -761,7 +747,7 @@ mod tests {
 
     #[test]
     fn string_not_equal_true() {
-        let env = make_env(vec!["test", "abc", "!=", "def"]);
+        let env = make_test_env(vec!["test", "abc", "!=", "def"]);
         let result = bin(&env).unwrap();
         println!("string_not_equal_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -769,7 +755,7 @@ mod tests {
 
     #[test]
     fn string_not_equal_false() {
-        let env = make_env(vec!["test", "abc", "!=", "abc"]);
+        let env = make_test_env(vec!["test", "abc", "!=", "abc"]);
         let result = bin(&env).unwrap();
         println!("string_not_equal_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -777,7 +763,7 @@ mod tests {
 
     #[test]
     fn string_less_true() {
-        let env = make_env(vec!["test", "abc", "<", "def"]);
+        let env = make_test_env(vec!["test", "abc", "<", "def"]);
         let result = bin(&env).unwrap();
         println!("string_less_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -785,7 +771,7 @@ mod tests {
 
     #[test]
     fn string_less_false() {
-        let env = make_env(vec!["test", "def", "<", "abc"]);
+        let env = make_test_env(vec!["test", "def", "<", "abc"]);
         let result = bin(&env).unwrap();
         println!("string_less_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -793,7 +779,7 @@ mod tests {
 
     #[test]
     fn string_greater_true() {
-        let env = make_env(vec!["test", "def", ">", "abc"]);
+        let env = make_test_env(vec!["test", "def", ">", "abc"]);
         let result = bin(&env).unwrap();
         println!("string_greater_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -801,7 +787,7 @@ mod tests {
 
     #[test]
     fn string_greater_false() {
-        let env = make_env(vec!["test", "abc", ">", "def"]);
+        let env = make_test_env(vec!["test", "abc", ">", "def"]);
         let result = bin(&env).unwrap();
         println!("string_greater_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -813,7 +799,7 @@ mod tests {
 
     #[test]
     fn int_equal_true() {
-        let env = make_env(vec!["test", "42", "-eq", "42"]);
+        let env = make_test_env(vec!["test", "42", "-eq", "42"]);
         let result = bin(&env).unwrap();
         println!("int_equal_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -821,7 +807,7 @@ mod tests {
 
     #[test]
     fn int_equal_false() {
-        let env = make_env(vec!["test", "42", "-eq", "43"]);
+        let env = make_test_env(vec!["test", "42", "-eq", "43"]);
         let result = bin(&env).unwrap();
         println!("int_equal_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -829,7 +815,7 @@ mod tests {
 
     #[test]
     fn int_not_equal_true() {
-        let env = make_env(vec!["test", "42", "-ne", "43"]);
+        let env = make_test_env(vec!["test", "42", "-ne", "43"]);
         let result = bin(&env).unwrap();
         println!("int_not_equal_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -837,7 +823,7 @@ mod tests {
 
     #[test]
     fn int_not_equal_false() {
-        let env = make_env(vec!["test", "42", "-ne", "42"]);
+        let env = make_test_env(vec!["test", "42", "-ne", "42"]);
         let result = bin(&env).unwrap();
         println!("int_not_equal_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -845,7 +831,7 @@ mod tests {
 
     #[test]
     fn int_greater_true() {
-        let env = make_env(vec!["test", "43", "-gt", "42"]);
+        let env = make_test_env(vec!["test", "43", "-gt", "42"]);
         let result = bin(&env).unwrap();
         println!("int_greater_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -853,7 +839,7 @@ mod tests {
 
     #[test]
     fn int_greater_false() {
-        let env = make_env(vec!["test", "42", "-gt", "43"]);
+        let env = make_test_env(vec!["test", "42", "-gt", "43"]);
         let result = bin(&env).unwrap();
         println!("int_greater_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -861,7 +847,7 @@ mod tests {
 
     #[test]
     fn int_greater_equal_true_greater() {
-        let env = make_env(vec!["test", "43", "-ge", "42"]);
+        let env = make_test_env(vec!["test", "43", "-ge", "42"]);
         let result = bin(&env).unwrap();
         println!(
             "int_greater_equal_true_greater: exit code = {}",
@@ -872,7 +858,7 @@ mod tests {
 
     #[test]
     fn int_greater_equal_true_equal() {
-        let env = make_env(vec!["test", "42", "-ge", "42"]);
+        let env = make_test_env(vec!["test", "42", "-ge", "42"]);
         let result = bin(&env).unwrap();
         println!(
             "int_greater_equal_true_equal: exit code = {}",
@@ -883,7 +869,7 @@ mod tests {
 
     #[test]
     fn int_greater_equal_false() {
-        let env = make_env(vec!["test", "41", "-ge", "42"]);
+        let env = make_test_env(vec!["test", "41", "-ge", "42"]);
         let result = bin(&env).unwrap();
         println!("int_greater_equal_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -891,7 +877,7 @@ mod tests {
 
     #[test]
     fn int_less_true() {
-        let env = make_env(vec!["test", "42", "-lt", "43"]);
+        let env = make_test_env(vec!["test", "42", "-lt", "43"]);
         let result = bin(&env).unwrap();
         println!("int_less_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -899,7 +885,7 @@ mod tests {
 
     #[test]
     fn int_less_false() {
-        let env = make_env(vec!["test", "43", "-lt", "42"]);
+        let env = make_test_env(vec!["test", "43", "-lt", "42"]);
         let result = bin(&env).unwrap();
         println!("int_less_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -907,7 +893,7 @@ mod tests {
 
     #[test]
     fn int_less_equal_true_less() {
-        let env = make_env(vec!["test", "42", "-le", "43"]);
+        let env = make_test_env(vec!["test", "42", "-le", "43"]);
         let result = bin(&env).unwrap();
         println!("int_less_equal_true_less: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -915,7 +901,7 @@ mod tests {
 
     #[test]
     fn int_less_equal_true_equal() {
-        let env = make_env(vec!["test", "42", "-le", "42"]);
+        let env = make_test_env(vec!["test", "42", "-le", "42"]);
         let result = bin(&env).unwrap();
         println!("int_less_equal_true_equal: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -923,7 +909,7 @@ mod tests {
 
     #[test]
     fn int_less_equal_false() {
-        let env = make_env(vec!["test", "43", "-le", "42"]);
+        let env = make_test_env(vec!["test", "43", "-le", "42"]);
         let result = bin(&env).unwrap();
         println!("int_less_equal_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -931,7 +917,7 @@ mod tests {
 
     #[test]
     fn int_negative_numbers() {
-        let env = make_env(vec!["test", "-5", "-lt", "5"]);
+        let env = make_test_env(vec!["test", "-5", "-lt", "5"]);
         let result = bin(&env).unwrap();
         println!("int_negative_numbers: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -953,7 +939,7 @@ mod tests {
 
     #[test]
     fn file_exists_false() {
-        let env = make_env(vec!["test", "-e", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-e", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_exists_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1034,7 +1020,7 @@ mod tests {
 
     #[test]
     fn file_readable_false() {
-        let env = make_env(vec!["test", "-r", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-r", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_readable_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1046,7 +1032,7 @@ mod tests {
 
     #[test]
     fn not_true_to_false() {
-        let env = make_env(vec!["test", "!", "-n", "hello"]);
+        let env = make_test_env(vec!["test", "!", "-n", "hello"]);
         let result = bin(&env).unwrap();
         println!("not_true_to_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1054,7 +1040,7 @@ mod tests {
 
     #[test]
     fn not_false_to_true() {
-        let env = make_env(vec!["test", "!", "-z", "hello"]);
+        let env = make_test_env(vec!["test", "!", "-z", "hello"]);
         let result = bin(&env).unwrap();
         println!("not_false_to_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1062,7 +1048,7 @@ mod tests {
 
     #[test]
     fn double_negation() {
-        let env = make_env(vec!["test", "!", "!", "-n", "hello"]);
+        let env = make_test_env(vec!["test", "!", "!", "-n", "hello"]);
         let result = bin(&env).unwrap();
         println!("double_negation: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1074,7 +1060,7 @@ mod tests {
 
     #[test]
     fn and_true_true() {
-        let env = make_env(vec!["test", "-n", "a", "-a", "-n", "b"]);
+        let env = make_test_env(vec!["test", "-n", "a", "-a", "-n", "b"]);
         let result = bin(&env).unwrap();
         println!("and_true_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1082,7 +1068,7 @@ mod tests {
 
     #[test]
     fn and_true_false() {
-        let env = make_env(vec!["test", "-n", "a", "-a", "-z", "b"]);
+        let env = make_test_env(vec!["test", "-n", "a", "-a", "-z", "b"]);
         let result = bin(&env).unwrap();
         println!("and_true_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1090,7 +1076,7 @@ mod tests {
 
     #[test]
     fn and_false_true() {
-        let env = make_env(vec!["test", "-z", "a", "-a", "-n", "b"]);
+        let env = make_test_env(vec!["test", "-z", "a", "-a", "-n", "b"]);
         let result = bin(&env).unwrap();
         println!("and_false_true: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1098,7 +1084,7 @@ mod tests {
 
     #[test]
     fn and_false_false() {
-        let env = make_env(vec!["test", "-z", "a", "-a", "-z", "b"]);
+        let env = make_test_env(vec!["test", "-z", "a", "-a", "-z", "b"]);
         let result = bin(&env).unwrap();
         println!("and_false_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1106,7 +1092,7 @@ mod tests {
 
     #[test]
     fn or_true_true() {
-        let env = make_env(vec!["test", "-n", "a", "-o", "-n", "b"]);
+        let env = make_test_env(vec!["test", "-n", "a", "-o", "-n", "b"]);
         let result = bin(&env).unwrap();
         println!("or_true_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1114,7 +1100,7 @@ mod tests {
 
     #[test]
     fn or_true_false() {
-        let env = make_env(vec!["test", "-n", "a", "-o", "-z", "b"]);
+        let env = make_test_env(vec!["test", "-n", "a", "-o", "-z", "b"]);
         let result = bin(&env).unwrap();
         println!("or_true_false: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1122,7 +1108,7 @@ mod tests {
 
     #[test]
     fn or_false_true() {
-        let env = make_env(vec!["test", "-z", "a", "-o", "-n", "b"]);
+        let env = make_test_env(vec!["test", "-z", "a", "-o", "-n", "b"]);
         let result = bin(&env).unwrap();
         println!("or_false_true: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1130,7 +1116,7 @@ mod tests {
 
     #[test]
     fn or_false_false() {
-        let env = make_env(vec!["test", "-z", "a", "-o", "-z", "b"]);
+        let env = make_test_env(vec!["test", "-z", "a", "-o", "-z", "b"]);
         let result = bin(&env).unwrap();
         println!("or_false_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1139,7 +1125,7 @@ mod tests {
     #[test]
     fn and_higher_precedence_than_or() {
         // "true -o false -a false" should be "true -o (false -a false)" = true
-        let env = make_env(vec!["test", "-n", "a", "-o", "-z", "b", "-a", "-z", "c"]);
+        let env = make_test_env(vec!["test", "-n", "a", "-o", "-z", "b", "-a", "-z", "c"]);
         let result = bin(&env).unwrap();
         println!(
             "and_higher_precedence_than_or: exit code = {}",
@@ -1154,7 +1140,7 @@ mod tests {
 
     #[test]
     fn parentheses_simple() {
-        let env = make_env(vec!["test", "(", "-n", "hello", ")"]);
+        let env = make_test_env(vec!["test", "(", "-n", "hello", ")"]);
         let result = bin(&env).unwrap();
         println!("parentheses_simple: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1163,7 +1149,7 @@ mod tests {
     #[test]
     fn parentheses_override_precedence() {
         // "(true -o false) -a false" should be false
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "test", "(", "-n", "a", "-o", "-z", "b", ")", "-a", "-z", "c",
         ]);
         let result = bin(&env).unwrap();
@@ -1176,7 +1162,7 @@ mod tests {
 
     #[test]
     fn empty_parentheses() {
-        let env = make_env(vec!["test", "(", ")"]);
+        let env = make_test_env(vec!["test", "(", ")"]);
         let result = bin(&env).unwrap();
         println!("empty_parentheses: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1188,7 +1174,7 @@ mod tests {
 
     #[test]
     fn bracket_string_test() {
-        let env = make_env(vec!["[", "-n", "hello", "]"]);
+        let env = make_test_env(vec!["[", "-n", "hello", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_string_test: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1196,7 +1182,7 @@ mod tests {
 
     #[test]
     fn bracket_comparison() {
-        let env = make_env(vec!["[", "42", "-eq", "42", "]"]);
+        let env = make_test_env(vec!["[", "42", "-eq", "42", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_comparison: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1209,7 +1195,7 @@ mod tests {
     #[test]
     fn operator_as_operand_single_arg() {
         // When there's only one argument, an operator like "-n" is an operand
-        let env = make_env(vec!["test", "-n"]);
+        let env = make_test_env(vec!["test", "-n"]);
         let result = bin(&env).unwrap();
         println!(
             "operator_as_operand_single_arg: exit code = {}",
@@ -1221,7 +1207,7 @@ mod tests {
 
     #[test]
     fn equals_sign_as_operand() {
-        let env = make_env(vec!["test", "="]);
+        let env = make_test_env(vec!["test", "="]);
         let result = bin(&env).unwrap();
         println!("equals_sign_as_operand: exit code = {}", result.code());
         // "=" as a bare string is non-empty, so true
@@ -1230,7 +1216,7 @@ mod tests {
 
     #[test]
     fn exclamation_as_operand() {
-        let env = make_env(vec!["test", "!"]);
+        let env = make_test_env(vec!["test", "!"]);
         let result = bin(&env).unwrap();
         println!("exclamation_as_operand: exit code = {}", result.code());
         // "!" as a bare string is non-empty, so true
@@ -1243,7 +1229,7 @@ mod tests {
 
     #[test]
     fn int_zero_equal_zero() {
-        let env = make_env(vec!["test", "0", "-eq", "0"]);
+        let env = make_test_env(vec!["test", "0", "-eq", "0"]);
         let result = bin(&env).unwrap();
         println!("int_zero_equal_zero: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1251,7 +1237,7 @@ mod tests {
 
     #[test]
     fn int_large_positive() {
-        let env = make_env(vec!["test", "9223372036854775807", "-gt", "0"]);
+        let env = make_test_env(vec!["test", "9223372036854775807", "-gt", "0"]);
         let result = bin(&env).unwrap();
         println!("int_large_positive: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1259,7 +1245,7 @@ mod tests {
 
     #[test]
     fn int_large_negative() {
-        let env = make_env(vec!["test", "-9223372036854775808", "-lt", "0"]);
+        let env = make_test_env(vec!["test", "-9223372036854775808", "-lt", "0"]);
         let result = bin(&env).unwrap();
         println!("int_large_negative: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1267,7 +1253,7 @@ mod tests {
 
     #[test]
     fn int_negative_equal_negative() {
-        let env = make_env(vec!["test", "-42", "-eq", "-42"]);
+        let env = make_test_env(vec!["test", "-42", "-eq", "-42"]);
         let result = bin(&env).unwrap();
         println!("int_negative_equal_negative: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1275,7 +1261,7 @@ mod tests {
 
     #[test]
     fn int_negative_less_than_positive() {
-        let env = make_env(vec!["test", "-1", "-lt", "1"]);
+        let env = make_test_env(vec!["test", "-1", "-lt", "1"]);
         let result = bin(&env).unwrap();
         println!(
             "int_negative_less_than_positive: exit code = {}",
@@ -1286,7 +1272,7 @@ mod tests {
 
     #[test]
     fn int_greater_not_equal() {
-        let env = make_env(vec!["test", "100", "-gt", "100"]);
+        let env = make_test_env(vec!["test", "100", "-gt", "100"]);
         let result = bin(&env).unwrap();
         println!("int_greater_not_equal: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1294,7 +1280,7 @@ mod tests {
 
     #[test]
     fn int_less_not_equal() {
-        let env = make_env(vec!["test", "100", "-lt", "100"]);
+        let env = make_test_env(vec!["test", "100", "-lt", "100"]);
         let result = bin(&env).unwrap();
         println!("int_less_not_equal: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1302,7 +1288,7 @@ mod tests {
 
     #[test]
     fn int_with_leading_zeros() {
-        let env = make_env(vec!["test", "007", "-eq", "7"]);
+        let env = make_test_env(vec!["test", "007", "-eq", "7"]);
         let result = bin(&env).unwrap();
         println!("int_with_leading_zeros: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1310,7 +1296,7 @@ mod tests {
 
     #[test]
     fn int_with_whitespace() {
-        let env = make_env(vec!["test", " 42 ", "-eq", "42"]);
+        let env = make_test_env(vec!["test", " 42 ", "-eq", "42"]);
         let result = bin(&env).unwrap();
         println!("int_with_whitespace: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1322,7 +1308,7 @@ mod tests {
 
     #[test]
     fn string_equal_empty_strings() {
-        let env = make_env(vec!["test", "", "=", ""]);
+        let env = make_test_env(vec!["test", "", "=", ""]);
         let result = bin(&env).unwrap();
         println!("string_equal_empty_strings: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1330,7 +1316,7 @@ mod tests {
 
     #[test]
     fn string_not_equal_empty_vs_nonempty() {
-        let env = make_env(vec!["test", "", "!=", "x"]);
+        let env = make_test_env(vec!["test", "", "!=", "x"]);
         let result = bin(&env).unwrap();
         println!(
             "string_not_equal_empty_vs_nonempty: exit code = {}",
@@ -1341,7 +1327,7 @@ mod tests {
 
     #[test]
     fn string_less_empty_before_nonempty() {
-        let env = make_env(vec!["test", "", "<", "a"]);
+        let env = make_test_env(vec!["test", "", "<", "a"]);
         let result = bin(&env).unwrap();
         println!(
             "string_less_empty_before_nonempty: exit code = {}",
@@ -1352,7 +1338,7 @@ mod tests {
 
     #[test]
     fn string_greater_nonempty_after_empty() {
-        let env = make_env(vec!["test", "a", ">", ""]);
+        let env = make_test_env(vec!["test", "a", ">", ""]);
         let result = bin(&env).unwrap();
         println!(
             "string_greater_nonempty_after_empty: exit code = {}",
@@ -1364,7 +1350,7 @@ mod tests {
     #[test]
     fn string_less_case_sensitive() {
         // 'A' (65) < 'a' (97) in ASCII
-        let env = make_env(vec!["test", "A", "<", "a"]);
+        let env = make_test_env(vec!["test", "A", "<", "a"]);
         let result = bin(&env).unwrap();
         println!("string_less_case_sensitive: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1373,7 +1359,7 @@ mod tests {
     #[test]
     fn string_compare_numbers_as_strings() {
         // "9" > "10" lexicographically because '9' > '1'
-        let env = make_env(vec!["test", "9", ">", "10"]);
+        let env = make_test_env(vec!["test", "9", ">", "10"]);
         let result = bin(&env).unwrap();
         println!(
             "string_compare_numbers_as_strings: exit code = {}",
@@ -1384,7 +1370,7 @@ mod tests {
 
     #[test]
     fn string_equal_with_spaces() {
-        let env = make_env(vec!["test", "hello world", "=", "hello world"]);
+        let env = make_test_env(vec!["test", "hello world", "=", "hello world"]);
         let result = bin(&env).unwrap();
         println!("string_equal_with_spaces: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1392,7 +1378,7 @@ mod tests {
 
     #[test]
     fn string_not_equal_different_whitespace() {
-        let env = make_env(vec!["test", "hello world", "!=", "hello  world"]);
+        let env = make_test_env(vec!["test", "hello world", "!=", "hello  world"]);
         let result = bin(&env).unwrap();
         println!(
             "string_not_equal_different_whitespace: exit code = {}",
@@ -1417,7 +1403,7 @@ mod tests {
 
     #[test]
     fn file_writable_false() {
-        let env = make_env(vec!["test", "-w", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-w", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_writable_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1435,7 +1421,7 @@ mod tests {
 
     #[test]
     fn file_executable_false() {
-        let env = make_env(vec!["test", "-x", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-x", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_executable_false: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1443,7 +1429,7 @@ mod tests {
 
     #[test]
     fn file_size_nonexistent() {
-        let env = make_env(vec!["test", "-s", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-s", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_size_nonexistent: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1451,7 +1437,7 @@ mod tests {
 
     #[test]
     fn file_regular_nonexistent() {
-        let env = make_env(vec!["test", "-f", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-f", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_regular_nonexistent: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1459,7 +1445,7 @@ mod tests {
 
     #[test]
     fn file_directory_nonexistent() {
-        let env = make_env(vec!["test", "-d", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-d", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_directory_nonexistent: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1468,7 +1454,7 @@ mod tests {
     #[test]
     fn file_symlink_h_flag() {
         // -h is an alias for -L
-        let env = make_env(vec!["test", "-h", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-h", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_symlink_h_flag: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1476,7 +1462,7 @@ mod tests {
 
     #[test]
     fn file_symlink_l_flag() {
-        let env = make_env(vec!["test", "-L", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "-L", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("file_symlink_l_flag: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1512,7 +1498,7 @@ mod tests {
 
     #[test]
     fn file_same_false_nonexistent() {
-        let env = make_env(vec!["test", "/nonexistent1", "-ef", "/nonexistent2"]);
+        let env = make_test_env(vec!["test", "/nonexistent1", "-ef", "/nonexistent2"]);
         let result = bin(&env).unwrap();
         println!("file_same_false_nonexistent: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1520,7 +1506,7 @@ mod tests {
 
     #[test]
     fn file_newer_false_nonexistent() {
-        let env = make_env(vec!["test", "/nonexistent1", "-nt", "/nonexistent2"]);
+        let env = make_test_env(vec!["test", "/nonexistent1", "-nt", "/nonexistent2"]);
         let result = bin(&env).unwrap();
         println!(
             "file_newer_false_nonexistent: exit code = {}",
@@ -1531,7 +1517,7 @@ mod tests {
 
     #[test]
     fn file_older_false_nonexistent() {
-        let env = make_env(vec!["test", "/nonexistent1", "-ot", "/nonexistent2"]);
+        let env = make_test_env(vec!["test", "/nonexistent1", "-ot", "/nonexistent2"]);
         let result = bin(&env).unwrap();
         println!(
             "file_older_false_nonexistent: exit code = {}",
@@ -1547,7 +1533,7 @@ mod tests {
     #[test]
     fn complex_and_or_chain() {
         // true -a true -o false => (true -a true) -o false => true
-        let env = make_env(vec!["test", "-n", "a", "-a", "-n", "b", "-o", "-z", "c"]);
+        let env = make_test_env(vec!["test", "-n", "a", "-a", "-n", "b", "-o", "-z", "c"]);
         let result = bin(&env).unwrap();
         println!("complex_and_or_chain: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1556,7 +1542,7 @@ mod tests {
     #[test]
     fn complex_or_and_chain() {
         // false -o true -a true => false -o (true -a true) => true
-        let env = make_env(vec!["test", "-z", "a", "-o", "-n", "b", "-a", "-n", "c"]);
+        let env = make_test_env(vec!["test", "-z", "a", "-o", "-n", "b", "-a", "-n", "c"]);
         let result = bin(&env).unwrap();
         println!("complex_or_and_chain: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1564,7 +1550,7 @@ mod tests {
 
     #[test]
     fn triple_negation() {
-        let env = make_env(vec!["test", "!", "!", "!", "-n", "hello"]);
+        let env = make_test_env(vec!["test", "!", "!", "!", "-n", "hello"]);
         let result = bin(&env).unwrap();
         println!("triple_negation: exit code = {}", result.code());
         assert_eq!(1, result.code());
@@ -1572,7 +1558,7 @@ mod tests {
 
     #[test]
     fn not_with_parentheses() {
-        let env = make_env(vec!["test", "!", "(", "-z", "hello", ")"]);
+        let env = make_test_env(vec!["test", "!", "(", "-z", "hello", ")"]);
         let result = bin(&env).unwrap();
         println!("not_with_parentheses: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1580,7 +1566,7 @@ mod tests {
 
     #[test]
     fn nested_parentheses() {
-        let env = make_env(vec!["test", "(", "(", "-n", "a", ")", ")"]);
+        let env = make_test_env(vec!["test", "(", "(", "-n", "a", ")", ")"]);
         let result = bin(&env).unwrap();
         println!("nested_parentheses: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1588,7 +1574,7 @@ mod tests {
 
     #[test]
     fn parentheses_with_and() {
-        let env = make_env(vec!["test", "(", "-n", "a", "-a", "-n", "b", ")"]);
+        let env = make_test_env(vec!["test", "(", "-n", "a", "-a", "-n", "b", ")"]);
         let result = bin(&env).unwrap();
         println!("parentheses_with_and: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1596,7 +1582,7 @@ mod tests {
 
     #[test]
     fn parentheses_with_or() {
-        let env = make_env(vec!["test", "(", "-z", "a", "-o", "-n", "b", ")"]);
+        let env = make_test_env(vec!["test", "(", "-z", "a", "-o", "-n", "b", ")"]);
         let result = bin(&env).unwrap();
         println!("parentheses_with_or: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1610,7 +1596,7 @@ mod tests {
     fn two_args_operator_and_string() {
         // test "=" "=" "=" is ambiguous - parser sees "=" = "=" as string compare
         // but the middle "=" is also the operator, leaving trailing "="
-        let env = make_env(vec!["test", "=", "=", "="]);
+        let env = make_test_env(vec!["test", "=", "=", "="]);
         let result = bin(&env).unwrap();
         println!(
             "two_args_operator_and_string: exit code = {}",
@@ -1624,7 +1610,7 @@ mod tests {
     fn operator_a_as_string() {
         // "-a" at the start is parsed as boolean and, expecting expression before it
         // This is ambiguous and results in an error or unexpected behavior
-        let env = make_env(vec!["test", "-a", "=", "-a"]);
+        let env = make_test_env(vec!["test", "-a", "=", "-a"]);
         let result = bin(&env).unwrap();
         println!("operator_a_as_string: exit code = {}", result.code());
         // Grammar ambiguity - parser interprets differently
@@ -1635,7 +1621,7 @@ mod tests {
     fn operator_o_as_string() {
         // "-o" at the start is parsed as boolean or, expecting expression before it
         // This is ambiguous and results in an error or unexpected behavior
-        let env = make_env(vec!["test", "-o", "=", "-o"]);
+        let env = make_test_env(vec!["test", "-o", "=", "-o"]);
         let result = bin(&env).unwrap();
         println!("operator_o_as_string: exit code = {}", result.code());
         // Grammar ambiguity - parser interprets differently
@@ -1644,7 +1630,7 @@ mod tests {
 
     #[test]
     fn parenthesis_as_string_in_comparison() {
-        let env = make_env(vec!["test", "(", "=", "("]);
+        let env = make_test_env(vec!["test", "(", "=", "("]);
         let result = bin(&env).unwrap();
         println!(
             "parenthesis_as_string_in_comparison: exit code = {}",
@@ -1655,7 +1641,7 @@ mod tests {
 
     #[test]
     fn right_paren_as_single_operand() {
-        let env = make_env(vec!["test", ")"]);
+        let env = make_test_env(vec!["test", ")"]);
         let result = bin(&env).unwrap();
         println!(
             "right_paren_as_single_operand: exit code = {}",
@@ -1667,7 +1653,7 @@ mod tests {
 
     #[test]
     fn left_paren_as_single_operand() {
-        let env = make_env(vec!["test", "("]);
+        let env = make_test_env(vec!["test", "("]);
         let result = bin(&env).unwrap();
         println!(
             "left_paren_as_single_operand: exit code = {}",
@@ -1683,7 +1669,7 @@ mod tests {
 
     #[test]
     fn bracket_with_path_prefix() {
-        let env = make_env(vec!["/usr/bin/[", "-n", "hello", "]"]);
+        let env = make_test_env(vec!["/usr/bin/[", "-n", "hello", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_with_path_prefix: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1691,7 +1677,7 @@ mod tests {
 
     #[test]
     fn bracket_negation() {
-        let env = make_env(vec!["[", "!", "-z", "hello", "]"]);
+        let env = make_test_env(vec!["[", "!", "-z", "hello", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_negation: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1699,7 +1685,7 @@ mod tests {
 
     #[test]
     fn bracket_complex_expression() {
-        let env = make_env(vec!["[", "(", "-n", "a", "-o", "-n", "b", ")", "]"]);
+        let env = make_test_env(vec!["[", "(", "-n", "a", "-o", "-n", "b", ")", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_complex_expression: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1707,7 +1693,7 @@ mod tests {
 
     #[test]
     fn bracket_only_close_bracket() {
-        let env = make_env(vec!["[", "]", "]"]);
+        let env = make_test_env(vec!["[", "]", "]"]);
         let result = bin(&env).unwrap();
         println!("bracket_only_close_bracket: exit code = {}", result.code());
         // "]" as a bare string is non-empty
@@ -1720,7 +1706,7 @@ mod tests {
 
     #[test]
     fn string_with_newline() {
-        let env = make_env(vec!["test", "-n", "hello\nworld"]);
+        let env = make_test_env(vec!["test", "-n", "hello\nworld"]);
         let result = bin(&env).unwrap();
         println!("string_with_newline: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1728,7 +1714,7 @@ mod tests {
 
     #[test]
     fn string_with_tab() {
-        let env = make_env(vec!["test", "-n", "hello\tworld"]);
+        let env = make_test_env(vec!["test", "-n", "hello\tworld"]);
         let result = bin(&env).unwrap();
         println!("string_with_tab: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1736,7 +1722,7 @@ mod tests {
 
     #[test]
     fn string_only_whitespace() {
-        let env = make_env(vec!["test", "-n", "   "]);
+        let env = make_test_env(vec!["test", "-n", "   "]);
         let result = bin(&env).unwrap();
         println!("string_only_whitespace: exit code = {}", result.code());
         assert_eq!(0, result.code());
@@ -1744,7 +1730,7 @@ mod tests {
 
     #[test]
     fn string_zero_only_whitespace() {
-        let env = make_env(vec!["test", "-z", "   "]);
+        let env = make_test_env(vec!["test", "-z", "   "]);
         let result = bin(&env).unwrap();
         println!("string_zero_only_whitespace: exit code = {}", result.code());
         // "   " is not zero length
@@ -1755,7 +1741,7 @@ mod tests {
     fn string_equal_operators_as_values() {
         // "-eq" is parsed as integer equality operator, but "=" is not a valid integer
         // This triggers the integer comparison which fails for non-integers
-        let env = make_env(vec!["test", "-eq", "=", "-eq"]);
+        let env = make_test_env(vec!["test", "-eq", "=", "-eq"]);
         let result = bin(&env).unwrap();
         println!(
             "string_equal_operators_as_values: exit code = {}",
@@ -1771,7 +1757,7 @@ mod tests {
 
     #[test]
     fn missing_binary_operand() {
-        let env = make_env(vec!["test", "foo", "="]);
+        let env = make_test_env(vec!["test", "foo", "="]);
         let result = bin(&env).unwrap();
         println!("missing_binary_operand: exit code = {}", result.code());
         assert_eq!(2, result.code());
@@ -1782,7 +1768,7 @@ mod tests {
 
     #[test]
     fn unclosed_parenthesis() {
-        let env = make_env(vec!["test", "(", "-n", "foo"]);
+        let env = make_test_env(vec!["test", "(", "-n", "foo"]);
         let result = bin(&env).unwrap();
         println!("unclosed_parenthesis: exit code = {}", result.code());
         assert_eq!(2, result.code());
@@ -1793,7 +1779,7 @@ mod tests {
 
     #[test]
     fn extra_arguments() {
-        let env = make_env(vec!["test", "-n", "foo", "bar"]);
+        let env = make_test_env(vec!["test", "-n", "foo", "bar"]);
         let result = bin(&env).unwrap();
         println!("extra_arguments: exit code = {}", result.code());
         assert_eq!(2, result.code());
@@ -1821,7 +1807,7 @@ mod tests {
 
     #[test]
     fn file_not_exists_or_string_nonempty() {
-        let env = make_env(vec!["test", "-e", "/nonexistent", "-o", "-n", "hello"]);
+        let env = make_test_env(vec!["test", "-e", "/nonexistent", "-o", "-n", "hello"]);
         let result = bin(&env).unwrap();
         println!(
             "file_not_exists_or_string_nonempty: exit code = {}",
@@ -1832,7 +1818,7 @@ mod tests {
 
     #[test]
     fn not_file_exists() {
-        let env = make_env(vec!["test", "!", "-e", "/nonexistent"]);
+        let env = make_test_env(vec!["test", "!", "-e", "/nonexistent"]);
         let result = bin(&env).unwrap();
         println!("not_file_exists: exit code = {}", result.code());
         assert_eq!(0, result.code());

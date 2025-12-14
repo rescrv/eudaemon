@@ -2,7 +2,10 @@
 
 use getopts::Options;
 
-use crate::{DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
+use crate::{
+    DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout,
+    format_human_size, resolve_path,
+};
 
 /// Options for the ls command.
 #[derive(Default)]
@@ -196,36 +199,6 @@ where
     Ok(ExitCode::from(exit_code))
 }
 
-/// Resolve a path relative to the current working directory.
-fn resolve_path(cwd: &str, path: &str) -> String {
-    if path.starts_with('/') {
-        path.to_string()
-    } else if path == "." {
-        cwd.to_string()
-    } else if path == ".." {
-        let mut parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
-        parts.pop();
-        if parts.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", parts.join("/"))
-        }
-    } else if let Some(rest) = path.strip_prefix("./") {
-        format!("{}/{}", cwd.trim_end_matches('/'), rest)
-    } else if let Some(rest) = path.strip_prefix("../") {
-        let mut parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
-        parts.pop();
-        let parent = if parts.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", parts.join("/"))
-        };
-        resolve_path(&parent, rest)
-    } else {
-        format!("{}/{}", cwd.trim_end_matches('/'), path)
-    }
-}
-
 /// Sort entries according to options.
 fn sort_entries(entries: &mut [(String, DirEntry)], opts: &LsOptions) {
     if opts.time_sort {
@@ -378,49 +351,14 @@ where
     Ok(())
 }
 
-/// Format a size in human-readable form.
-fn format_human_size(size: u64) -> String {
-    const UNITS: &[&str] = &["B", "K", "M", "G", "T", "P"];
-    let mut size = size as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    // Show decimal only for small values with units (e.g., 1.5K)
-    if unit_idx == 0 || size >= 10.0 {
-        format!("{:>4}{}", size as u64, UNITS[unit_idx])
-    } else {
-        format!("{:>4.1}{}", size, UNITS[unit_idx])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-    use std::collections::HashMap;
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn empty_directory_produces_no_output() {
-        let env = make_env(vec!["ls"]);
+        let env = make_test_env(vec!["ls"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -431,7 +369,7 @@ mod tests {
 
     #[test]
     fn lists_files_in_directory() {
-        let env = make_env(vec!["ls"]);
+        let env = make_test_env(vec!["ls"]);
         env.fs.add_directory("/");
         env.fs.add_file("/foo", "content");
         env.fs.add_file("/bar", "content");
@@ -445,7 +383,7 @@ mod tests {
 
     #[test]
     fn lists_files_sorted_alphabetically() {
-        let env = make_env(vec!["ls"]);
+        let env = make_test_env(vec!["ls"]);
         env.fs.add_directory("/");
         env.fs.add_file("/zebra", "");
         env.fs.add_file("/apple", "");
@@ -460,7 +398,7 @@ mod tests {
 
     #[test]
     fn hides_dotfiles_by_default() {
-        let env = make_env(vec!["ls"]);
+        let env = make_test_env(vec!["ls"]);
         env.fs.add_directory("/");
         env.fs.add_file("/visible", "");
         env.fs.add_file("/.hidden", "");
@@ -474,7 +412,7 @@ mod tests {
 
     #[test]
     fn shows_dotfiles_with_a_flag() {
-        let env = make_env(vec!["ls", "-a"]);
+        let env = make_test_env(vec!["ls", "-a"]);
         env.fs.add_directory("/");
         env.fs.add_file("/visible", "");
         env.fs.add_file("/.hidden", "");
@@ -488,7 +426,7 @@ mod tests {
 
     #[test]
     fn almost_all_flag_shows_dotfiles() {
-        let env = make_env(vec!["ls", "-A"]);
+        let env = make_test_env(vec!["ls", "-A"]);
         env.fs.add_directory("/");
         env.fs.add_file("/.hidden", "");
         let result = bin(&env).unwrap();
@@ -500,7 +438,7 @@ mod tests {
 
     #[test]
     fn reverse_sort_with_r_flag() {
-        let env = make_env(vec!["ls", "-r"]);
+        let env = make_test_env(vec!["ls", "-r"]);
         env.fs.add_directory("/");
         env.fs.add_file("/apple", "");
         env.fs.add_file("/zebra", "");
@@ -514,7 +452,7 @@ mod tests {
 
     #[test]
     fn classify_flag_adds_slash_to_directories() {
-        let env = make_env(vec!["ls", "-F"]);
+        let env = make_test_env(vec!["ls", "-F"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/subdir");
         env.fs.add_file("/file", "");
@@ -528,7 +466,7 @@ mod tests {
 
     #[test]
     fn p_flag_adds_slash_only_to_directories() {
-        let env = make_env(vec!["ls", "-p"]);
+        let env = make_test_env(vec!["ls", "-p"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/subdir");
         env.fs.add_file("/file", "");
@@ -541,7 +479,7 @@ mod tests {
 
     #[test]
     fn long_format_shows_details() {
-        let env = make_env(vec!["ls", "-l"]);
+        let env = make_test_env(vec!["ls", "-l"]);
         env.fs.add_directory("/");
         env.fs.add_file("/testfile", "hello");
         let result = bin(&env).unwrap();
@@ -554,7 +492,7 @@ mod tests {
 
     #[test]
     fn nonexistent_file_returns_error() {
-        let env = make_env(vec!["ls", "/nonexistent"]);
+        let env = make_test_env(vec!["ls", "/nonexistent"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -565,7 +503,7 @@ mod tests {
 
     #[test]
     fn invalid_option_returns_error() {
-        let env = make_env(vec!["ls", "-Q"]);
+        let env = make_test_env(vec!["ls", "-Q"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -576,7 +514,7 @@ mod tests {
 
     #[test]
     fn list_specific_file() {
-        let env = make_env(vec!["ls", "/myfile"]);
+        let env = make_test_env(vec!["ls", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "content");
         let result = bin(&env).unwrap();
@@ -588,7 +526,7 @@ mod tests {
 
     #[test]
     fn d_flag_lists_directory_itself() {
-        let env = make_env(vec!["ls", "-d", "/"]);
+        let env = make_test_env(vec!["ls", "-d", "/"]);
         env.fs.add_directory("/");
         env.fs.add_file("/foo", "");
         let result = bin(&env).unwrap();
@@ -601,7 +539,7 @@ mod tests {
 
     #[test]
     fn recursive_flag_lists_subdirectories() {
-        let env = make_env(vec!["ls", "-R"]);
+        let env = make_test_env(vec!["ls", "-R"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/subdir");
         env.fs.add_file("/subdir/nested", "");
@@ -615,7 +553,7 @@ mod tests {
 
     #[test]
     fn multiple_directories_shows_headers() {
-        let env = make_env(vec!["ls", "/dir1", "/dir2"]);
+        let env = make_test_env(vec!["ls", "/dir1", "/dir2"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir1");
         env.fs.add_directory("/dir2");
@@ -680,7 +618,7 @@ mod tests {
 
     #[test]
     fn sort_by_size() {
-        let env = make_env(vec!["ls", "-S"]);
+        let env = make_test_env(vec!["ls", "-S"]);
         env.fs.add_directory("/");
         env.fs.add_file("/small", "x");
         env.fs.add_file("/large", "xxxxxxxxxx");
@@ -695,7 +633,7 @@ mod tests {
 
     #[test]
     fn human_readable_sizes() {
-        let env = make_env(vec!["ls", "-lh"]);
+        let env = make_test_env(vec!["ls", "-lh"]);
         env.fs.add_directory("/");
         env.fs.add_file("/file", "hello");
         let result = bin(&env).unwrap();

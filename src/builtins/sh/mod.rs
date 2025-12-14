@@ -112,26 +112,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn no_args_shows_usage() {
-        let env = make_env(vec!["sh"]);
+        let env = make_test_env(vec!["sh"]);
         let result = bin(&env).unwrap();
         assert_eq!(2, result.code());
         assert!(env.stderr.into_string().contains("usage"));
@@ -139,7 +124,7 @@ mod tests {
 
     #[test]
     fn c_flag_requires_command() {
-        let env = make_env(vec!["sh", "-c"]);
+        let env = make_test_env(vec!["sh", "-c"]);
         let result = bin(&env).unwrap();
         assert_eq!(2, result.code());
         assert!(env.stderr.into_string().contains("requires an argument"));
@@ -147,7 +132,7 @@ mod tests {
 
     #[test]
     fn c_flag_runs_cat() {
-        let env = make_env(vec!["sh", "-c", "cat file.txt"]);
+        let env = make_test_env(vec!["sh", "-c", "cat file.txt"]);
         env.fs.add_file("file.txt", "hello world\n");
         let result = bin(&env).unwrap();
         // Print stdout/stderr for debugging
@@ -159,7 +144,7 @@ mod tests {
 
     #[test]
     fn script_file_not_found() {
-        let env = make_env(vec!["sh", "nonexistent.sh"]);
+        let env = make_test_env(vec!["sh", "nonexistent.sh"]);
         let result = bin(&env).unwrap();
         assert_eq!(127, result.code());
         assert!(env.stderr.into_string().contains("nonexistent.sh"));
@@ -167,7 +152,7 @@ mod tests {
 
     #[test]
     fn script_file_runs() {
-        let env = make_env(vec!["sh", "test.sh"]);
+        let env = make_test_env(vec!["sh", "test.sh"]);
         env.fs.add_file("test.sh", "cat a.txt\ncat b.txt");
         env.fs.add_file("a.txt", "hello\n");
         env.fs.add_file("b.txt", "world\n");
@@ -181,7 +166,7 @@ mod tests {
 
     #[test]
     fn script_file_skips_comments_and_blanks() {
-        let env = make_env(vec!["sh", "test.sh"]);
+        let env = make_test_env(vec!["sh", "test.sh"]);
         env.fs.add_file(
             "test.sh",
             "# comment\n\ncat a.txt\n  # indented comment\n\ncat b.txt\n",
@@ -195,7 +180,7 @@ mod tests {
 
     #[test]
     fn run_cat() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "hello\n");
         let result = run("cat test.txt".to_string(), &env).unwrap();
         assert_eq!(0, result.code());
@@ -204,7 +189,7 @@ mod tests {
 
     #[test]
     fn run_empty_command() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run("".to_string(), &env);
         println!("result: {:?}", result);
         assert!(matches!(result, Err(Error::EmptyCommand)));
@@ -212,7 +197,7 @@ mod tests {
 
     #[test]
     fn run_unknown_binary() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run("nonexistent".to_string(), &env);
         assert!(matches!(result, Err(Error::UnknownBinary(_))));
     }
@@ -223,28 +208,28 @@ mod tests {
 
     #[test]
     fn run_string_empty_script() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("", &env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn run_string_comment_only() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("# just a comment", &env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn run_string_shebang_only() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("#!/bin/sh", &env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn run_string_single_command() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "hello\n");
         let result = run_string("cat test.txt", &env).unwrap();
         assert_eq!(0, result.code());
@@ -253,7 +238,7 @@ mod tests {
 
     #[test]
     fn run_string_multiple_commands() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = run_string("cat a.txt\ncat b.txt", &env).unwrap();
@@ -263,7 +248,7 @@ mod tests {
 
     #[test]
     fn run_string_skips_blank_lines() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         let result = run_string("\n\ncat a.txt\n\n", &env).unwrap();
         assert_eq!(0, result.code());
@@ -272,7 +257,7 @@ mod tests {
 
     #[test]
     fn run_string_skips_comments() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         let result = run_string("# comment\ncat a.txt\n# another comment", &env).unwrap();
         assert_eq!(0, result.code());
@@ -281,7 +266,7 @@ mod tests {
 
     #[test]
     fn run_string_with_shebang() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         let result = run_string("#!/bin/sh\ncat a.txt", &env).unwrap();
         assert_eq!(0, result.code());
@@ -290,7 +275,7 @@ mod tests {
 
     #[test]
     fn run_string_returns_last_exit_code() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         let result = run_string("cat a.txt\ncat nonexistent.txt", &env).unwrap();
         assert_eq!(1, result.code());
@@ -302,7 +287,7 @@ mod tests {
 
     #[test]
     fn exit_terminates_script() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("exit 0\necho should_not_appear", &env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -310,7 +295,7 @@ mod tests {
 
     #[test]
     fn exit_with_code_terminates_script() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("exit 42\necho should_not_appear", &env).unwrap();
         assert_eq!(42, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -318,7 +303,7 @@ mod tests {
 
     #[test]
     fn exit_terminates_after_other_commands() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("echo before\nexit 5\necho after", &env).unwrap();
         assert_eq!(5, result.code());
         assert_eq!("before\n", env.stdout.into_string());
@@ -326,7 +311,7 @@ mod tests {
 
     #[test]
     fn exit_in_middle_of_script() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = run_string("cat a.txt\nexit 3\ncat b.txt", &env).unwrap();
@@ -336,28 +321,28 @@ mod tests {
 
     #[test]
     fn true_script_exits_zero() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("#!/bin/sh\nexit 0", &env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn false_script_exits_one() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("#!/bin/sh\nexit 1", &env).unwrap();
         assert_eq!(1, result.code());
     }
 
     #[test]
     fn multiple_exits_uses_first() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         let result = run_string("exit 7\nexit 8\nexit 9", &env).unwrap();
         assert_eq!(7, result.code());
     }
 
     #[test]
     fn exit_signal_persists() {
-        let env = make_env(vec!["unused"]);
+        let env = make_test_env(vec!["unused"]);
         assert!(!env.is_exit_signaled());
         let _ = run_string("exit 0", &env).unwrap();
         assert!(env.is_exit_signaled());

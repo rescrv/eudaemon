@@ -210,23 +210,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -234,7 +218,7 @@ mod tests {
 
     #[test]
     fn basic_all_columns() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -246,7 +230,7 @@ mod tests {
 
     #[test]
     fn empty_files() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "");
         env.fs.add_file("file2.txt", "");
         let result = bin(&env).unwrap();
@@ -256,7 +240,7 @@ mod tests {
 
     #[test]
     fn file1_empty() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "");
         env.fs.add_file("file2.txt", "a\nb\n");
         let result = bin(&env).unwrap();
@@ -268,7 +252,7 @@ mod tests {
 
     #[test]
     fn file2_empty() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\n");
         env.fs.add_file("file2.txt", "");
         let result = bin(&env).unwrap();
@@ -280,7 +264,7 @@ mod tests {
 
     #[test]
     fn identical_files() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "a\nb\nc\n");
         let result = bin(&env).unwrap();
@@ -292,7 +276,7 @@ mod tests {
 
     #[test]
     fn no_common_lines() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nc\ne\n");
         env.fs.add_file("file2.txt", "b\nd\nf\n");
         let result = bin(&env).unwrap();
@@ -308,7 +292,7 @@ mod tests {
 
     #[test]
     fn suppress_col1() {
-        let env = make_env(vec!["comm", "-1", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-1", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -320,7 +304,7 @@ mod tests {
 
     #[test]
     fn suppress_col2() {
-        let env = make_env(vec!["comm", "-2", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-2", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -332,7 +316,7 @@ mod tests {
 
     #[test]
     fn suppress_col3() {
-        let env = make_env(vec!["comm", "-3", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-3", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -344,7 +328,7 @@ mod tests {
 
     #[test]
     fn suppress_col1_col2() {
-        let env = make_env(vec!["comm", "-12", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-12", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -356,7 +340,7 @@ mod tests {
 
     #[test]
     fn suppress_col1_col3() {
-        let env = make_env(vec!["comm", "-13", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-13", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -368,7 +352,7 @@ mod tests {
 
     #[test]
     fn suppress_col2_col3() {
-        let env = make_env(vec!["comm", "-23", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-23", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -380,7 +364,7 @@ mod tests {
 
     #[test]
     fn suppress_all_columns() {
-        let env = make_env(vec!["comm", "-123", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-123", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
@@ -394,7 +378,7 @@ mod tests {
 
     #[test]
     fn case_insensitive() {
-        let env = make_env(vec!["comm", "-i", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-i", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "A\nb\nC\n");
         env.fs.add_file("file2.txt", "a\nB\nc\n");
         let result = bin(&env).unwrap();
@@ -406,7 +390,7 @@ mod tests {
 
     #[test]
     fn case_insensitive_with_suppress() {
-        let env = make_env(vec!["comm", "-i", "-12", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-i", "-12", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "A\nb\nC\n");
         env.fs.add_file("file2.txt", "a\nB\nc\n");
         let result = bin(&env).unwrap();
@@ -422,7 +406,7 @@ mod tests {
 
     #[test]
     fn stdin_as_file1() {
-        let env = make_env(vec!["comm", "-", "file2.txt"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["comm", "-", "file2.txt"], "a\nb\nc\n");
         env.fs.add_file("file2.txt", "b\nc\nd\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -433,7 +417,7 @@ mod tests {
 
     #[test]
     fn stdin_as_file2() {
-        let env = make_env(vec!["comm", "file1.txt", "-"], "b\nc\nd\n");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "-"], "b\nc\nd\n");
         env.fs.add_file("file1.txt", "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -448,7 +432,7 @@ mod tests {
 
     #[test]
     fn file1_not_found() {
-        let env = make_env(vec!["comm", "nonexistent.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "nonexistent.txt", "file2.txt"], "");
         env.fs.add_file("file2.txt", "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -459,7 +443,7 @@ mod tests {
 
     #[test]
     fn file2_not_found() {
-        let env = make_env(vec!["comm", "file1.txt", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "nonexistent.txt"], "");
         env.fs.add_file("file1.txt", "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -470,7 +454,7 @@ mod tests {
 
     #[test]
     fn missing_file_args() {
-        let env = make_env(vec!["comm"], "");
+        let env = make_test_env_with_stdin(vec!["comm"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -480,7 +464,7 @@ mod tests {
 
     #[test]
     fn only_one_file_arg() {
-        let env = make_env(vec!["comm", "file1.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -494,7 +478,7 @@ mod tests {
 
     #[test]
     fn regression_00() {
-        let env = make_env(vec!["comm", "-12", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-12", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a b\nc d\ne f\ne f g\nh i\n");
         env.fs.add_file("file2.txt", "a b\ne f g\n");
         let result = bin(&env).unwrap();
@@ -506,7 +490,7 @@ mod tests {
 
     #[test]
     fn regression_01() {
-        let env = make_env(vec!["comm", "-12", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "-12", "file1.txt", "file2.txt"], "");
         env.fs
             .add_file("file1.txt", "a\tb\nc\td\ne\tf\ne\tf\tg\nh\ti\n");
         env.fs.add_file("file2.txt", "a\tb\ne\tf\tg\n");
@@ -519,7 +503,7 @@ mod tests {
 
     #[test]
     fn regression_02() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\nc");
         env.fs.add_file("file2.txt", "c\nd\ne");
         let result = bin(&env).unwrap();
@@ -535,7 +519,7 @@ mod tests {
 
     #[test]
     fn no_trailing_newline_file1() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb");
         env.fs.add_file("file2.txt", "b\nc\n");
         let result = bin(&env).unwrap();
@@ -547,7 +531,7 @@ mod tests {
 
     #[test]
     fn no_trailing_newline_file2() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "a\nb\n");
         env.fs.add_file("file2.txt", "b\nc");
         let result = bin(&env).unwrap();
@@ -559,7 +543,7 @@ mod tests {
 
     #[test]
     fn single_line_files() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", "hello\n");
         env.fs.add_file("file2.txt", "hello\n");
         let result = bin(&env).unwrap();
@@ -571,7 +555,7 @@ mod tests {
 
     #[test]
     fn whitespace_lines() {
-        let env = make_env(vec!["comm", "file1.txt", "file2.txt"], "");
+        let env = make_test_env_with_stdin(vec!["comm", "file1.txt", "file2.txt"], "");
         env.fs.add_file("file1.txt", " \n  \n");
         env.fs.add_file("file2.txt", " \n   \n");
         let result = bin(&env).unwrap();

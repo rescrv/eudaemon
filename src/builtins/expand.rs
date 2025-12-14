@@ -307,23 +307,7 @@ fn expand_line(line: &str, tab_stops: &TabStops) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // TabStops::parse tests
@@ -465,7 +449,7 @@ mod tests {
 
     #[test]
     fn no_tabs() {
-        let env = make_env(vec!["expand"], "hello world");
+        let env = make_test_env_with_stdin(vec!["expand"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello world\n", env.stdout.into_string());
@@ -473,7 +457,7 @@ mod tests {
 
     #[test]
     fn single_tab_at_start() {
-        let env = make_env(vec!["expand"], "\thello");
+        let env = make_test_env_with_stdin(vec!["expand"], "\thello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("        hello\n", env.stdout.into_string());
@@ -481,7 +465,7 @@ mod tests {
 
     #[test]
     fn single_tab_after_text() {
-        let env = make_env(vec!["expand"], "hi\tthere");
+        let env = make_test_env_with_stdin(vec!["expand"], "hi\tthere");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // "hi" is 2 chars, tab goes to column 8, so 6 spaces
@@ -490,7 +474,7 @@ mod tests {
 
     #[test]
     fn multiple_tabs() {
-        let env = make_env(vec!["expand"], "\t\thello");
+        let env = make_test_env_with_stdin(vec!["expand"], "\t\thello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // First tab: 8 spaces, second tab: 8 more spaces
@@ -499,7 +483,7 @@ mod tests {
 
     #[test]
     fn tab_at_column_7() {
-        let env = make_env(vec!["expand"], "1234567\tx");
+        let env = make_test_env_with_stdin(vec!["expand"], "1234567\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // 7 chars, tab adds 1 space to reach column 8
@@ -508,7 +492,7 @@ mod tests {
 
     #[test]
     fn tab_at_column_8() {
-        let env = make_env(vec!["expand"], "12345678\tx");
+        let env = make_test_env_with_stdin(vec!["expand"], "12345678\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // 8 chars, tab adds 8 spaces to reach column 16
@@ -521,7 +505,7 @@ mod tests {
 
     #[test]
     fn tab_interval_4() {
-        let env = make_env(vec!["expand", "-t", "4"], "\thello");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "4"], "\thello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("    hello\n", env.stdout.into_string());
@@ -529,7 +513,7 @@ mod tests {
 
     #[test]
     fn tab_interval_4_after_text() {
-        let env = make_env(vec!["expand", "-t", "4"], "ab\tcd");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "4"], "ab\tcd");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // "ab" is 2 chars, tab goes to column 4, so 2 spaces
@@ -538,7 +522,7 @@ mod tests {
 
     #[test]
     fn tab_list() {
-        let env = make_env(vec!["expand", "-t", "4,8,12"], "\t\t\tx");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "4,8,12"], "\t\t\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Tab 1: column 0 -> 3 (3 spaces to reach position 4)
@@ -549,7 +533,7 @@ mod tests {
 
     #[test]
     fn tab_list_past_all_stops() {
-        let env = make_env(vec!["expand", "-t", "4,8"], "12345678901234\tx");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "4,8"], "12345678901234\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // 14 chars, past all tab stops, just 1 space
@@ -562,7 +546,7 @@ mod tests {
 
     #[test]
     fn obsolete_syntax_single() {
-        let env = make_env(vec!["expand", "-4"], "\thello");
+        let env = make_test_env_with_stdin(vec!["expand", "-4"], "\thello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("    hello\n", env.stdout.into_string());
@@ -570,7 +554,7 @@ mod tests {
 
     #[test]
     fn obsolete_syntax_overridden_by_t() {
-        let env = make_env(vec!["expand", "-4", "-t", "2"], "\thello");
+        let env = make_test_env_with_stdin(vec!["expand", "-4", "-t", "2"], "\thello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // -t 2 should override -4
@@ -583,7 +567,7 @@ mod tests {
 
     #[test]
     fn backspace_decrements_column() {
-        let env = make_env(vec!["expand"], "abc\x08\tx");
+        let env = make_test_env_with_stdin(vec!["expand"], "abc\x08\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // "abc" = 3 chars, backspace decrements to 2, tab from column 2 = 6 spaces
@@ -592,7 +576,7 @@ mod tests {
 
     #[test]
     fn backspace_at_column_0() {
-        let env = make_env(vec!["expand"], "\x08\tx");
+        let env = make_test_env_with_stdin(vec!["expand"], "\x08\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Backspace at column 0 stays at 0, tab = 8 spaces
@@ -605,7 +589,7 @@ mod tests {
 
     #[test]
     fn multiple_lines() {
-        let env = make_env(vec!["expand"], "\ta\n\tb\n\tc");
+        let env = make_test_env_with_stdin(vec!["expand"], "\ta\n\tb\n\tc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!(
@@ -616,7 +600,7 @@ mod tests {
 
     #[test]
     fn column_resets_per_line() {
-        let env = make_env(vec!["expand"], "1234567\tx\n\ty");
+        let env = make_test_env_with_stdin(vec!["expand"], "1234567\tx\n\ty");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Line 1: 7 chars + 1 space + x
@@ -630,7 +614,7 @@ mod tests {
 
     #[test]
     fn read_from_file() {
-        let env = make_env(vec!["expand", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "input.txt"], "");
         env.fs.add_file("input.txt", "\thello\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -639,7 +623,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["expand", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -649,7 +633,7 @@ mod tests {
 
     #[test]
     fn multiple_files() {
-        let env = make_env(vec!["expand", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "\tA\n");
         env.fs.add_file("b.txt", "\tB\n");
         let result = bin(&env).unwrap();
@@ -659,7 +643,7 @@ mod tests {
 
     #[test]
     fn dash_means_stdin() {
-        let env = make_env(vec!["expand", "-"], "\tfrom stdin");
+        let env = make_test_env_with_stdin(vec!["expand", "-"], "\tfrom stdin");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("        from stdin\n", env.stdout.into_string());
@@ -667,7 +651,7 @@ mod tests {
 
     #[test]
     fn mixed_files_and_stdin() {
-        let env = make_env(vec!["expand", "a.txt", "-", "b.txt"], "\tMIDDLE");
+        let env = make_test_env_with_stdin(vec!["expand", "a.txt", "-", "b.txt"], "\tMIDDLE");
         env.fs.add_file("a.txt", "\tFIRST\n");
         env.fs.add_file("b.txt", "\tLAST\n");
         let result = bin(&env).unwrap();
@@ -684,7 +668,7 @@ mod tests {
 
     #[test]
     fn bad_tab_stop_spec() {
-        let env = make_env(vec!["expand", "-t", "abc"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "abc"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -694,7 +678,7 @@ mod tests {
 
     #[test]
     fn bad_tab_stop_zero() {
-        let env = make_env(vec!["expand", "-t", "0"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "0"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -704,7 +688,7 @@ mod tests {
 
     #[test]
     fn bad_tab_stop_non_increasing() {
-        let env = make_env(vec!["expand", "-t", "8,4"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "8,4"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -718,7 +702,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["expand"], "");
+        let env = make_test_env_with_stdin(vec!["expand"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -726,7 +710,7 @@ mod tests {
 
     #[test]
     fn only_tabs() {
-        let env = make_env(vec!["expand"], "\t\t\t");
+        let env = make_test_env_with_stdin(vec!["expand"], "\t\t\t");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("                        \n", env.stdout.into_string());
@@ -734,7 +718,7 @@ mod tests {
 
     #[test]
     fn tab_interval_1() {
-        let env = make_env(vec!["expand", "-t", "1"], "a\tb\tc");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "1"], "a\tb\tc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // With interval 1, every position is a tab stop, so tabs become 1 space
@@ -743,7 +727,7 @@ mod tests {
 
     #[test]
     fn very_long_interval() {
-        let env = make_env(vec!["expand", "-t", "100"], "\tx");
+        let env = make_test_env_with_stdin(vec!["expand", "-t", "100"], "\tx");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -753,7 +737,7 @@ mod tests {
 
     #[test]
     fn multiple_files_one_missing() {
-        let env = make_env(vec!["expand", "a.txt", "missing.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["expand", "a.txt", "missing.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "\tA\n");
         env.fs.add_file("b.txt", "\tB\n");
         let result = bin(&env).unwrap();

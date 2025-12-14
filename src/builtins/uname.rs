@@ -114,27 +114,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-    use std::collections::HashMap;
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn no_arguments_prints_sysname() {
-        let env = make_env(vec!["uname"]);
+        let env = make_test_env(vec!["uname"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("synshell\n", env.stdout.into_string());
@@ -142,7 +126,7 @@ mod tests {
 
     #[test]
     fn sysname_flag() {
-        let env = make_env(vec!["uname", "-s"]);
+        let env = make_test_env(vec!["uname", "-s"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("synshell\n", env.stdout.into_string());
@@ -150,7 +134,7 @@ mod tests {
 
     #[test]
     fn release_flag() {
-        let env = make_env(vec!["uname", "-r"]);
+        let env = make_test_env(vec!["uname", "-r"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -160,7 +144,7 @@ mod tests {
 
     #[test]
     fn version_flag() {
-        let env = make_env(vec!["uname", "-v"]);
+        let env = make_test_env(vec!["uname", "-v"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -170,7 +154,7 @@ mod tests {
 
     #[test]
     fn machine_flag() {
-        let env = make_env(vec!["uname", "-m"]);
+        let env = make_test_env(vec!["uname", "-m"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -180,7 +164,7 @@ mod tests {
 
     #[test]
     fn os_flag() {
-        let env = make_env(vec!["uname", "-o"]);
+        let env = make_test_env(vec!["uname", "-o"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -190,7 +174,7 @@ mod tests {
 
     #[test]
     fn all_flag() {
-        let env = make_env(vec!["uname", "-a"]);
+        let env = make_test_env(vec!["uname", "-a"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -203,7 +187,7 @@ mod tests {
 
     #[test]
     fn combined_flags_sr() {
-        let env = make_env(vec!["uname", "-sr"]);
+        let env = make_test_env(vec!["uname", "-sr"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -214,7 +198,7 @@ mod tests {
 
     #[test]
     fn multiple_separate_flags() {
-        let env = make_env(vec!["uname", "-s", "-m"]);
+        let env = make_test_env(vec!["uname", "-s", "-m"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -225,7 +209,7 @@ mod tests {
 
     #[test]
     fn invalid_option_returns_error() {
-        let env = make_env(vec!["uname", "-x"]);
+        let env = make_test_env(vec!["uname", "-x"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -236,7 +220,7 @@ mod tests {
 
     #[test]
     fn extra_arguments_returns_error() {
-        let env = make_env(vec!["uname", "extra"]);
+        let env = make_test_env(vec!["uname", "extra"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -246,7 +230,7 @@ mod tests {
 
     #[test]
     fn double_dash_stops_option_parsing() {
-        let env = make_env(vec!["uname", "--"]);
+        let env = make_test_env(vec!["uname", "--"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("synshell\n", env.stdout.into_string());
@@ -254,21 +238,21 @@ mod tests {
 
     #[test]
     fn double_dash_with_extra_args_is_error() {
-        let env = make_env(vec!["uname", "--", "extra"]);
+        let env = make_test_env(vec!["uname", "--", "extra"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
 
     #[test]
     fn produces_no_stderr_on_success() {
-        let env = make_env(vec!["uname"]);
+        let env = make_test_env(vec!["uname"]);
         let _ = bin(&env).unwrap();
         assert_eq!("", env.stderr.into_string());
     }
 
     #[test]
     fn output_is_space_separated() {
-        let env = make_env(vec!["uname", "-smo"]);
+        let env = make_test_env(vec!["uname", "-smo"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();

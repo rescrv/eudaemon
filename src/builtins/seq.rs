@@ -648,22 +648,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     // ========================================================================
     // Basic sequence tests
@@ -671,7 +656,7 @@ mod tests {
 
     #[test]
     fn seq_1_to_3() {
-        let env = make_env(vec!["seq", "3"]);
+        let env = make_test_env(vec!["seq", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n2\n3\n", env.stdout.into_string());
@@ -679,7 +664,7 @@ mod tests {
 
     #[test]
     fn seq_1_to_5() {
-        let env = make_env(vec!["seq", "5"]);
+        let env = make_test_env(vec!["seq", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n2\n3\n4\n5\n", env.stdout.into_string());
@@ -687,7 +672,7 @@ mod tests {
 
     #[test]
     fn seq_2_to_5() {
-        let env = make_env(vec!["seq", "2", "5"]);
+        let env = make_test_env(vec!["seq", "2", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("2\n3\n4\n5\n", env.stdout.into_string());
@@ -695,7 +680,7 @@ mod tests {
 
     #[test]
     fn seq_1_2_5() {
-        let env = make_env(vec!["seq", "1", "2", "5"]);
+        let env = make_test_env(vec!["seq", "1", "2", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n3\n5\n", env.stdout.into_string());
@@ -703,7 +688,7 @@ mod tests {
 
     #[test]
     fn seq_descending() {
-        let env = make_env(vec!["seq", "5", "1"]);
+        let env = make_test_env(vec!["seq", "5", "1"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("5\n4\n3\n2\n1\n", env.stdout.into_string());
@@ -711,7 +696,7 @@ mod tests {
 
     #[test]
     fn seq_descending_explicit_decrement() {
-        let env = make_env(vec!["seq", "5", "-1", "1"]);
+        let env = make_test_env(vec!["seq", "5", "-1", "1"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("5\n4\n3\n2\n1\n", env.stdout.into_string());
@@ -719,7 +704,7 @@ mod tests {
 
     #[test]
     fn seq_descending_step_2() {
-        let env = make_env(vec!["seq", "10", "-2", "1"]);
+        let env = make_test_env(vec!["seq", "10", "-2", "1"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("10\n8\n6\n4\n2\n", env.stdout.into_string());
@@ -731,7 +716,7 @@ mod tests {
 
     #[test]
     fn seq_float_increment() {
-        let env = make_env(vec!["seq", "1", "0.5", "3"]);
+        let env = make_test_env(vec!["seq", "1", "0.5", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n1.5\n2\n2.5\n3\n", env.stdout.into_string());
@@ -739,7 +724,7 @@ mod tests {
 
     #[test]
     fn seq_float_start() {
-        let env = make_env(vec!["seq", "0.5", "3"]);
+        let env = make_test_env(vec!["seq", "0.5", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0.5\n1.5\n2.5\n", env.stdout.into_string());
@@ -747,7 +732,7 @@ mod tests {
 
     #[test]
     fn seq_negative_start() {
-        let env = make_env(vec!["seq", "-3", "0"]);
+        let env = make_test_env(vec!["seq", "-3", "0"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-3\n-2\n-1\n0\n", env.stdout.into_string());
@@ -755,7 +740,7 @@ mod tests {
 
     #[test]
     fn seq_negative_to_positive() {
-        let env = make_env(vec!["seq", "-2", "2"]);
+        let env = make_test_env(vec!["seq", "-2", "2"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-2\n-1\n0\n1\n2\n", env.stdout.into_string());
@@ -767,7 +752,7 @@ mod tests {
 
     #[test]
     fn seq_format_f() {
-        let env = make_env(vec!["seq", "-f", "%.2f", "1", "0.5", "2"]);
+        let env = make_test_env(vec!["seq", "-f", "%.2f", "1", "0.5", "2"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1.00\n1.50\n2.00\n", env.stdout.into_string());
@@ -775,7 +760,7 @@ mod tests {
 
     #[test]
     fn seq_format_with_text() {
-        let env = make_env(vec!["seq", "-f", "Item %g", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-f", "Item %g", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("Item 1\nItem 2\nItem 3\n", env.stdout.into_string());
@@ -783,7 +768,7 @@ mod tests {
 
     #[test]
     fn seq_format_percent_percent() {
-        let env = make_env(vec!["seq", "-f", "%g%%", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-f", "%g%%", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1%\n2%\n3%\n", env.stdout.into_string());
@@ -791,7 +776,7 @@ mod tests {
 
     #[test]
     fn seq_invalid_format_no_conversion() {
-        let env = make_env(vec!["seq", "-f", "no conversion", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-f", "no conversion", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -801,7 +786,7 @@ mod tests {
 
     #[test]
     fn seq_invalid_format_integer_conversion() {
-        let env = make_env(vec!["seq", "-f", "%d", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-f", "%d", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -815,7 +800,7 @@ mod tests {
 
     #[test]
     fn seq_separator_comma() {
-        let env = make_env(vec!["seq", "-s", ",", "1", "5"]);
+        let env = make_test_env(vec!["seq", "-s", ",", "1", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1,2,3,4,5\n", env.stdout.into_string());
@@ -823,7 +808,7 @@ mod tests {
 
     #[test]
     fn seq_separator_arrow() {
-        let env = make_env(vec!["seq", "-s", "-->", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-s", "-->", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1-->2-->3\n", env.stdout.into_string());
@@ -831,7 +816,7 @@ mod tests {
 
     #[test]
     fn seq_separator_tab_escape() {
-        let env = make_env(vec!["seq", "-s", "\\t", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-s", "\\t", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\t2\t3\n", env.stdout.into_string());
@@ -839,7 +824,7 @@ mod tests {
 
     #[test]
     fn seq_separator_empty() {
-        let env = make_env(vec!["seq", "-s", "", "1", "5"]);
+        let env = make_test_env(vec!["seq", "-s", "", "1", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("12345\n", env.stdout.into_string());
@@ -851,7 +836,7 @@ mod tests {
 
     #[test]
     fn seq_terminator() {
-        let env = make_env(vec!["seq", "-t", "[end]", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-t", "[end]", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n2\n3\n[end]\n", env.stdout.into_string());
@@ -859,7 +844,7 @@ mod tests {
 
     #[test]
     fn seq_terminator_with_separator() {
-        let env = make_env(vec!["seq", "-s", "-->", "-t", "[end]", "1", "3"]);
+        let env = make_test_env(vec!["seq", "-s", "-->", "-t", "[end]", "1", "3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1-->2-->3-->[end]\n", env.stdout.into_string());
@@ -871,7 +856,7 @@ mod tests {
 
     #[test]
     fn seq_equal_width() {
-        let env = make_env(vec!["seq", "-w", "8", "10"]);
+        let env = make_test_env(vec!["seq", "-w", "8", "10"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("08\n09\n10\n", env.stdout.into_string());
@@ -879,7 +864,7 @@ mod tests {
 
     #[test]
     fn seq_equal_width_three_digits() {
-        let env = make_env(vec!["seq", "-w", "98", "101"]);
+        let env = make_test_env(vec!["seq", "-w", "98", "101"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("098\n099\n100\n101\n", env.stdout.into_string());
@@ -887,7 +872,7 @@ mod tests {
 
     #[test]
     fn seq_equal_width_decimals() {
-        let env = make_env(vec!["seq", "-w", "0", ".05", ".1"]);
+        let env = make_test_env(vec!["seq", "-w", "0", ".05", ".1"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let output = env.stdout.into_string();
@@ -899,7 +884,7 @@ mod tests {
 
     #[test]
     fn seq_w_ignored_with_f() {
-        let env = make_env(vec!["seq", "-w", "-f", "%g", "8", "10"]);
+        let env = make_test_env(vec!["seq", "-w", "-f", "%g", "8", "10"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // -w is ignored when -f is specified
@@ -912,7 +897,7 @@ mod tests {
 
     #[test]
     fn seq_no_arguments() {
-        let env = make_env(vec!["seq"]);
+        let env = make_test_env(vec!["seq"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -922,7 +907,7 @@ mod tests {
 
     #[test]
     fn seq_too_many_arguments() {
-        let env = make_env(vec!["seq", "1", "2", "3", "4"]);
+        let env = make_test_env(vec!["seq", "1", "2", "3", "4"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -932,7 +917,7 @@ mod tests {
 
     #[test]
     fn seq_zero_increment() {
-        let env = make_env(vec!["seq", "1", "0", "5"]);
+        let env = make_test_env(vec!["seq", "1", "0", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -942,7 +927,7 @@ mod tests {
 
     #[test]
     fn seq_zero_decrement() {
-        let env = make_env(vec!["seq", "5", "0", "1"]);
+        let env = make_test_env(vec!["seq", "5", "0", "1"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -952,7 +937,7 @@ mod tests {
 
     #[test]
     fn seq_needs_positive_increment() {
-        let env = make_env(vec!["seq", "1", "-1", "5"]);
+        let env = make_test_env(vec!["seq", "1", "-1", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -962,7 +947,7 @@ mod tests {
 
     #[test]
     fn seq_needs_negative_decrement() {
-        let env = make_env(vec!["seq", "5", "1", "1"]);
+        let env = make_test_env(vec!["seq", "5", "1", "1"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -972,7 +957,7 @@ mod tests {
 
     #[test]
     fn seq_invalid_number() {
-        let env = make_env(vec!["seq", "abc"]);
+        let env = make_test_env(vec!["seq", "abc"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -986,7 +971,7 @@ mod tests {
 
     #[test]
     fn seq_single_value() {
-        let env = make_env(vec!["seq", "1", "1"]);
+        let env = make_test_env(vec!["seq", "1", "1"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n", env.stdout.into_string());
@@ -994,7 +979,7 @@ mod tests {
 
     #[test]
     fn seq_same_start_end() {
-        let env = make_env(vec!["seq", "5", "5"]);
+        let env = make_test_env(vec!["seq", "5", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("5\n", env.stdout.into_string());
@@ -1002,7 +987,7 @@ mod tests {
 
     #[test]
     fn seq_large_step_past_end() {
-        let env = make_env(vec!["seq", "1", "10", "5"]);
+        let env = make_test_env(vec!["seq", "1", "10", "5"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("1\n", env.stdout.into_string());
@@ -1010,7 +995,7 @@ mod tests {
 
     #[test]
     fn seq_zero() {
-        let env = make_env(vec!["seq", "0"]);
+        let env = make_test_env(vec!["seq", "0"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // seq 0 starts at 1 (default) and goes to 0 with increment -1
@@ -1019,7 +1004,7 @@ mod tests {
 
     #[test]
     fn seq_negative_only() {
-        let env = make_env(vec!["seq", "-5", "-3"]);
+        let env = make_test_env(vec!["seq", "-5", "-3"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-5\n-4\n-3\n", env.stdout.into_string());

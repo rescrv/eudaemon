@@ -814,27 +814,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-    use std::collections::HashMap;
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn stat_regular_file_default_format() {
-        let env = make_env(vec!["stat", "/myfile"]);
+        let env = make_test_env(vec!["stat", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -847,7 +831,7 @@ mod tests {
 
     #[test]
     fn stat_directory_default_format() {
-        let env = make_env(vec!["stat", "/mydir"]);
+        let env = make_test_env(vec!["stat", "/mydir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/mydir");
         let result = bin(&env).unwrap();
@@ -860,7 +844,7 @@ mod tests {
 
     #[test]
     fn stat_symlink_default_format() {
-        let env = make_env(vec!["stat", "/mylink"]);
+        let env = make_test_env(vec!["stat", "/mylink"]);
         env.fs.add_directory("/");
         env.fs.add_file("/target", "content");
         env.fs.symlink("/target", "/mylink").unwrap();
@@ -874,7 +858,7 @@ mod tests {
 
     #[test]
     fn stat_follow_symlinks_with_l_flag() {
-        let env = make_env(vec!["stat", "-L", "/mylink"]);
+        let env = make_test_env(vec!["stat", "-L", "/mylink"]);
         env.fs.add_directory("/");
         env.fs.add_file("/target", "content");
         env.fs.symlink("/target", "/mylink").unwrap();
@@ -888,7 +872,7 @@ mod tests {
 
     #[test]
     fn stat_nonexistent_file_returns_error() {
-        let env = make_env(vec!["stat", "/nonexistent"]);
+        let env = make_test_env(vec!["stat", "/nonexistent"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -899,7 +883,7 @@ mod tests {
 
     #[test]
     fn stat_quiet_suppresses_errors() {
-        let env = make_env(vec!["stat", "-q", "/nonexistent"]);
+        let env = make_test_env(vec!["stat", "-q", "/nonexistent"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -910,7 +894,7 @@ mod tests {
 
     #[test]
     fn stat_custom_format_filename() {
-        let env = make_env(vec!["stat", "-f", "%N", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%N", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -922,7 +906,7 @@ mod tests {
 
     #[test]
     fn stat_custom_format_size() {
-        let env = make_env(vec!["stat", "-f", "%z", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%z", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -934,7 +918,7 @@ mod tests {
 
     #[test]
     fn stat_custom_format_mode_string() {
-        let env = make_env(vec!["stat", "-f", "%Sp", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%Sp", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -946,7 +930,7 @@ mod tests {
 
     #[test]
     fn stat_custom_format_inode() {
-        let env = make_env(vec!["stat", "-f", "%i", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%i", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -959,7 +943,7 @@ mod tests {
 
     #[test]
     fn stat_shell_format() {
-        let env = make_env(vec!["stat", "-s", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-s", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -974,7 +958,7 @@ mod tests {
 
     #[test]
     fn stat_ls_format() {
-        let env = make_env(vec!["stat", "-l", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-l", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -988,7 +972,7 @@ mod tests {
 
     #[test]
     fn stat_raw_format() {
-        let env = make_env(vec!["stat", "-r", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-r", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1001,7 +985,7 @@ mod tests {
 
     #[test]
     fn stat_linux_format() {
-        let env = make_env(vec!["stat", "-x", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-x", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1015,7 +999,7 @@ mod tests {
 
     #[test]
     fn stat_no_newline_option() {
-        let env = make_env(vec!["stat", "-n", "-f", "%N", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-n", "-f", "%N", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1027,7 +1011,7 @@ mod tests {
 
     #[test]
     fn stat_multiple_files() {
-        let env = make_env(vec!["stat", "-f", "%N", "/file1", "/file2"]);
+        let env = make_test_env(vec!["stat", "-f", "%N", "/file1", "/file2"]);
         env.fs.add_directory("/");
         env.fs.add_file("/file1", "one");
         env.fs.add_file("/file2", "two");
@@ -1041,7 +1025,7 @@ mod tests {
 
     #[test]
     fn stat_partial_failure() {
-        let env = make_env(vec!["stat", "-f", "%N", "/exists", "/missing"]);
+        let env = make_test_env(vec!["stat", "-f", "%N", "/exists", "/missing"]);
         env.fs.add_directory("/");
         env.fs.add_file("/exists", "content");
         let result = bin(&env).unwrap();
@@ -1056,7 +1040,7 @@ mod tests {
 
     #[test]
     fn stat_symlink_target_format() {
-        let env = make_env(vec!["stat", "-f", "%N%SY", "/mylink"]);
+        let env = make_test_env(vec!["stat", "-f", "%N%SY", "/mylink"]);
         env.fs.add_directory("/");
         env.fs.add_file("/target", "content");
         env.fs.symlink("/target", "/mylink").unwrap();
@@ -1070,7 +1054,7 @@ mod tests {
 
     #[test]
     fn stat_file_type_high() {
-        let env = make_env(vec!["stat", "-f", "%HT", "/mydir"]);
+        let env = make_test_env(vec!["stat", "-f", "%HT", "/mydir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/mydir");
         let result = bin(&env).unwrap();
@@ -1082,7 +1066,7 @@ mod tests {
 
     #[test]
     fn stat_file_type_low() {
-        let env = make_env(vec!["stat", "-f", "%LT", "/mydir"]);
+        let env = make_test_env(vec!["stat", "-f", "%LT", "/mydir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/mydir");
         let result = bin(&env).unwrap();
@@ -1094,7 +1078,7 @@ mod tests {
 
     #[test]
     fn stat_format_with_escapes() {
-        let env = make_env(vec!["stat", "-f", "name:%N%ttab%nnewline", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "name:%N%ttab%nnewline", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1108,7 +1092,7 @@ mod tests {
 
     #[test]
     fn stat_format_percent_escape() {
-        let env = make_env(vec!["stat", "-f", "100%% done", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "100%% done", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1120,7 +1104,7 @@ mod tests {
 
     #[test]
     fn stat_width_formatting() {
-        let env = make_env(vec!["stat", "-f", "%10z", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%10z", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1133,7 +1117,7 @@ mod tests {
 
     #[test]
     fn stat_left_align_formatting() {
-        let env = make_env(vec!["stat", "-f", "%-10z", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%-10z", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1145,7 +1129,7 @@ mod tests {
 
     #[test]
     fn stat_missing_operand() {
-        let env = make_env(vec!["stat"]);
+        let env = make_test_env(vec!["stat"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -1156,7 +1140,7 @@ mod tests {
 
     #[test]
     fn stat_invalid_option() {
-        let env = make_env(vec!["stat", "-Z"]);
+        let env = make_test_env(vec!["stat", "-Z"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -1167,7 +1151,7 @@ mod tests {
 
     #[test]
     fn stat_user_permissions() {
-        let env = make_env(vec!["stat", "-f", "%SHp", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%SHp", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1179,7 +1163,7 @@ mod tests {
 
     #[test]
     fn stat_group_permissions() {
-        let env = make_env(vec!["stat", "-f", "%SMp", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%SMp", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1191,7 +1175,7 @@ mod tests {
 
     #[test]
     fn stat_other_permissions() {
-        let env = make_env(vec!["stat", "-f", "%SLp", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%SLp", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1203,7 +1187,7 @@ mod tests {
 
     #[test]
     fn stat_octal_mode() {
-        let env = make_env(vec!["stat", "-f", "%Op", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%Op", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1216,7 +1200,7 @@ mod tests {
 
     #[test]
     fn stat_uid_gid_string() {
-        let env = make_env(vec!["stat", "-f", "%Su:%Sg", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%Su:%Sg", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1228,7 +1212,7 @@ mod tests {
 
     #[test]
     fn stat_uid_gid_numeric() {
-        let env = make_env(vec!["stat", "-f", "%u:%g", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-f", "%u:%g", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1298,7 +1282,7 @@ mod tests {
 
     #[test]
     fn stat_relative_path() {
-        let mut env = make_env(vec!["stat", "-f", "%N", "myfile"]);
+        let mut env = make_test_env(vec!["stat", "-f", "%N", "myfile"]);
         env.cwd = utf8path::Path::from("/home");
         env.fs.add_directory("/");
         env.fs.add_directory("/home");
@@ -1312,7 +1296,7 @@ mod tests {
 
     #[test]
     fn stat_nfs_handle_not_supported() {
-        let env = make_env(vec!["stat", "-H", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-H", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();
@@ -1325,7 +1309,7 @@ mod tests {
 
     #[test]
     fn stat_holes_not_supported() {
-        let env = make_env(vec!["stat", "-h", "/myfile"]);
+        let env = make_test_env(vec!["stat", "-h", "/myfile"]);
         env.fs.add_directory("/");
         env.fs.add_file("/myfile", "hello");
         let result = bin(&env).unwrap();

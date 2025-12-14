@@ -311,24 +311,8 @@ fn generate_output(lines: &[String], opts: &ShufOptions) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::make_test_env_with_stdin;
     use std::collections::HashSet;
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
 
     // ========================================================================
     // Basic functionality tests
@@ -336,7 +320,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["shuf"], "");
+        let env = make_test_env_with_stdin(vec!["shuf"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -344,7 +328,7 @@ mod tests {
 
     #[test]
     fn single_line() {
-        let env = make_env(vec!["shuf"], "hello\n");
+        let env = make_test_env_with_stdin(vec!["shuf"], "hello\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -354,7 +338,7 @@ mod tests {
     fn shuffles_lines() {
         // Run multiple times to ensure we get output with all lines
         let input = "a\nb\nc\n";
-        let env = make_env(vec!["shuf"], input);
+        let env = make_test_env_with_stdin(vec!["shuf"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -367,7 +351,7 @@ mod tests {
     #[test]
     fn preserves_all_lines() {
         let input = "1\n2\n3\n4\n5\n";
-        let env = make_env(vec!["shuf"], input);
+        let env = make_test_env_with_stdin(vec!["shuf"], input);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -385,7 +369,7 @@ mod tests {
 
     #[test]
     fn echo_mode_single_arg() {
-        let env = make_env(vec!["shuf", "-e", "hello"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-e", "hello"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -393,7 +377,7 @@ mod tests {
 
     #[test]
     fn echo_mode_multiple_args() {
-        let env = make_env(vec!["shuf", "-e", "a", "b", "c"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-e", "a", "b", "c"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -405,7 +389,7 @@ mod tests {
 
     #[test]
     fn echo_mode_long_form() {
-        let env = make_env(vec!["shuf", "--echo", "x", "y"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--echo", "x", "y"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -416,7 +400,7 @@ mod tests {
 
     #[test]
     fn echo_mode_no_args_empty_output() {
-        let env = make_env(vec!["shuf", "-e"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-e"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -428,7 +412,7 @@ mod tests {
 
     #[test]
     fn input_range_basic() {
-        let env = make_env(vec!["shuf", "-i", "1-5"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "1-5"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -440,7 +424,7 @@ mod tests {
 
     #[test]
     fn input_range_single_number() {
-        let env = make_env(vec!["shuf", "-i", "5-5"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "5-5"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("5\n", env.stdout.into_string());
@@ -448,7 +432,7 @@ mod tests {
 
     #[test]
     fn input_range_long_form() {
-        let env = make_env(vec!["shuf", "--input-range=1-3"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--input-range=1-3"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -459,7 +443,7 @@ mod tests {
 
     #[test]
     fn input_range_invalid_format() {
-        let env = make_env(vec!["shuf", "-i", "abc"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "abc"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -469,7 +453,7 @@ mod tests {
 
     #[test]
     fn input_range_hi_less_than_lo() {
-        let env = make_env(vec!["shuf", "-i", "10-5"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "10-5"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -479,7 +463,7 @@ mod tests {
 
     #[test]
     fn input_range_with_extra_operand_is_error() {
-        let env = make_env(vec!["shuf", "-i", "1-5", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "1-5", "file.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -493,7 +477,7 @@ mod tests {
 
     #[test]
     fn head_count_basic() {
-        let env = make_env(vec!["shuf", "-n", "2"], "a\nb\nc\nd\ne\n");
+        let env = make_test_env_with_stdin(vec!["shuf", "-n", "2"], "a\nb\nc\nd\ne\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -504,7 +488,7 @@ mod tests {
 
     #[test]
     fn head_count_zero() {
-        let env = make_env(vec!["shuf", "-n", "0"], "a\nb\nc\n");
+        let env = make_test_env_with_stdin(vec!["shuf", "-n", "0"], "a\nb\nc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -512,7 +496,7 @@ mod tests {
 
     #[test]
     fn head_count_more_than_lines() {
-        let env = make_env(vec!["shuf", "-n", "100"], "a\nb\n");
+        let env = make_test_env_with_stdin(vec!["shuf", "-n", "100"], "a\nb\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -523,7 +507,7 @@ mod tests {
 
     #[test]
     fn head_count_long_form() {
-        let env = make_env(vec!["shuf", "--head-count=1"], "x\ny\nz\n");
+        let env = make_test_env_with_stdin(vec!["shuf", "--head-count=1"], "x\ny\nz\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -534,7 +518,7 @@ mod tests {
 
     #[test]
     fn head_count_invalid() {
-        let env = make_env(vec!["shuf", "-n", "abc"], "a\n");
+        let env = make_test_env_with_stdin(vec!["shuf", "-n", "abc"], "a\n");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -544,7 +528,7 @@ mod tests {
 
     #[test]
     fn head_count_with_echo() {
-        let env = make_env(vec!["shuf", "-e", "-n", "2", "a", "b", "c", "d"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-e", "-n", "2", "a", "b", "c", "d"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -555,7 +539,7 @@ mod tests {
 
     #[test]
     fn head_count_with_input_range() {
-        let env = make_env(vec!["shuf", "-i", "1-10", "-n", "3"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "1-10", "-n", "3"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -570,7 +554,7 @@ mod tests {
 
     #[test]
     fn repeat_with_head_count() {
-        let env = make_env(vec!["shuf", "-r", "-n", "10", "-e", "a", "b"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-r", "-n", "10", "-e", "a", "b"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -585,7 +569,7 @@ mod tests {
 
     #[test]
     fn repeat_long_form() {
-        let env = make_env(vec!["shuf", "--repeat", "-n", "5", "-e", "x"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--repeat", "-n", "5", "-e", "x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -603,7 +587,7 @@ mod tests {
 
     #[test]
     fn output_to_file() {
-        let env = make_env(vec!["shuf", "-o", "out.txt", "-e", "a", "b", "c"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-o", "out.txt", "-e", "a", "b", "c"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -616,7 +600,7 @@ mod tests {
 
     #[test]
     fn output_long_form() {
-        let env = make_env(vec!["shuf", "--output=result.txt", "-e", "x"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--output=result.txt", "-e", "x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("x\n", env.fs.read_to_string("result.txt").unwrap());
@@ -628,7 +612,7 @@ mod tests {
 
     #[test]
     fn zero_terminated_output() {
-        let env = make_env(vec!["shuf", "-z", "-e", "a", "b", "c"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-z", "-e", "a", "b", "c"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -643,7 +627,7 @@ mod tests {
 
     #[test]
     fn zero_terminated_long_form() {
-        let env = make_env(vec!["shuf", "--zero-terminated", "-e", "x"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--zero-terminated", "-e", "x"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -656,7 +640,7 @@ mod tests {
 
     #[test]
     fn read_from_file() {
-        let env = make_env(vec!["shuf", "input.txt"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "input.txt"], "");
         env.fs.add_file("input.txt", "x\ny\nz\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -669,7 +653,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["shuf", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stderr = env.stderr.into_string();
@@ -679,7 +663,7 @@ mod tests {
 
     #[test]
     fn stdin_with_dash() {
-        let env = make_env(vec!["shuf", "-"], "p\nq\nr\n");
+        let env = make_test_env_with_stdin(vec!["shuf", "-"], "p\nq\nr\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -695,7 +679,7 @@ mod tests {
 
     #[test]
     fn echo_and_input_range_conflict() {
-        let env = make_env(vec!["shuf", "-e", "-i", "1-5", "a", "b"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-e", "-i", "1-5", "a", "b"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -709,7 +693,7 @@ mod tests {
 
     #[test]
     fn help_flag() {
-        let env = make_env(vec!["shuf", "--help"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--help"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -721,7 +705,7 @@ mod tests {
 
     #[test]
     fn version_flag() {
-        let env = make_env(vec!["shuf", "--version"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--version"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -735,7 +719,7 @@ mod tests {
 
     #[test]
     fn no_trailing_newline_in_input() {
-        let env = make_env(vec!["shuf"], "a\nb\nc");
+        let env = make_test_env_with_stdin(vec!["shuf"], "a\nb\nc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -747,7 +731,7 @@ mod tests {
 
     #[test]
     fn empty_file() {
-        let env = make_env(vec!["shuf", "empty.txt"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "empty.txt"], "");
         env.fs.add_file("empty.txt", "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -756,7 +740,7 @@ mod tests {
 
     #[test]
     fn multiple_files_is_error() {
-        let env = make_env(vec!["shuf", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "a\n");
         env.fs.add_file("b.txt", "b\n");
         let result = bin(&env).unwrap();
@@ -776,7 +760,7 @@ mod tests {
 
     #[test]
     fn invalid_option() {
-        let env = make_env(vec!["shuf", "--invalid"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "--invalid"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -790,7 +774,7 @@ mod tests {
 
     #[test]
     fn combined_input_range_head_count_repeat() {
-        let env = make_env(vec!["shuf", "-i", "1-3", "-n", "10", "-r"], "");
+        let env = make_test_env_with_stdin(vec!["shuf", "-i", "1-3", "-n", "10", "-r"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -805,7 +789,7 @@ mod tests {
 
     #[test]
     fn combined_echo_head_count_output() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["shuf", "-e", "-n", "2", "-o", "out.txt", "a", "b", "c"],
             "",
         );

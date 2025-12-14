@@ -131,42 +131,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TestEnvBuilder;
     use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
     ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        let mut env_vars = HashMap::new();
-        env_vars.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
-        env_vars.insert("HOME".to_string(), "/home/user".to_string());
-        env_vars.insert("USER".to_string(), "testuser".to_string());
-
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: env_vars,
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        TestEnvBuilder::new()
+            .args(args)
+            .env_var("PATH", "/usr/bin:/bin")
+            .env_var("HOME", "/home/user")
+            .env_var("USER", "testuser")
+            .build()
     }
 
     fn make_env_with_vars(
         args: Vec<&str>,
         vars: HashMap<String, String>,
     ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: vars,
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        TestEnvBuilder::new().args(args).env_vars(vars).build()
     }
 
     // ========================================================================

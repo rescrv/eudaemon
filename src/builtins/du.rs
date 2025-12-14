@@ -4,7 +4,10 @@ use std::collections::HashSet;
 
 use getopts::Options;
 
-use crate::{DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
+use crate::{
+    DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout,
+    format_human_size_with_base, resolve_path,
+};
 
 /// Options for the du command.
 #[derive(Default)]
@@ -316,31 +319,16 @@ fn get_size(entry: &DirEntry, opts: &DuOptions) -> u64 {
 /// Format a size according to the options.
 fn format_size(bytes: u64, opts: &DuOptions) -> String {
     if opts.human_readable {
-        format_human_size(bytes, 1024)
+        format_human_size_with_base(bytes, 1024)
+            .trim_start()
+            .to_string()
     } else if opts.si {
-        format_human_size(bytes, 1000)
+        format_human_size_with_base(bytes, 1000)
+            .trim_start()
+            .to_string()
     } else {
         let blocks = bytes.div_ceil(opts.block_size);
         format!("{}", blocks)
-    }
-}
-
-/// Format a size in human-readable form.
-fn format_human_size(size: u64, base: u64) -> String {
-    const UNITS: &[&str] = &["B", "K", "M", "G", "T", "P"];
-    let mut size = size as f64;
-    let mut unit_idx = 0;
-    let base = base as f64;
-
-    while size >= base && unit_idx < UNITS.len() - 1 {
-        size /= base;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 || size >= 10.0 {
-        format!("{}{}", size as u64, UNITS[unit_idx])
-    } else {
-        format!("{:.1}{}", size, UNITS[unit_idx])
     }
 }
 
@@ -372,60 +360,14 @@ fn parse_block_size(s: &str) -> Option<u64> {
     Some(base * multiplier)
 }
 
-/// Resolve a path relative to the current working directory.
-fn resolve_path(cwd: &str, path: &str) -> String {
-    if path.starts_with('/') {
-        path.to_string()
-    } else if path == "." {
-        cwd.to_string()
-    } else if path == ".." {
-        let mut parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
-        parts.pop();
-        if parts.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", parts.join("/"))
-        }
-    } else if let Some(rest) = path.strip_prefix("./") {
-        format!("{}/{}", cwd.trim_end_matches('/'), rest)
-    } else if let Some(rest) = path.strip_prefix("../") {
-        let mut parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
-        parts.pop();
-        let parent = if parts.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", parts.join("/"))
-        };
-        resolve_path(&parent, rest)
-    } else {
-        format!("{}/{}", cwd.trim_end_matches('/'), path)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-    use std::collections::HashMap;
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     #[test]
     fn empty_directory_shows_zero() {
-        let env = make_env(vec!["du"]);
+        let env = make_test_env(vec!["du"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -436,7 +378,7 @@ mod tests {
 
     #[test]
     fn single_file_shows_size() {
-        let env = make_env(vec!["du", "/file"]);
+        let env = make_test_env(vec!["du", "/file"]);
         env.fs.add_directory("/");
         env.fs.add_file("/file", "hello"); // 5 bytes
         let result = bin(&env).unwrap();
@@ -449,7 +391,7 @@ mod tests {
 
     #[test]
     fn directory_with_files() {
-        let env = make_env(vec!["du", "/dir"]);
+        let env = make_test_env(vec!["du", "/dir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir");
         env.fs.add_file("/dir/file1", "hello"); // 5 bytes
@@ -464,7 +406,7 @@ mod tests {
 
     #[test]
     fn all_flag_shows_files() {
-        let env = make_env(vec!["du", "-a", "/dir"]);
+        let env = make_test_env(vec!["du", "-a", "/dir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir");
         env.fs.add_file("/dir/file1", "hello");
@@ -478,7 +420,7 @@ mod tests {
 
     #[test]
     fn summarize_flag_shows_only_total() {
-        let env = make_env(vec!["du", "-s", "/dir"]);
+        let env = make_test_env(vec!["du", "-s", "/dir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir");
         env.fs.add_directory("/dir/subdir");
@@ -494,7 +436,7 @@ mod tests {
 
     #[test]
     fn grand_total_flag() {
-        let env = make_env(vec!["du", "-c", "/dir1", "/dir2"]);
+        let env = make_test_env(vec!["du", "-c", "/dir1", "/dir2"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir1");
         env.fs.add_directory("/dir2");
@@ -509,7 +451,7 @@ mod tests {
 
     #[test]
     fn human_readable_flag() {
-        let env = make_env(vec!["du", "-h", "/file"]);
+        let env = make_test_env(vec!["du", "-h", "/file"]);
         env.fs.add_directory("/");
         // Create a file that will show up as K
         env.fs.add_file("/file", &"x".repeat(2048)); // 2048 bytes = 2K
@@ -522,7 +464,7 @@ mod tests {
 
     #[test]
     fn kilobytes_flag() {
-        let env = make_env(vec!["du", "-k", "/file"]);
+        let env = make_test_env(vec!["du", "-k", "/file"]);
         env.fs.add_directory("/");
         env.fs.add_file("/file", &"x".repeat(2048));
         let result = bin(&env).unwrap();
@@ -535,7 +477,7 @@ mod tests {
 
     #[test]
     fn depth_flag() {
-        let env = make_env(vec!["du", "-d", "1", "/dir"]);
+        let env = make_test_env(vec!["du", "-d", "1", "/dir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir");
         env.fs.add_directory("/dir/sub1");
@@ -552,7 +494,7 @@ mod tests {
 
     #[test]
     fn nonexistent_path_returns_error() {
-        let env = make_env(vec!["du", "/nonexistent"]);
+        let env = make_test_env(vec!["du", "/nonexistent"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -563,7 +505,7 @@ mod tests {
 
     #[test]
     fn invalid_depth_returns_error() {
-        let env = make_env(vec!["du", "-d", "abc"]);
+        let env = make_test_env(vec!["du", "-d", "abc"]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -574,7 +516,7 @@ mod tests {
 
     #[test]
     fn apparent_size_flag() {
-        let env = make_env(vec!["du", "-A", "-k", "/file"]);
+        let env = make_test_env(vec!["du", "-A", "-k", "/file"]);
         env.fs.add_directory("/");
         env.fs.add_file("/file", "hello"); // 5 bytes
         let result = bin(&env).unwrap();
@@ -587,20 +529,23 @@ mod tests {
 
     #[test]
     fn format_human_size_bytes() {
-        assert_eq!("0B", format_human_size(0, 1024));
-        assert_eq!("100B", format_human_size(100, 1024));
-        assert_eq!("1023B", format_human_size(1023, 1024));
+        use crate::format_human_size_with_base;
+        assert_eq!("   0B", format_human_size_with_base(0, 1024));
+        assert_eq!(" 100B", format_human_size_with_base(100, 1024));
+        assert_eq!("1023B", format_human_size_with_base(1023, 1024));
     }
 
     #[test]
     fn format_human_size_kilobytes() {
-        assert_eq!("1.0K", format_human_size(1024, 1024));
-        assert_eq!("10K", format_human_size(10 * 1024, 1024));
+        use crate::format_human_size_with_base;
+        assert_eq!(" 1.0K", format_human_size_with_base(1024, 1024));
+        assert_eq!("  10K", format_human_size_with_base(10 * 1024, 1024));
     }
 
     #[test]
     fn format_human_size_megabytes() {
-        assert_eq!("1.0M", format_human_size(1024 * 1024, 1024));
+        use crate::format_human_size_with_base;
+        assert_eq!(" 1.0M", format_human_size_with_base(1024 * 1024, 1024));
     }
 
     #[test]
@@ -624,7 +569,7 @@ mod tests {
 
     #[test]
     fn multiple_paths() {
-        let env = make_env(vec!["du", "/dir1", "/dir2"]);
+        let env = make_test_env(vec!["du", "/dir1", "/dir2"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir1");
         env.fs.add_directory("/dir2");
@@ -638,7 +583,7 @@ mod tests {
 
     #[test]
     fn nested_directories() {
-        let env = make_env(vec!["du", "/dir"]);
+        let env = make_test_env(vec!["du", "/dir"]);
         env.fs.add_directory("/");
         env.fs.add_directory("/dir");
         env.fs.add_directory("/dir/sub1");

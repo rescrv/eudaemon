@@ -308,23 +308,7 @@ fn column_width(ch: char, current_col: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -332,7 +316,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["fold"], "");
+        let env = make_test_env_with_stdin(vec!["fold"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -340,7 +324,7 @@ mod tests {
 
     #[test]
     fn short_line_unchanged() {
-        let env = make_env(vec!["fold"], "hello world");
+        let env = make_test_env_with_stdin(vec!["fold"], "hello world");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello world\n", env.stdout.into_string());
@@ -349,7 +333,7 @@ mod tests {
     #[test]
     fn line_at_exactly_80_chars() {
         let line = "a".repeat(80);
-        let env = make_env(vec!["fold"], &line);
+        let env = make_test_env_with_stdin(vec!["fold"], &line);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!(format!("{}\n", line), env.stdout.into_string());
@@ -358,7 +342,7 @@ mod tests {
     #[test]
     fn line_over_80_chars() {
         let line = "a".repeat(100);
-        let env = make_env(vec!["fold"], &line);
+        let env = make_test_env_with_stdin(vec!["fold"], &line);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let expected = format!("{}\n{}\n", "a".repeat(80), "a".repeat(20));
@@ -367,7 +351,8 @@ mod tests {
 
     #[test]
     fn multiple_lines() {
-        let env = make_env(vec!["fold", "-w", "10"], "short\nthis is a longer line");
+        let env =
+            make_test_env_with_stdin(vec!["fold", "-w", "10"], "short\nthis is a longer line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -381,7 +366,7 @@ mod tests {
 
     #[test]
     fn custom_width_15() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["fold", "-w", "15"],
             "I am smart enough to know that I am dumb",
         );
@@ -402,7 +387,7 @@ mod tests {
 
     #[test]
     fn width_of_1() {
-        let env = make_env(vec!["fold", "-w", "1"], "abc");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "1"], "abc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a\nb\nc\n", env.stdout.into_string());
@@ -410,7 +395,7 @@ mod tests {
 
     #[test]
     fn width_of_0_is_error() {
-        let env = make_env(vec!["fold", "-w", "0"], "test");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "0"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -420,14 +405,14 @@ mod tests {
 
     #[test]
     fn width_negative_is_error() {
-        let env = make_env(vec!["fold", "-w", "-5"], "test");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "-5"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
 
     #[test]
     fn width_non_numeric_is_error() {
-        let env = make_env(vec!["fold", "-w", "abc"], "test");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "abc"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -441,7 +426,7 @@ mod tests {
 
     #[test]
     fn spaces_flag_breaks_at_word() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["fold", "-s", "-w", "15"],
             "I am smart enough to know that I am dumb",
         );
@@ -455,7 +440,7 @@ mod tests {
 
     #[test]
     fn spaces_flag_no_spaces_falls_back() {
-        let env = make_env(vec!["fold", "-s", "-w", "5"], "abcdefghij");
+        let env = make_test_env_with_stdin(vec!["fold", "-s", "-w", "5"], "abcdefghij");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -466,7 +451,7 @@ mod tests {
 
     #[test]
     fn spaces_flag_with_tabs() {
-        let env = make_env(vec!["fold", "-s", "-w", "10"], "hello\tworld");
+        let env = make_test_env_with_stdin(vec!["fold", "-s", "-w", "10"], "hello\tworld");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -481,7 +466,7 @@ mod tests {
 
     #[test]
     fn bytes_flag_ascii() {
-        let env = make_env(vec!["fold", "-b", "-w", "5"], "abcdefghij");
+        let env = make_test_env_with_stdin(vec!["fold", "-b", "-w", "5"], "abcdefghij");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abcde\nfghij\n", env.stdout.into_string());
@@ -489,7 +474,7 @@ mod tests {
 
     #[test]
     fn bytes_flag_with_spaces() {
-        let env = make_env(vec!["fold", "-b", "-s", "-w", "10"], "hello world foo");
+        let env = make_test_env_with_stdin(vec!["fold", "-b", "-s", "-w", "10"], "hello world foo");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -505,7 +490,7 @@ mod tests {
     #[test]
     fn tab_expands_to_8_from_start() {
         // Tab at position 0 should expand to 8 columns
-        let env = make_env(vec!["fold", "-w", "10"], "\thello");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "10"], "\thello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -519,7 +504,7 @@ mod tests {
     #[test]
     fn tab_expands_to_next_multiple_of_8() {
         // "abc" is 3 chars, tab should expand to column 8 (5 spaces worth)
-        let env = make_env(vec!["fold", "-w", "10"], "abc\tdef");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "10"], "abc\tdef");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -533,7 +518,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["fold", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["fold", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -543,7 +528,7 @@ mod tests {
 
     #[test]
     fn single_file() {
-        let env = make_env(vec!["fold", "-w", "5", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "5", "file.txt"], "");
         // File without trailing newline to avoid extra blank line
         env.fs.add_file("file.txt", "abcdefghij");
         let result = bin(&env).unwrap();
@@ -554,7 +539,7 @@ mod tests {
 
     #[test]
     fn multiple_files() {
-        let env = make_env(vec!["fold", "-w", "3", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "3", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbbbbb\n");
         let result = bin(&env).unwrap();
@@ -567,7 +552,7 @@ mod tests {
 
     #[test]
     fn dash_means_stdin() {
-        let env = make_env(vec!["fold", "-w", "5", "-"], "abcdefghij");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "5", "-"], "abcdefghij");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abcde\nfghij\n", env.stdout.into_string());
@@ -575,7 +560,7 @@ mod tests {
 
     #[test]
     fn mixed_files_and_stdin() {
-        let env = make_env(vec!["fold", "-w", "3", "a.txt", "-"], "xyz");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "3", "a.txt", "-"], "xyz");
         env.fs.add_file("a.txt", "abc\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -591,7 +576,7 @@ mod tests {
 
     #[test]
     fn empty_line() {
-        let env = make_env(vec!["fold"], "");
+        let env = make_test_env_with_stdin(vec!["fold"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -599,7 +584,7 @@ mod tests {
 
     #[test]
     fn only_spaces() {
-        let env = make_env(vec!["fold", "-w", "3"], "     ");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "3"], "     ");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -610,7 +595,7 @@ mod tests {
     #[test]
     fn very_long_word_with_s_flag() {
         // A word longer than the width with -s should still hard-break
-        let env = make_env(vec!["fold", "-s", "-w", "5"], "abcdefghij");
+        let env = make_test_env_with_stdin(vec!["fold", "-s", "-w", "5"], "abcdefghij");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abcde\nfghij\n", env.stdout.into_string());
@@ -618,7 +603,7 @@ mod tests {
 
     #[test]
     fn trailing_space_preserved() {
-        let env = make_env(vec!["fold", "-w", "10"], "hello     ");
+        let env = make_test_env_with_stdin(vec!["fold", "-w", "10"], "hello     ");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -676,7 +661,7 @@ mod tests {
 
     #[test]
     fn illegal_option() {
-        let env = make_env(vec!["fold", "-x"], "test");
+        let env = make_test_env_with_stdin(vec!["fold", "-x"], "test");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();

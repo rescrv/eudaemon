@@ -520,23 +520,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-        stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(stdin),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================
     // Basic functionality tests
@@ -544,7 +528,7 @@ mod tests {
 
     #[test]
     fn empty_stdin() {
-        let env = make_env(vec!["nl"], "");
+        let env = make_test_env_with_stdin(vec!["nl"], "");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -552,7 +536,7 @@ mod tests {
 
     #[test]
     fn single_line() {
-        let env = make_env(vec!["nl"], "hello");
+        let env = make_test_env_with_stdin(vec!["nl"], "hello");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -562,7 +546,7 @@ mod tests {
 
     #[test]
     fn multiple_lines() {
-        let env = make_env(vec!["nl"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["nl"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -572,7 +556,7 @@ mod tests {
 
     #[test]
     fn default_skips_blank_lines() {
-        let env = make_env(vec!["nl"], "one\n\nthree");
+        let env = make_test_env_with_stdin(vec!["nl"], "one\n\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -587,7 +571,7 @@ mod tests {
 
     #[test]
     fn body_type_all() {
-        let env = make_env(vec!["nl", "-ba"], "one\n\nthree");
+        let env = make_test_env_with_stdin(vec!["nl", "-ba"], "one\n\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -597,7 +581,7 @@ mod tests {
 
     #[test]
     fn body_type_nonempty() {
-        let env = make_env(vec!["nl", "-bt"], "one\n\nthree");
+        let env = make_test_env_with_stdin(vec!["nl", "-bt"], "one\n\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -607,7 +591,7 @@ mod tests {
 
     #[test]
     fn body_type_none() {
-        let env = make_env(vec!["nl", "-bn"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["nl", "-bn"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -617,7 +601,7 @@ mod tests {
 
     #[test]
     fn body_type_regex() {
-        let env = make_env(vec!["nl", "-bp^foo"], "foo bar\nbaz\nfoobar");
+        let env = make_test_env_with_stdin(vec!["nl", "-bp^foo"], "foo bar\nbaz\nfoobar");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -632,7 +616,7 @@ mod tests {
 
     #[test]
     fn format_rn() {
-        let env = make_env(vec!["nl", "-nrn"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-nrn"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -642,7 +626,7 @@ mod tests {
 
     #[test]
     fn format_ln() {
-        let env = make_env(vec!["nl", "-nln"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-nln"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -652,7 +636,7 @@ mod tests {
 
     #[test]
     fn format_rz() {
-        let env = make_env(vec!["nl", "-nrz"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-nrz"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -666,7 +650,7 @@ mod tests {
 
     #[test]
     fn width_10() {
-        let env = make_env(vec!["nl", "-w10"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-w10"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -676,7 +660,7 @@ mod tests {
 
     #[test]
     fn width_2() {
-        let env = make_env(vec!["nl", "-w2"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-w2"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -686,7 +670,7 @@ mod tests {
 
     #[test]
     fn width_zero_invalid() {
-        let env = make_env(vec!["nl", "-w0"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-w0"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -700,7 +684,7 @@ mod tests {
 
     #[test]
     fn separator_custom() {
-        let env = make_env(vec!["nl", "-s->"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-s->"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -710,7 +694,7 @@ mod tests {
 
     #[test]
     fn separator_space() {
-        let env = make_env(vec!["nl", "-s "], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-s "], "line");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -724,7 +708,7 @@ mod tests {
 
     #[test]
     fn start_number_10() {
-        let env = make_env(vec!["nl", "-v10"], "one\ntwo");
+        let env = make_test_env_with_stdin(vec!["nl", "-v10"], "one\ntwo");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -734,7 +718,7 @@ mod tests {
 
     #[test]
     fn start_number_negative() {
-        let env = make_env(vec!["nl", "-v-5"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["nl", "-v-5"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -748,7 +732,7 @@ mod tests {
 
     #[test]
     fn increment_2() {
-        let env = make_env(vec!["nl", "-i2"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["nl", "-i2"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -758,7 +742,7 @@ mod tests {
 
     #[test]
     fn increment_negative() {
-        let env = make_env(vec!["nl", "-v10", "-i-1"], "one\ntwo\nthree");
+        let env = make_test_env_with_stdin(vec!["nl", "-v10", "-i-1"], "one\ntwo\nthree");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -772,7 +756,7 @@ mod tests {
 
     #[test]
     fn blank_join_2() {
-        let env = make_env(vec!["nl", "-ba", "-l2"], "one\n\n\nfour");
+        let env = make_test_env_with_stdin(vec!["nl", "-ba", "-l2"], "one\n\n\nfour");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -787,7 +771,7 @@ mod tests {
 
     #[test]
     fn header_section() {
-        let env = make_env(
+        let env = make_test_env_with_stdin(
             vec!["nl", "-ha"],
             "\\:\\:\\:\nheader1\nheader2\n\\:\\:\nbody1",
         );
@@ -803,7 +787,7 @@ mod tests {
 
     #[test]
     fn footer_section() {
-        let env = make_env(vec!["nl", "-fa"], "body1\n\\:\nfooter1\nfooter2");
+        let env = make_test_env_with_stdin(vec!["nl", "-fa"], "body1\n\\:\nfooter1\nfooter2");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -816,7 +800,7 @@ mod tests {
 
     #[test]
     fn no_restart_with_p() {
-        let env = make_env(vec!["nl", "-p"], "body1\nbody2\n\\:\\:\nbody3\nbody4");
+        let env = make_test_env_with_stdin(vec!["nl", "-p"], "body1\nbody2\n\\:\\:\nbody3\nbody4");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -834,7 +818,7 @@ mod tests {
 
     #[test]
     fn custom_delimiter() {
-        let env = make_env(vec!["nl", "-d##"], "body1\n####\nbody2");
+        let env = make_test_env_with_stdin(vec!["nl", "-d##"], "body1\n####\nbody2");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -850,7 +834,7 @@ mod tests {
 
     #[test]
     fn file_not_found() {
-        let env = make_env(vec!["nl", "nonexistent.txt"], "");
+        let env = make_test_env_with_stdin(vec!["nl", "nonexistent.txt"], "");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -860,7 +844,7 @@ mod tests {
 
     #[test]
     fn single_file() {
-        let env = make_env(vec!["nl", "file.txt"], "");
+        let env = make_test_env_with_stdin(vec!["nl", "file.txt"], "");
         env.fs.add_file("file.txt", "line1\nline2\n");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -871,7 +855,7 @@ mod tests {
 
     #[test]
     fn multiple_files() {
-        let env = make_env(vec!["nl", "a.txt", "b.txt"], "");
+        let env = make_test_env_with_stdin(vec!["nl", "a.txt", "b.txt"], "");
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
         let result = bin(&env).unwrap();
@@ -884,7 +868,7 @@ mod tests {
 
     #[test]
     fn stdin_dash() {
-        let env = make_env(vec!["nl", "-"], "from stdin");
+        let env = make_test_env_with_stdin(vec!["nl", "-"], "from stdin");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
@@ -898,7 +882,7 @@ mod tests {
 
     #[test]
     fn invalid_format() {
-        let env = make_env(vec!["nl", "-nxx"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-nxx"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -908,7 +892,7 @@ mod tests {
 
     #[test]
     fn invalid_body_type() {
-        let env = make_env(vec!["nl", "-bx"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-bx"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -919,7 +903,7 @@ mod tests {
 
     #[test]
     fn invalid_regex() {
-        let env = make_env(vec!["nl", "-bp["], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-bp["], "line");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -930,7 +914,7 @@ mod tests {
 
     #[test]
     fn invalid_increment() {
-        let env = make_env(vec!["nl", "-iabc"], "line");
+        let env = make_test_env_with_stdin(vec!["nl", "-iabc"], "line");
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -944,7 +928,8 @@ mod tests {
 
     #[test]
     fn combined_rz_w4_v2_i2() {
-        let env = make_env(vec!["nl", "-nrz", "-w4", "-v2", "-i2", "-s->"], "a\nb\nc");
+        let env =
+            make_test_env_with_stdin(vec!["nl", "-nrz", "-w4", "-v2", "-i2", "-s->"], "a\nb\nc");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();

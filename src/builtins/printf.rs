@@ -972,22 +972,7 @@ fn pad_string(s: &str, width: usize, flags: &Flags) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
-
-    fn make_env(
-        args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
-            fs: MockFilesystem::new(),
-            env: std::collections::HashMap::new(),
-            args: args.into_iter().map(|s| s.to_string()).collect(),
-            cwd: utf8path::Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
+    use crate::test_utils::make_test_env;
 
     // ========================================================================
     // Basic tests
@@ -995,7 +980,7 @@ mod tests {
 
     #[test]
     fn no_args_shows_usage() {
-        let env = make_env(vec!["printf"]);
+        let env = make_test_env(vec!["printf"]);
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
         let stderr = env.stderr.into_string();
@@ -1005,7 +990,7 @@ mod tests {
 
     #[test]
     fn simple_string() {
-        let env = make_env(vec!["printf", "hello"]);
+        let env = make_test_env(vec!["printf", "hello"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello", env.stdout.into_string());
@@ -1013,7 +998,7 @@ mod tests {
 
     #[test]
     fn string_with_newline() {
-        let env = make_env(vec!["printf", "hello\\n"]);
+        let env = make_test_env(vec!["printf", "hello\\n"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -1021,7 +1006,7 @@ mod tests {
 
     #[test]
     fn percent_percent() {
-        let env = make_env(vec!["printf", "%%"]);
+        let env = make_test_env(vec!["printf", "%%"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("%", env.stdout.into_string());
@@ -1029,7 +1014,7 @@ mod tests {
 
     #[test]
     fn double_dash() {
-        let env = make_env(vec!["printf", "--", "-d\\n"]);
+        let env = make_test_env(vec!["printf", "--", "-d\\n"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-d\n", env.stdout.into_string());
@@ -1041,7 +1026,7 @@ mod tests {
 
     #[test]
     fn escape_bell() {
-        let env = make_env(vec!["printf", "\\a"]);
+        let env = make_test_env(vec!["printf", "\\a"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("\x07", env.stdout.into_string());
@@ -1049,7 +1034,7 @@ mod tests {
 
     #[test]
     fn escape_backspace() {
-        let env = make_env(vec!["printf", "\\b"]);
+        let env = make_test_env(vec!["printf", "\\b"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("\x08", env.stdout.into_string());
@@ -1057,7 +1042,7 @@ mod tests {
 
     #[test]
     fn escape_tab() {
-        let env = make_env(vec!["printf", "\\t"]);
+        let env = make_test_env(vec!["printf", "\\t"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("\t", env.stdout.into_string());
@@ -1065,7 +1050,7 @@ mod tests {
 
     #[test]
     fn escape_carriage_return() {
-        let env = make_env(vec!["printf", "\\r"]);
+        let env = make_test_env(vec!["printf", "\\r"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("\r", env.stdout.into_string());
@@ -1073,7 +1058,7 @@ mod tests {
 
     #[test]
     fn escape_octal() {
-        let env = make_env(vec!["printf", "\\101"]);
+        let env = make_test_env(vec!["printf", "\\101"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("A", env.stdout.into_string());
@@ -1085,7 +1070,7 @@ mod tests {
 
     #[test]
     fn format_s_simple() {
-        let env = make_env(vec!["printf", "%s", "hello"]);
+        let env = make_test_env(vec!["printf", "%s", "hello"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello", env.stdout.into_string());
@@ -1093,7 +1078,7 @@ mod tests {
 
     #[test]
     fn format_s_with_newline() {
-        let env = make_env(vec!["printf", "%s\\n", "hello"]);
+        let env = make_test_env(vec!["printf", "%s\\n", "hello"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
@@ -1101,7 +1086,7 @@ mod tests {
 
     #[test]
     fn format_s_width() {
-        let env = make_env(vec!["printf", "%-5s", "abc"]);
+        let env = make_test_env(vec!["printf", "%-5s", "abc"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abc  ", env.stdout.into_string());
@@ -1109,7 +1094,7 @@ mod tests {
 
     #[test]
     fn format_s_precision() {
-        let env = make_env(vec!["printf", "%.3s", "abcdef"]);
+        let env = make_test_env(vec!["printf", "%.3s", "abcdef"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abc", env.stdout.into_string());
@@ -1117,7 +1102,7 @@ mod tests {
 
     #[test]
     fn format_s_width_and_precision() {
-        let env = make_env(vec!["printf", "%.3s,%-5s\\n", "abcd", "abc"]);
+        let env = make_test_env(vec!["printf", "%.3s,%-5s\\n", "abcd", "abc"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abc,abc  \n", env.stdout.into_string());
@@ -1125,7 +1110,7 @@ mod tests {
 
     #[test]
     fn format_s_missing_arg() {
-        let env = make_env(vec!["printf", "%s"]);
+        let env = make_test_env(vec!["printf", "%s"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -1137,7 +1122,7 @@ mod tests {
 
     #[test]
     fn format_c_simple() {
-        let env = make_env(vec!["printf", "%c", "abc"]);
+        let env = make_test_env(vec!["printf", "%c", "abc"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("a", env.stdout.into_string());
@@ -1145,7 +1130,7 @@ mod tests {
 
     #[test]
     fn format_c_empty() {
-        let env = make_env(vec!["printf", "%c", ""]);
+        let env = make_test_env(vec!["printf", "%c", ""]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
@@ -1157,7 +1142,7 @@ mod tests {
 
     #[test]
     fn format_b_with_escapes() {
-        let env = make_env(vec!["printf", "%b", "abc\\ndef"]);
+        let env = make_test_env(vec!["printf", "%b", "abc\\ndef"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abc\ndef", env.stdout.into_string());
@@ -1165,7 +1150,7 @@ mod tests {
 
     #[test]
     fn format_b_with_c_escape() {
-        let env = make_env(vec!["printf", "abc%b%b", "def\\n", "\\cghi"]);
+        let env = make_test_env(vec!["printf", "abc%b%b", "def\\n", "\\cghi"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("abcdef\n", env.stdout.into_string());
@@ -1173,7 +1158,7 @@ mod tests {
 
     #[test]
     fn format_b_octal_escape() {
-        let env = make_env(vec!["printf", "%b", "\\0101"]);
+        let env = make_test_env(vec!["printf", "%b", "\\0101"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("A", env.stdout.into_string());
@@ -1185,7 +1170,7 @@ mod tests {
 
     #[test]
     fn format_d_simple() {
-        let env = make_env(vec!["printf", "%d", "42"]);
+        let env = make_test_env(vec!["printf", "%d", "42"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("42", env.stdout.into_string());
@@ -1193,7 +1178,7 @@ mod tests {
 
     #[test]
     fn format_d_negative() {
-        let env = make_env(vec!["printf", "%d", "-42"]);
+        let env = make_test_env(vec!["printf", "%d", "-42"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-42", env.stdout.into_string());
@@ -1201,7 +1186,7 @@ mod tests {
 
     #[test]
     fn format_d_width() {
-        let env = make_env(vec!["printf", "%5d", "123"]);
+        let env = make_test_env(vec!["printf", "%5d", "123"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("  123", env.stdout.into_string());
@@ -1209,7 +1194,7 @@ mod tests {
 
     #[test]
     fn format_d_zero_pad() {
-        let env = make_env(vec!["printf", "%05d", "123"]);
+        let env = make_test_env(vec!["printf", "%05d", "123"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("00123", env.stdout.into_string());
@@ -1217,7 +1202,7 @@ mod tests {
 
     #[test]
     fn format_d_precision() {
-        let env = make_env(vec!["printf", "%.5d", "123"]);
+        let env = make_test_env(vec!["printf", "%.5d", "123"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("00123", env.stdout.into_string());
@@ -1225,7 +1210,7 @@ mod tests {
 
     #[test]
     fn format_d_plus_sign() {
-        let env = make_env(vec!["printf", "%+d\\n%d\\n%d\\n", "1", "-2", "13"]);
+        let env = make_test_env(vec!["printf", "%+d\\n%d\\n%d\\n", "1", "-2", "13"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("+1\n-2\n13\n", env.stdout.into_string());
@@ -1233,7 +1218,7 @@ mod tests {
 
     #[test]
     fn format_d_complex() {
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "printf",
             "%d,%5d,%.5d,%0*d,%.*d\\n",
             "123",
@@ -1251,7 +1236,7 @@ mod tests {
 
     #[test]
     fn format_d_missing_arg() {
-        let env = make_env(vec!["printf", "%d"]);
+        let env = make_test_env(vec!["printf", "%d"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0", env.stdout.into_string());
@@ -1260,7 +1245,7 @@ mod tests {
     #[test]
     fn format_d_char_constant() {
         // '"abc' should give ASCII value of 'a'
-        let env = make_env(vec!["printf", "%d", "\"a"]);
+        let env = make_test_env(vec!["printf", "%d", "\"a"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("97", env.stdout.into_string());
@@ -1272,7 +1257,7 @@ mod tests {
 
     #[test]
     fn format_o_simple() {
-        let env = make_env(vec!["printf", "%o", "8"]);
+        let env = make_test_env(vec!["printf", "%o", "8"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("10", env.stdout.into_string());
@@ -1280,7 +1265,7 @@ mod tests {
 
     #[test]
     fn format_u_simple() {
-        let env = make_env(vec!["printf", "%u", "42"]);
+        let env = make_test_env(vec!["printf", "%u", "42"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("42", env.stdout.into_string());
@@ -1288,7 +1273,7 @@ mod tests {
 
     #[test]
     fn format_x_simple() {
-        let env = make_env(vec!["printf", "%x", "255"]);
+        let env = make_test_env(vec!["printf", "%x", "255"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("ff", env.stdout.into_string());
@@ -1296,7 +1281,7 @@ mod tests {
 
     #[test]
     fn format_big_x_simple() {
-        let env = make_env(vec!["printf", "%X", "255"]);
+        let env = make_test_env(vec!["printf", "%X", "255"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("FF", env.stdout.into_string());
@@ -1304,7 +1289,7 @@ mod tests {
 
     #[test]
     fn format_x_alternate() {
-        let env = make_env(vec!["printf", "%#x", "255"]);
+        let env = make_test_env(vec!["printf", "%#x", "255"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0xff", env.stdout.into_string());
@@ -1316,7 +1301,7 @@ mod tests {
 
     #[test]
     fn format_f_simple() {
-        let env = make_env(vec!["printf", "%f", "42.25"]);
+        let env = make_test_env(vec!["printf", "%f", "42.25"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("42.250000", env.stdout.into_string());
@@ -1324,7 +1309,7 @@ mod tests {
 
     #[test]
     fn format_f_precision() {
-        let env = make_env(vec!["printf", "%.2f", "31.7456"]);
+        let env = make_test_env(vec!["printf", "%.2f", "31.7456"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("31.75", env.stdout.into_string());
@@ -1332,7 +1317,7 @@ mod tests {
 
     #[test]
     fn format_f_width() {
-        let env = make_env(vec!["printf", "%-8.3f", "-42.25"]);
+        let env = make_test_env(vec!["printf", "%-8.3f", "-42.25"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-42.250 ", env.stdout.into_string());
@@ -1340,7 +1325,7 @@ mod tests {
 
     #[test]
     fn format_f_complex() {
-        let env = make_env(vec![
+        let env = make_test_env(vec![
             "printf",
             "%f,%-8.3f,%f,%f\\n",
             "+42.25",
@@ -1355,7 +1340,7 @@ mod tests {
 
     #[test]
     fn format_f_missing_arg() {
-        let env = make_env(vec!["printf", "%f"]);
+        let env = make_test_env(vec!["printf", "%f"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0.000000", env.stdout.into_string());
@@ -1367,7 +1352,7 @@ mod tests {
 
     #[test]
     fn format_reuse() {
-        let env = make_env(vec!["printf", "%%%s\\n", "abc", "def", "ghi", "jkl"]);
+        let env = make_test_env(vec!["printf", "%%%s\\n", "abc", "def", "ghi", "jkl"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("%abc\n%def\n%ghi\n%jkl\n", env.stdout.into_string());
@@ -1375,7 +1360,7 @@ mod tests {
 
     #[test]
     fn format_reuse_with_sign() {
-        let env = make_env(vec!["printf", "%+d\\n", "1", "-2", "13"]);
+        let env = make_test_env(vec!["printf", "%+d\\n", "1", "-2", "13"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("+1\n-2\n+13\n", env.stdout.into_string());
@@ -1383,7 +1368,7 @@ mod tests {
 
     #[test]
     fn missing_args_use_defaults() {
-        let env = make_env(vec!["printf", "%d,%f,%c,%s\\n"]);
+        let env = make_test_env(vec!["printf", "%d,%f,%c,%s\\n"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("0,0.000000,,\n", env.stdout.into_string());
@@ -1395,7 +1380,7 @@ mod tests {
 
     #[test]
     fn zero_handling_u_u() {
-        let env = make_env(vec!["printf", "%u%u\\n", "15"]);
+        let env = make_test_env(vec!["printf", "%u%u\\n", "15"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("150\n", env.stdout.into_string());
@@ -1403,7 +1388,7 @@ mod tests {
 
     #[test]
     fn zero_handling_d_d() {
-        let env = make_env(vec!["printf", "%d%d\\n", "15"]);
+        let env = make_test_env(vec!["printf", "%d%d\\n", "15"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("150\n", env.stdout.into_string());
@@ -1415,7 +1400,7 @@ mod tests {
 
     #[test]
     fn width_from_arg() {
-        let env = make_env(vec!["printf", "%*d", "5", "42"]);
+        let env = make_test_env(vec!["printf", "%*d", "5", "42"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("   42", env.stdout.into_string());
@@ -1423,7 +1408,7 @@ mod tests {
 
     #[test]
     fn precision_from_arg() {
-        let env = make_env(vec!["printf", "%.*d", "5", "42"]);
+        let env = make_test_env(vec!["printf", "%.*d", "5", "42"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("00042", env.stdout.into_string());
@@ -1431,7 +1416,7 @@ mod tests {
 
     #[test]
     fn negative_width_left_justifies() {
-        let env = make_env(vec!["printf", "%*d", "-5", "42"]);
+        let env = make_test_env(vec!["printf", "%*d", "-5", "42"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("42   ", env.stdout.into_string());
@@ -1443,7 +1428,7 @@ mod tests {
 
     #[test]
     fn format_b_width() {
-        let env = make_env(vec!["printf", "%8.2b", "a\\nb\\n"]);
+        let env = make_test_env(vec!["printf", "%8.2b", "a\\nb\\n"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         // Precision .2 limits to 2 chars, width 8 pads
@@ -1456,7 +1441,7 @@ mod tests {
 
     #[test]
     fn parse_hex_input() {
-        let env = make_env(vec!["printf", "%d", "0xff"]);
+        let env = make_test_env(vec!["printf", "%d", "0xff"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("255", env.stdout.into_string());
@@ -1464,7 +1449,7 @@ mod tests {
 
     #[test]
     fn parse_octal_input() {
-        let env = make_env(vec!["printf", "%d", "010"]);
+        let env = make_test_env(vec!["printf", "%d", "010"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("8", env.stdout.into_string());
