@@ -459,9 +459,8 @@ proptest! {
         let (lfs, reference) = run_ops(&ops);
 
         // Close all open fds in lfs so we can reopen and verify
-        let tail = lfs.tail();
         let data = lfs.into_inner();
-        let mut lfs_verify = Lfs::open_vec(data, tail).expect("Failed to reopen LFS for verification");
+        let mut lfs_verify = Lfs::open_vec(data).expect("Failed to reopen LFS for verification");
 
         // Verify each file's contents match the reference
         for (name, ref_file) in &reference.files {
@@ -493,10 +492,9 @@ proptest! {
     fn persist_restore_preserves_data(ops in ops_strategy()) {
         let (lfs, reference) = run_ops(&ops);
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut restored_lfs = Lfs::open_vec(data, tail).expect("Failed to restore LFS");
+        let mut restored_lfs = Lfs::open_vec(data).expect("Failed to restore LFS");
 
         for (name, ref_file) in &reference.files {
             let fd = restored_lfs.open_file(name).expect("Failed to open restored file");

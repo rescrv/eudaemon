@@ -527,8 +527,10 @@ impl<D: BlockDevice> Lfs<D> {
         Ok(lfs)
     }
 
-    /// Opens an existing LFS from the given block device, using the provided tail offset.
-    pub fn open(device: D, total_blocks: u64, tail: BlockAddress) -> Result<Self> {
+    /// Opens an existing LFS from the given block device.
+    ///
+    /// The tail position is read from the superblock on disk.
+    pub fn open(device: D, total_blocks: u64) -> Result<Self> {
         if total_blocks < 1 {
             return Err(Error::BufferTooSmall);
         }
@@ -545,6 +547,7 @@ impl<D: BlockDevice> Lfs<D> {
         }
 
         let max_file_size = (total_blocks as usize * BLOCK_SIZE / 10) as u64;
+        let tail = superblock.tail;
 
         let mut lfs = Self {
             device,
@@ -557,7 +560,6 @@ impl<D: BlockDevice> Lfs<D> {
             committed_tail: tail,
         };
 
-        lfs.superblock.tail = tail;
         lfs.load_inode_map()?;
         lfs.rebuild_segment_summary()?;
 
@@ -1453,13 +1455,14 @@ impl Lfs<MemoryBlockDevice> {
         Self::new(device, total_blocks)
     }
 
-    /// Opens an existing LFS from the given buffer, using the provided tail offset.
+    /// Opens an existing LFS from the given buffer.
     ///
     /// This is a convenience constructor for using a `Vec<u8>` as the backing store.
-    pub fn open_vec(data: Vec<u8>, tail: BlockAddress) -> Result<Self> {
+    /// The tail position is read from the superblock on disk.
+    pub fn open_vec(data: Vec<u8>) -> Result<Self> {
         let total_blocks = (data.len() / BLOCK_SIZE) as u64;
         let device = MemoryBlockDevice::new(data);
-        Self::open(device, total_blocks, tail)
+        Self::open(device, total_blocks)
     }
 
     /// Consumes the filesystem and returns the underlying data buffer.
@@ -1680,12 +1683,11 @@ mod tests {
         lfs.write(fd, b"Saved data").expect("Failed to write");
         lfs.close(fd).expect("Failed to close");
 
-        let tail = lfs.tail();
-        println!("Tail position: {}", tail.as_u64());
+        println!("Tail position: {}", lfs.tail().as_u64());
 
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("Failed to reopen filesystem");
+        let mut lfs2 = Lfs::open_vec(data).expect("Failed to reopen filesystem");
         let fd = lfs2.open_file("persist.txt").expect("Failed to open file");
         let mut buf = vec![0u8; 10];
         lfs2.read(fd, &mut buf).expect("Failed to read");
@@ -2216,10 +2218,9 @@ mod tests {
             lfs.close(fd).expect("Failed to close");
         }
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("Failed to reopen filesystem");
+        let mut lfs2 = Lfs::open_vec(data).expect("Failed to reopen filesystem");
 
         for (name, expected_content) in &files {
             let fd = lfs2.open_file(name).expect("Failed to open file");
@@ -2350,7 +2351,7 @@ mod tests {
         let mut data = vec![0u8; 64 * BLOCK_SIZE];
         data[0..8].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
 
-        let result = Lfs::open_vec(data, BlockAddress::new(1));
+        let result = Lfs::open_vec(data);
         match result {
             Err(Error::CorruptFilesystem) => println!("Corrupt magic number correctly detected"),
             Err(e) => panic!("Expected CorruptFilesystem, got {:?}", e),
@@ -2569,12 +2570,11 @@ mod tests {
             lfs.superblock.inode_map_block.as_u64()
         );
 
-        let tail = lfs.tail();
-        println!("Tail: {}", tail.as_u64());
+        println!("Tail: {}", lfs.tail().as_u64());
         let data = lfs.into_inner();
 
         // Restore and check inode map
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("Failed to restore");
+        let mut lfs2 = Lfs::open_vec(data).expect("Failed to restore");
         println!("Inode map after restore: {:?}", lfs2.inode_map);
         println!(
             "Superblock inode_map_block after restore: {:?}",
@@ -2607,11 +2607,10 @@ mod tests {
         lfs.write(fd, b"Content A").expect("write");
         lfs.close(fd).expect("close");
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
         // Restore
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+        let mut lfs2 = Lfs::open_vec(data).expect("restore");
 
         // Open a NEW file b.txt (not existing before)
         let fd_b = lfs2.open_file("b.txt").expect("open b.txt");
@@ -2654,10 +2653,9 @@ mod tests {
 
         println!("Before restore: inode_map = {:?}", lfs.inode_map);
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+        let mut lfs2 = Lfs::open_vec(data).expect("restore");
         println!("After restore: inode_map = {:?}", lfs2.inode_map);
 
         let fd2 = lfs2.open_file("large.txt").expect("open after restore");
@@ -2702,10 +2700,9 @@ mod tests {
 
         println!("Before restore: {} inodes", lfs.inode_map.len());
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+        let mut lfs2 = Lfs::open_vec(data).expect("restore");
         println!("After restore: {} inodes", lfs2.inode_map.len());
 
         // Verify all files
@@ -2752,10 +2749,9 @@ mod tests {
         // Write { fd_index: 0, data: [...] }
         lfs.write(fd0, &write_data).expect("write");
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut lfs_verify = Lfs::open_vec(data, tail).expect("reopen");
+        let mut lfs_verify = Lfs::open_vec(data).expect("reopen");
 
         let fd = lfs_verify.open_file("a.txt").expect("open for verify");
         lfs_verify.seek(fd, 0).expect("seek");
@@ -2783,10 +2779,9 @@ mod tests {
         let _fd1 = lfs.open_file("a.txt").expect("open 2");
         lfs.write(fd0, &write_data).expect("write");
 
-        let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut lfs_verify = Lfs::open_vec(data, tail).expect("reopen");
+        let mut lfs_verify = Lfs::open_vec(data).expect("reopen");
 
         let fd = lfs_verify.open_file("a.txt").expect("open for verify");
         lfs_verify.seek(fd, 0).expect("seek");
@@ -2863,9 +2858,8 @@ mod tests {
         }
 
         // Now verify
-        let tail = lfs.tail();
         let data = lfs.into_inner();
-        let mut lfs_verify = Lfs::open_vec(data, tail).expect("reopen");
+        let mut lfs_verify = Lfs::open_vec(data).expect("reopen");
 
         let fd = lfs_verify.open_file("a.txt").expect("open for verify");
         lfs_verify.seek(fd, 0).expect("seek to start");
@@ -2932,9 +2926,8 @@ mod tests {
         assert!(buf.iter().all(|&b| b == 0xFF), "Data should be 0xFF");
 
         // Now persist/restore
-        let tail = lfs.tail();
         let data = lfs.into_inner();
-        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+        let mut lfs2 = Lfs::open_vec(data).expect("restore");
 
         let fd2 = lfs2.open_file("test.txt").expect("open after restore");
         let size2 = lfs2.file_size(fd2).expect("size after restore");
