@@ -18,11 +18,13 @@
 //! - `read`: Read data from an open file
 //! - `write`: Write data to an open file
 //! - `truncate`: Change the size of a file
+//! - `remove`: Unlink a file (UNIX semantics - open FDs continue to work)
 //! - `clean`: Perform log cleaning (garbage collection)
 
 #![deny(missing_docs)]
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 /// Block size in bytes.
 const BLOCK_SIZE: usize = 4096;
@@ -132,25 +134,44 @@ impl BlockDevice for MemoryBlockDevice {
 /// This is intended for testing to verify that the LFS implementation writes blocks
 /// in strictly sequential order, which is a key property of log-structured filesystems.
 /// Block 0 (superblock) is exempt from sequential ordering requirements.
+///
+/// The device is aware of log boundaries and handles wraparound correctly: when the
+/// expected next block equals `log_end`, writing to `log_start` is considered sequential.
 pub struct SequentialBlockDevice<D: BlockDevice> {
     inner: D,
     next_write_block: Option<BlockAddress>,
+    log_start: BlockAddress,
+    log_end: BlockAddress,
 }
 
 impl<D: BlockDevice> SequentialBlockDevice<D> {
-    /// Creates a new sequential block device wrapper.
+    /// Creates a new sequential block device wrapper with log boundaries.
     ///
     /// The first non-superblock write establishes the starting point for sequential writes.
-    pub fn new(inner: D) -> Self {
+    /// Log boundaries are used to handle wraparound: when the tail reaches `log_end`,
+    /// the next sequential write should be to `log_start`.
+    pub fn new(inner: D, log_start: BlockAddress, log_end: BlockAddress) -> Self {
         Self {
             inner,
             next_write_block: None,
+            log_start,
+            log_end,
         }
     }
 
     /// Consumes the wrapper and returns the inner device.
     pub fn into_inner(self) -> D {
         self.inner
+    }
+
+    /// Returns the next expected block, handling wraparound at log boundaries.
+    fn next_block(&self, block: BlockAddress) -> BlockAddress {
+        let next = block.next();
+        if next.as_u64() >= self.log_end.as_u64() {
+            self.log_start
+        } else {
+            next
+        }
     }
 }
 
@@ -165,7 +186,7 @@ impl<D: BlockDevice> BlockDevice for SequentialBlockDevice<D> {
             match self.next_write_block {
                 None => {
                     // First non-superblock write establishes the sequence
-                    self.next_write_block = Some(block.next());
+                    self.next_write_block = Some(self.next_block(block));
                 }
                 Some(expected) => {
                     assert_eq!(
@@ -175,7 +196,7 @@ impl<D: BlockDevice> BlockDevice for SequentialBlockDevice<D> {
                         expected.as_u64(),
                         block.as_u64()
                     );
-                    self.next_write_block = Some(block.next());
+                    self.next_write_block = Some(self.next_block(block));
                 }
             }
         }
@@ -233,7 +254,7 @@ impl BlockAddress {
     pub const INVALID: BlockAddress = BlockAddress(u64::MAX);
 
     /// Creates a new block address from a raw value.
-    fn new(value: u64) -> Self {
+    pub fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -546,6 +567,9 @@ pub struct Lfs<D: BlockDevice> {
     /// The committed tail position from the last successful operation.
     /// Used to recover from partial writes on NoSpace errors.
     committed_tail: BlockAddress,
+    /// Inodes that have been unlinked but still have open file descriptors.
+    /// These will be fully removed when the last FD is closed.
+    unlinked_inodes: BTreeSet<InodeNumber>,
 }
 
 impl<D: BlockDevice> Lfs<D> {
@@ -588,6 +612,7 @@ impl<D: BlockDevice> Lfs<D> {
             next_fd: FileDescriptor::new(0),
             max_file_size,
             committed_tail,
+            unlinked_inodes: BTreeSet::new(),
         };
 
         lfs.create_root_directory()?;
@@ -627,6 +652,7 @@ impl<D: BlockDevice> Lfs<D> {
             next_fd: FileDescriptor::new(0),
             max_file_size,
             committed_tail: tail,
+            unlinked_inodes: BTreeSet::new(),
         };
 
         lfs.load_inode_map()?;
@@ -685,8 +711,24 @@ impl<D: BlockDevice> Lfs<D> {
     }
 
     /// Closes an open file descriptor.
+    ///
+    /// If the file was unlinked while open, and this is the last open FD,
+    /// the inode and data blocks are freed.
     pub fn close(&mut self, fd: FileDescriptor) -> Result<()> {
-        self.open_files.remove(&fd).ok_or(Error::InvalidFd)?;
+        let open_file = self.open_files.remove(&fd).ok_or(Error::InvalidFd)?;
+        let ino = open_file.ino;
+
+        // Check if this inode was unlinked and this was the last open FD
+        if self.unlinked_inodes.contains(&ino) {
+            let still_open = self.open_files.values().any(|f| f.ino == ino);
+            if !still_open {
+                self.unlinked_inodes.remove(&ino);
+                self.free_inode_blocks(ino)?;
+                self.persist_inode_map()?;
+                self.commit();
+            }
+        }
+
         Ok(())
     }
 
@@ -903,6 +945,145 @@ impl<D: BlockDevice> Lfs<D> {
         let open_file = self.open_files.get(&fd).ok_or(Error::InvalidFd)?;
         let inode = self.read_inode_from_map(open_file.ino)?;
         Ok(inode.size)
+    }
+
+    /// Removes a file from the filesystem.
+    ///
+    /// Uses UNIX semantics: the directory entry is removed immediately, but if
+    /// the file has open file descriptors, the inode and data blocks remain
+    /// accessible until all FDs are closed. When the last FD is closed, the
+    /// space is reclaimed.
+    pub fn remove(&mut self, name: &str) -> Result<()> {
+        match self.remove_inner(name) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn remove_inner(&mut self, name: &str) -> Result<()> {
+        // Find the file's inode number
+        let ino = self.lookup_file(name)?.ok_or(Error::NotFound)?;
+
+        // Remove the directory entry
+        self.remove_dir_entry(InodeNumber::ROOT, name)?;
+
+        // Check if the file is currently open
+        let is_open = self.open_files.values().any(|f| f.ino == ino);
+
+        if is_open {
+            // Mark as unlinked - will be fully removed when last FD is closed
+            self.unlinked_inodes.insert(ino);
+        } else {
+            // No open FDs, remove immediately
+            self.free_inode_blocks(ino)?;
+        }
+
+        self.persist_inode_map()?;
+
+        Ok(())
+    }
+
+    /// Frees all blocks associated with an inode and removes it from the inode map.
+    fn free_inode_blocks(&mut self, ino: InodeNumber) -> Result<()> {
+        // Get the inode to find all its blocks
+        let inode = self.read_inode(ino)?;
+
+        // Remove data blocks from segment summary
+        let num_blocks = BlockIndex::blocks_for_size(inode.size);
+        for block_num in 0..num_blocks {
+            let block_idx = BlockIndex::new(block_num);
+            let block_addr = self.get_block_addr(&inode, block_idx)?;
+            if block_addr.is_valid() {
+                self.segment_summary.remove(&block_addr);
+            }
+        }
+
+        // Remove indirect block if present
+        if inode.indirect.is_valid() {
+            self.segment_summary.remove(&inode.indirect);
+        }
+
+        // Remove double indirect blocks if present
+        if inode.double_indirect.is_valid() {
+            let mut double_block = [0u8; BLOCK_SIZE];
+            self.read_block(inode.double_indirect, &mut double_block)?;
+
+            for i in 0..PTRS_PER_BLOCK {
+                let offset = i * 8;
+                let ptr = u64::from_le_bytes(double_block[offset..offset + 8].try_into().unwrap());
+                let first_addr = BlockAddress::new(ptr);
+                if first_addr.is_valid() {
+                    self.segment_summary.remove(&first_addr);
+                }
+            }
+            self.segment_summary.remove(&inode.double_indirect);
+        }
+
+        // Remove inode from inode map and segment summary
+        if let Some(&inode_addr) = self.inode_map.get(&ino) {
+            self.segment_summary.remove(&inode_addr);
+        }
+        self.inode_map.remove(&ino);
+
+        Ok(())
+    }
+
+    fn remove_dir_entry(&mut self, dir_ino: InodeNumber, name: &str) -> Result<()> {
+        let mut dir_inode = self.read_inode(dir_ino)?;
+        let num_entries = dir_inode.size / DIR_ENTRY_SIZE;
+
+        for i in 0..num_entries {
+            let offset = i * DIR_ENTRY_SIZE;
+            let block_idx = BlockIndex::from_byte_offset(offset);
+            let block_offset = (offset % BLOCK_SIZE as u64) as usize;
+
+            let block_addr = self.get_block_addr(&dir_inode, block_idx)?;
+            if !block_addr.is_valid() {
+                continue;
+            }
+
+            let mut block_data = [0u8; BLOCK_SIZE];
+            self.read_block(block_addr, &mut block_data)?;
+
+            let entry_bytes = &block_data[block_offset..block_offset + DIR_ENTRY_SIZE as usize];
+            if let Some(entry) = DirEntry::from_bytes(entry_bytes)
+                && entry.ino != InodeNumber::INVALID
+                && entry.name() == name
+            {
+                // Mark entry as deleted by setting ino to INVALID
+                let deleted_entry = DirEntry::new(InodeNumber::INVALID, "").unwrap();
+                block_data[block_offset..block_offset + DIR_ENTRY_SIZE as usize]
+                    .copy_from_slice(&deleted_entry.to_bytes());
+
+                // Write as a new block (copy-on-write)
+                let new_block_addr = self.allocate_block()?;
+                self.write_block(new_block_addr, &block_data)?;
+
+                self.segment_summary.remove(&block_addr);
+                self.segment_summary.insert(
+                    new_block_addr,
+                    SegmentSummaryEntry {
+                        ino: dir_ino,
+                        block_index: block_idx,
+                        entry_type: SegmentEntryType::Data,
+                    },
+                );
+
+                self.set_block_addr(&mut dir_inode, block_idx, new_block_addr)?;
+                self.write_inode(&dir_inode)?;
+
+                return Ok(());
+            }
+        }
+
+        Err(Error::NotFound)
     }
 
     /// Performs log cleaning (garbage collection).
@@ -3088,7 +3269,9 @@ mod tests {
     fn sequential_block_device_enforces_ordering() {
         let data = vec![0u8; 64 * BLOCK_SIZE];
         let mem_device = MemoryBlockDevice::new(data);
-        let device = SequentialBlockDevice::new(mem_device);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(64);
+        let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
         let mut lfs = Lfs::new(device, 64).expect("create fs with sequential device");
 
@@ -3110,7 +3293,9 @@ mod tests {
     fn sequential_block_device_with_multiple_files() {
         let data = vec![0u8; 128 * BLOCK_SIZE];
         let mem_device = MemoryBlockDevice::new(data);
-        let device = SequentialBlockDevice::new(mem_device);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(128);
+        let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
         let mut lfs = Lfs::new(device, 128).expect("create fs with sequential device");
 
@@ -3139,7 +3324,9 @@ mod tests {
     fn sequential_block_device_with_large_write() {
         let data = vec![0u8; 256 * BLOCK_SIZE];
         let mem_device = MemoryBlockDevice::new(data);
-        let device = SequentialBlockDevice::new(mem_device);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(256);
+        let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
         let mut lfs = Lfs::new(device, 256).expect("create fs with sequential device");
 
@@ -3165,7 +3352,9 @@ mod tests {
     fn sequential_block_device_with_overwrites() {
         let data = vec![0u8; 64 * BLOCK_SIZE];
         let mem_device = MemoryBlockDevice::new(data);
-        let device = SequentialBlockDevice::new(mem_device);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(64);
+        let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
         let mut lfs = Lfs::new(device, 64).expect("create fs with sequential device");
 
@@ -3187,5 +3376,154 @@ mod tests {
             String::from_utf8_lossy(&buf)
         );
         lfs.close(fd).expect("close");
+    }
+
+    #[test]
+    fn remove_file() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("removeme.txt").expect("create file");
+        lfs.write(fd, b"This file will be removed").expect("write");
+        lfs.close(fd).expect("close");
+
+        lfs.remove("removeme.txt").expect("remove file");
+        println!("File removed successfully");
+
+        let result = lfs.open_file("removeme.txt");
+        let fd = result.expect("opening removed filename creates new file");
+        let mut buf = vec![0u8; 10];
+        let n = lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(n, 0, "New file should be empty");
+        lfs.close(fd).expect("close");
+        println!("Confirmed: opening removed filename creates fresh empty file");
+    }
+
+    #[test]
+    fn remove_nonexistent_file() {
+        let mut lfs = create_test_fs(64);
+
+        let result = lfs.remove("nonexistent.txt");
+        assert_eq!(result, Err(Error::NotFound));
+        println!("Removing nonexistent file correctly returns NotFound");
+    }
+
+    #[test]
+    fn remove_open_file_unix_semantics() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("open.txt").expect("create file");
+        lfs.write(fd, b"File is open").expect("write");
+
+        lfs.remove("open.txt").expect("remove while open succeeds");
+        println!("Removing open file succeeds (UNIX semantics)");
+
+        lfs.seek(fd, 0).expect("seek");
+        let mut buf = vec![0u8; 12];
+        let n = lfs.read(fd, &mut buf).expect("read from unlinked file");
+        assert_eq!(n, 12);
+        assert_eq!(&buf, b"File is open");
+        println!("Can still read from unlinked file via open FD");
+
+        lfs.write(fd, b" - more data")
+            .expect("write to unlinked file");
+        println!("Can still write to unlinked file via open FD");
+
+        lfs.close(fd).expect("close");
+        println!("Closed FD, file should now be fully removed");
+
+        let fd2 = lfs.open_file("open.txt").expect("recreate file");
+        let mut buf2 = vec![0u8; 10];
+        let n2 = lfs.read(fd2, &mut buf2).expect("read");
+        assert_eq!(n2, 0, "Recreated file should be empty");
+        lfs.close(fd2).expect("close");
+        println!("Recreated file is empty as expected");
+    }
+
+    #[test]
+    fn remove_and_recreate() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("recreate.txt").expect("create file");
+        lfs.write(fd, b"Original content").expect("write");
+        lfs.close(fd).expect("close");
+
+        lfs.remove("recreate.txt").expect("remove");
+
+        let fd = lfs.open_file("recreate.txt").expect("recreate file");
+        lfs.write(fd, b"New content").expect("write new content");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("recreate.txt").expect("reopen");
+        let mut buf = vec![0u8; 11];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"New content");
+        lfs.close(fd).expect("close");
+        println!("File recreated with new content successfully");
+    }
+
+    #[test]
+    fn remove_persists_across_restore() {
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        let fd = lfs.open_file("persist.txt").expect("create file");
+        lfs.write(fd, b"Will be removed").expect("write");
+        lfs.close(fd).expect("close");
+
+        lfs.remove("persist.txt").expect("remove");
+
+        let data = lfs.into_inner();
+        let mut lfs2 = Lfs::open_vec(data).expect("restore fs");
+
+        let fd = lfs2
+            .open_file("persist.txt")
+            .expect("open creates new file");
+        let mut buf = vec![0u8; 10];
+        let n = lfs2.read(fd, &mut buf).expect("read");
+        assert_eq!(n, 0, "File should be empty after restore");
+        lfs2.close(fd).expect("close");
+        println!("Remove persists correctly across restore");
+    }
+
+    #[test]
+    fn remove_multiple_files() {
+        let mut lfs = create_test_fs(128);
+
+        for i in 0..5 {
+            let name = format!("file{}.txt", i);
+            let fd = lfs.open_file(&name).expect("create file");
+            let content = format!("Content {}", i);
+            lfs.write(fd, content.as_bytes()).expect("write");
+            lfs.close(fd).expect("close");
+        }
+
+        lfs.remove("file1.txt").expect("remove file1");
+        lfs.remove("file3.txt").expect("remove file3");
+
+        let fd = lfs.open_file("file0.txt").expect("open file0");
+        let mut buf = vec![0u8; 9];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Content 0");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("file2.txt").expect("open file2");
+        let mut buf = vec![0u8; 9];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Content 2");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("file4.txt").expect("open file4");
+        let mut buf = vec![0u8; 9];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Content 4");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("file1.txt").expect("file1 recreated");
+        let mut buf = vec![0u8; 10];
+        let n = lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(n, 0, "Recreated file1 should be empty");
+        lfs.close(fd).expect("close");
+
+        println!("Multiple file removal works correctly");
     }
 }

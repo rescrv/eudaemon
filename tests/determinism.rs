@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
+use synfs::BlockAddress;
 use synfs::Error;
 use synfs::FileDescriptor;
 use synfs::Lfs;
@@ -45,6 +46,8 @@ enum FsOp {
     Seek { fd_index: usize, pos: u64 },
     /// Truncate a file.
     Truncate { fd_index: usize, size: u64 },
+    /// Remove a file.
+    Remove { name: String },
 }
 
 ////////////////////////////////////////// ReferenceFile ///////////////////////////////////////////////
@@ -86,7 +89,7 @@ impl ReferenceFile {
 /// An open file handle in the reference implementation.
 #[derive(Debug, Clone)]
 struct ReferenceOpenFile {
-    name: String,
+    ino: u64,
     position: usize,
     closed: bool,
 }
@@ -94,27 +97,50 @@ struct ReferenceOpenFile {
 /////////////////////////////////////////// ReferenceFs ////////////////////////////////////////////////
 
 /// A reference implementation of a filesystem using simple in-memory storage.
+///
+/// Uses inode-based storage to properly support UNIX unlink semantics:
+/// files can be unlinked while open, and the data remains accessible
+/// via existing file descriptors until they are all closed.
 #[derive(Debug)]
 struct ReferenceFs {
-    files: BTreeMap<String, ReferenceFile>,
+    /// Maps inode number to file contents.
+    inodes: BTreeMap<u64, ReferenceFile>,
+    /// Maps filename to inode number (the "directory").
+    directory: BTreeMap<String, u64>,
+    /// Open file descriptors.
     open_files: Vec<ReferenceOpenFile>,
+    /// Next inode number to allocate.
+    next_ino: u64,
     max_file_size: usize,
 }
 
 impl ReferenceFs {
     fn new(max_file_size: usize) -> Self {
         Self {
-            files: BTreeMap::new(),
+            inodes: BTreeMap::new(),
+            directory: BTreeMap::new(),
             open_files: Vec::new(),
+            next_ino: 1,
             max_file_size,
         }
     }
 
     fn open(&mut self, name: &str) -> Result<usize, Error> {
-        self.files.entry(name.to_string()).or_default();
+        let ino = if let Some(&ino) = self.directory.get(name) {
+            // File exists, open it
+            ino
+        } else {
+            // Create new file
+            let ino = self.next_ino;
+            self.next_ino += 1;
+            self.inodes.insert(ino, ReferenceFile::default());
+            self.directory.insert(name.to_string(), ino);
+            ino
+        };
+
         let fd_index = self.open_files.len();
         self.open_files.push(ReferenceOpenFile {
-            name: name.to_string(),
+            ino,
             position: 0,
             closed: false,
         });
@@ -125,7 +151,18 @@ impl ReferenceFs {
         if fd_index >= self.open_files.len() || self.open_files[fd_index].closed {
             return Err(Error::InvalidFd);
         }
+        let ino = self.open_files[fd_index].ino;
         self.open_files[fd_index].closed = true;
+
+        // If inode is not in directory (unlinked) and no other FDs point to it, free it
+        let in_directory = self.directory.values().any(|&i| i == ino);
+        if !in_directory {
+            let still_open = self.open_files.iter().any(|f| !f.closed && f.ino == ino);
+            if !still_open {
+                self.inodes.remove(&ino);
+            }
+        }
+
         Ok(())
     }
 
@@ -134,14 +171,14 @@ impl ReferenceFs {
             return Err(Error::InvalidFd);
         }
         let open_file = &self.open_files[fd_index];
-        let name = open_file.name.clone();
+        let ino = open_file.ino;
         let pos = open_file.position;
 
         if pos + data.len() > self.max_file_size {
             return Err(Error::FileTooLarge);
         }
 
-        let file = self.files.get_mut(&name).ok_or(Error::NotFound)?;
+        let file = self.inodes.get_mut(&ino).ok_or(Error::NotFound)?;
         file.write(pos, data);
         self.open_files[fd_index].position = pos + data.len();
         Ok(data.len())
@@ -152,10 +189,10 @@ impl ReferenceFs {
             return Err(Error::InvalidFd);
         }
         let open_file = &self.open_files[fd_index];
-        let name = open_file.name.clone();
+        let ino = open_file.ino;
         let pos = open_file.position;
 
-        let file = self.files.get(&name).ok_or(Error::NotFound)?;
+        let file = self.inodes.get(&ino).ok_or(Error::NotFound)?;
         let data = file.read(pos, len);
         self.open_files[fd_index].position = pos + data.len();
         Ok(data)
@@ -176,11 +213,34 @@ impl ReferenceFs {
         if size as usize > self.max_file_size {
             return Err(Error::FileTooLarge);
         }
-        let name = self.open_files[fd_index].name.clone();
+        let ino = self.open_files[fd_index].ino;
 
-        let file = self.files.get_mut(&name).ok_or(Error::NotFound)?;
+        let file = self.inodes.get_mut(&ino).ok_or(Error::NotFound)?;
         file.truncate(size as usize);
         Ok(())
+    }
+
+    fn remove(&mut self, name: &str) -> Result<(), Error> {
+        // Check if file exists in directory
+        let ino = *self.directory.get(name).ok_or(Error::NotFound)?;
+
+        // Remove from directory (unlink)
+        self.directory.remove(name);
+
+        // If no open FDs point to this inode, free it immediately
+        let still_open = self.open_files.iter().any(|f| !f.closed && f.ino == ino);
+        if !still_open {
+            self.inodes.remove(&ino);
+        }
+        // Otherwise, inode stays around until last FD is closed
+
+        Ok(())
+    }
+
+    /// Gets the file data for a file by name (for verification).
+    fn get_file(&self, name: &str) -> Option<&ReferenceFile> {
+        let ino = self.directory.get(name)?;
+        self.inodes.get(ino)
     }
 }
 
@@ -255,6 +315,10 @@ impl LfsAdapter {
         self.lfs.truncate(fd, size)
     }
 
+    fn remove(&mut self, name: &str) -> Result<(), Error> {
+        self.lfs.remove(name)
+    }
+
     fn into_inner(self) -> Vec<u8> {
         self.lfs.into_device().into_inner().into_inner()
     }
@@ -280,6 +344,7 @@ fn fs_op_strategy() -> impl Strategy<Value = FsOp> {
         5 => (0..10usize, 1..MAX_OP_SIZE).prop_map(|(fd_index, len)| FsOp::Read { fd_index, len }),
         3 => (0..10usize, 0..MAX_SEEK_POS).prop_map(|(fd_index, pos)| FsOp::Seek { fd_index, pos }),
         2 => (0..10usize, 0..MAX_SEEK_POS).prop_map(|(fd_index, size)| FsOp::Truncate { fd_index, size }),
+        1 => filename_strategy().prop_map(|name| FsOp::Remove { name }),
     ]
 }
 
@@ -428,6 +493,25 @@ fn execute_op(
                 }
             }
         }
+        FsOp::Remove { name } => {
+            let lfs_result = lfs.remove(name);
+            if lfs_result == Err(Error::NoSpace) {
+                // NOP: LFS is full, skip on reference to stay in sync
+                return;
+            }
+            let ref_result = reference.remove(name);
+
+            match (&lfs_result, &ref_result) {
+                (Ok(()), Ok(())) => {}
+                (Err(Error::NotFound), Err(Error::NotFound)) => {}
+                _ => {
+                    panic!(
+                        "Remove result mismatch for {:?}: lfs={:?}, ref={:?}",
+                        name, lfs_result, ref_result
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -439,7 +523,9 @@ fn execute_op(
 fn run_ops(ops: &[FsOp]) -> (LfsAdapter, ReferenceFs) {
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
     let mem_device = MemoryBlockDevice::new(data);
-    let seq_device = SequentialBlockDevice::new(mem_device);
+    let log_start = BlockAddress::new(1);
+    let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+    let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
     let lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
     let max_file_size = TEST_FS_BLOCKS * BLOCK_SIZE / 10;
 
@@ -468,7 +554,9 @@ proptest! {
         let mut lfs_verify = Lfs::open_vec(data).expect("Failed to reopen LFS for verification");
 
         // Verify each file's contents match the reference
-        for (name, ref_file) in &reference.files {
+        // Only check files that are still in the directory (not unlinked)
+        for (name, &ino) in &reference.directory {
+            let ref_file = reference.inodes.get(&ino).expect("inode should exist");
             let fd = lfs_verify.open_file(name).expect("Failed to open file for verification");
             lfs_verify.seek(fd, 0).expect("Failed to seek");
 
@@ -501,7 +589,9 @@ proptest! {
 
         let mut restored_lfs = Lfs::open_vec(data).expect("Failed to restore LFS");
 
-        for (name, ref_file) in &reference.files {
+        // Only check files that are still in the directory (not unlinked)
+        for (name, &ino) in &reference.directory {
+            let ref_file = reference.inodes.get(&ino).expect("inode should exist");
             let fd = restored_lfs.open_file(name).expect("Failed to open restored file");
 
             restored_lfs.seek(fd, 0).expect("Failed to seek");
@@ -556,7 +646,7 @@ fn specific_write_read_sequence() {
 
     let (lfs, reference) = run_ops(&ops);
 
-    let ref_file = reference.files.get("test.txt").expect("File should exist");
+    let ref_file = reference.get_file("test.txt").expect("File should exist");
     // "Hello, World!" (13 chars), then write "LFS!" at position 7 overwrites indices 7-10
     // H(0) e(1) l(2) l(3) o(4) ,(5) (6) W(7) o(8) r(9) l(10) d(11) !(12)
     // becomes: H e l l o ,   L F S ! d ! = "Hello, LFS!d!"
@@ -615,11 +705,11 @@ fn multiple_files_interleaved() {
     let (lfs, reference) = run_ops(&ops);
 
     assert_eq!(
-        reference.files.get("a.txt").unwrap().data,
+        reference.get_file("a.txt").unwrap().data,
         b"AAAaaa".to_vec()
     );
     assert_eq!(
-        reference.files.get("b.txt").unwrap().data,
+        reference.get_file("b.txt").unwrap().data,
         b"BBBbbb".to_vec()
     );
     println!("Multiple interleaved files work correctly");
@@ -662,7 +752,7 @@ fn truncate_and_rewrite() {
     let (lfs, reference) = run_ops(&ops);
 
     assert_eq!(
-        reference.files.get("trunc.txt").unwrap().data,
+        reference.get_file("trunc.txt").unwrap().data,
         b"01234ABCDE".to_vec()
     );
     println!("Truncate and rewrite works correctly");
@@ -700,7 +790,7 @@ fn sparse_file() {
 
     let (lfs, reference) = run_ops(&ops);
 
-    let ref_file = reference.files.get("sparse.txt").unwrap();
+    let ref_file = reference.get_file("sparse.txt").unwrap();
     assert_eq!(ref_file.size(), 1003);
     assert_eq!(&ref_file.data[0..5], b"START");
     assert_eq!(&ref_file.data[5..1000], &vec![0u8; 995][..]);
