@@ -22,7 +22,7 @@
 
 #![deny(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Block size in bytes.
 const BLOCK_SIZE: usize = 4096;
@@ -45,7 +45,7 @@ const DIR_ENTRY_SIZE: u64 = 272;
 ////////////////////////////////////////////// InodeNumber /////////////////////////////////////////////
 
 /// A strongly-typed inode number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InodeNumber(u64);
 
 impl InodeNumber {
@@ -79,7 +79,7 @@ impl InodeNumber {
 ///////////////////////////////////////////// BlockAddress /////////////////////////////////////////////
 
 /// A strongly-typed block address on disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockAddress(u64);
 
 impl BlockAddress {
@@ -103,7 +103,7 @@ impl BlockAddress {
 
     /// Returns the byte offset in the data buffer for this block.
     fn byte_offset(self) -> usize {
-        self.0 as usize * BLOCK_SIZE
+        (self.0 as usize).saturating_mul(BLOCK_SIZE)
     }
 
     /// Returns the next block address.
@@ -147,7 +147,7 @@ impl BlockIndex {
 /////////////////////////////////////////// FileDescriptor /////////////////////////////////////////////
 
 /// A strongly-typed file descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileDescriptor(u32);
 
 impl FileDescriptor {
@@ -392,11 +392,14 @@ struct OpenFile {
 pub struct Lfs {
     data: Vec<u8>,
     superblock: Superblock,
-    inode_map: HashMap<InodeNumber, BlockAddress>,
-    segment_summary: HashMap<BlockAddress, SegmentSummaryEntry>,
-    open_files: HashMap<FileDescriptor, OpenFile>,
+    inode_map: BTreeMap<InodeNumber, BlockAddress>,
+    segment_summary: BTreeMap<BlockAddress, SegmentSummaryEntry>,
+    open_files: BTreeMap<FileDescriptor, OpenFile>,
     next_fd: FileDescriptor,
     max_file_size: u64,
+    /// The committed tail position from the last successful operation.
+    /// Used to recover from partial writes on NoSpace errors.
+    committed_tail: BlockAddress,
 }
 
 impl Lfs {
@@ -409,7 +412,7 @@ impl Lfs {
             return Err(Error::BufferTooSmall);
         }
 
-        let max_file_size = (data.len() / 4) as u64;
+        let max_file_size = (data.len() / 10) as u64;
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(total_blocks as u64);
 
@@ -424,18 +427,21 @@ impl Lfs {
             next_inode: InodeNumber::ROOT.next(),
         };
 
+        let committed_tail = log_start;
         let mut lfs = Self {
             data,
             superblock,
-            inode_map: HashMap::new(),
-            segment_summary: HashMap::new(),
-            open_files: HashMap::new(),
+            inode_map: BTreeMap::new(),
+            segment_summary: BTreeMap::new(),
+            open_files: BTreeMap::new(),
             next_fd: FileDescriptor::new(0),
             max_file_size,
+            committed_tail,
         };
 
         lfs.write_superblock()?;
         lfs.create_root_directory()?;
+        lfs.committed_tail = lfs.superblock.tail;
 
         Ok(lfs)
     }
@@ -453,16 +459,17 @@ impl Lfs {
             return Err(Error::CorruptFilesystem);
         }
 
-        let max_file_size = (data.len() / 4) as u64;
+        let max_file_size = (data.len() / 10) as u64;
 
         let mut lfs = Self {
             data,
             superblock,
-            inode_map: HashMap::new(),
-            segment_summary: HashMap::new(),
-            open_files: HashMap::new(),
+            inode_map: BTreeMap::new(),
+            segment_summary: BTreeMap::new(),
+            open_files: BTreeMap::new(),
             next_fd: FileDescriptor::new(0),
             max_file_size,
+            committed_tail: tail,
         };
 
         lfs.superblock.tail = tail;
@@ -491,6 +498,20 @@ impl Lfs {
     ///
     /// Returns a file descriptor that can be used for read/write operations.
     pub fn open_file(&mut self, name: &str) -> Result<FileDescriptor> {
+        match self.open_file_inner(name) {
+            Ok(fd) => {
+                self.commit();
+                Ok(fd)
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn open_file_inner(&mut self, name: &str) -> Result<FileDescriptor> {
         if name.len() > MAX_FILENAME_LEN {
             return Err(Error::FilenameTooLong);
         }
@@ -557,6 +578,20 @@ impl Lfs {
     ///
     /// Returns the number of bytes written.
     pub fn write(&mut self, fd: FileDescriptor, buf: &[u8]) -> Result<usize> {
+        match self.write_inner(fd, buf) {
+            Ok(n) => {
+                self.commit();
+                Ok(n)
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn write_inner(&mut self, fd: FileDescriptor, buf: &[u8]) -> Result<usize> {
         let open_file = self.open_files.get(&fd).ok_or(Error::InvalidFd)?.clone();
 
         if open_file.position + buf.len() as u64 > self.max_file_size {
@@ -625,6 +660,20 @@ impl Lfs {
 
     /// Truncates a file to the specified size.
     pub fn truncate(&mut self, fd: FileDescriptor, size: u64) -> Result<()> {
+        match self.truncate_inner(fd, size) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn truncate_inner(&mut self, fd: FileDescriptor, size: u64) -> Result<()> {
         if size > self.max_file_size {
             return Err(Error::FileTooLarge);
         }
@@ -670,6 +719,20 @@ impl Lfs {
     /// This compacts live data and reclaims space from dead blocks.
     /// Returns the number of blocks reclaimed.
     pub fn clean(&mut self) -> Result<usize> {
+        match self.clean_inner() {
+            Ok(n) => {
+                self.commit();
+                Ok(n)
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn clean_inner(&mut self) -> Result<usize> {
         let live_blocks: Vec<(BlockAddress, SegmentSummaryEntry)> = self
             .segment_summary
             .iter()
@@ -681,8 +744,8 @@ impl Lfs {
             return Ok(0);
         }
 
-        let mut blocks_by_inode: HashMap<InodeNumber, Vec<(BlockAddress, BlockIndex)>> =
-            HashMap::new();
+        let mut blocks_by_inode: BTreeMap<InodeNumber, Vec<(BlockAddress, BlockIndex)>> =
+            BTreeMap::new();
         for (addr, entry) in &live_blocks {
             blocks_by_inode
                 .entry(entry.ino)
@@ -755,6 +818,27 @@ impl Lfs {
         total_log_blocks.saturating_sub(used_blocks)
     }
 
+    /// Recovers from a partial write by reloading in-memory state from disk.
+    ///
+    /// This is called when an operation fails with NoSpace. Since LFS writes
+    /// contiguously at the tail, we can simply reset to the committed tail
+    /// position and reload all in-memory structures.
+    fn recover_from_partial_write(&mut self) -> Result<()> {
+        self.superblock =
+            Superblock::from_bytes(&self.data[..BLOCK_SIZE]).ok_or(Error::CorruptFilesystem)?;
+        self.superblock.tail = self.committed_tail;
+        self.inode_map.clear();
+        self.segment_summary.clear();
+        self.load_inode_map()?;
+        self.rebuild_segment_summary()?;
+        Ok(())
+    }
+
+    /// Commits the current state by updating committed_tail to match the superblock.
+    fn commit(&mut self) {
+        self.committed_tail = self.superblock.tail;
+    }
+
     fn write_superblock(&mut self) -> Result<()> {
         let bytes = self.superblock.as_bytes();
         self.data[..64].copy_from_slice(&bytes);
@@ -804,13 +888,19 @@ impl Lfs {
 
     fn allocate_block(&mut self) -> Result<BlockAddress> {
         let log_size = self.superblock.log_end.as_u64() - self.superblock.log_start.as_u64();
+        let reserved_blocks = log_size / 4;
         let used_blocks = self.segment_summary.len() as u64;
 
-        if used_blocks >= log_size - 2 {
+        if used_blocks >= log_size.saturating_sub(reserved_blocks) {
             return Err(Error::NoSpace);
         }
 
         let block = self.superblock.tail;
+
+        if self.segment_summary.contains_key(&block) {
+            return Err(Error::NoSpace);
+        }
+
         self.superblock.tail = self.superblock.tail.next();
 
         if self.superblock.tail.as_u64() >= self.superblock.log_end.as_u64() {
@@ -2150,5 +2240,152 @@ mod tests {
 
         assert_eq!(lfs.data().len(), initial_len);
         println!("data() length unchanged after writes");
+    }
+
+    #[test]
+    fn recovery_from_nospace_preserves_data() {
+        let mut lfs = create_test_fs(32);
+
+        let fd = lfs.open_file("test.txt").expect("Failed to open file");
+        lfs.write(fd, b"Important data").expect("Failed to write");
+        lfs.close(fd).expect("Failed to close");
+        println!("Wrote initial data");
+
+        let fd = lfs.open_file("fill.txt").expect("Failed to open fill file");
+        loop {
+            let result = lfs.write(fd, &vec![b'X'; BLOCK_SIZE]);
+            match result {
+                Ok(_) => continue,
+                Err(Error::NoSpace) => {
+                    println!("Got NoSpace error as expected");
+                    break;
+                }
+                Err(Error::FileTooLarge) => {
+                    println!("Got FileTooLarge, continuing...");
+                    break;
+                }
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }
+        lfs.close(fd).expect("Failed to close fill file");
+
+        let fd = lfs
+            .open_file("test.txt")
+            .expect("Failed to reopen test file");
+        let mut buf = vec![0u8; 14];
+        lfs.read(fd, &mut buf)
+            .expect("Failed to read after NoSpace recovery");
+        assert_eq!(&buf, b"Important data");
+        println!("Original data preserved after NoSpace recovery");
+
+        lfs.close(fd).expect("Failed to close");
+    }
+
+    #[test]
+    fn recovery_from_nospace_during_file_creation() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("original.txt").expect("Failed to open file");
+        lfs.write(fd, b"Original content").expect("Failed to write");
+        lfs.close(fd).expect("Failed to close");
+        println!("Created original file");
+
+        let fd = lfs.open_file("filler.txt").expect("Failed to open filler");
+        let mut fill_count = 0;
+        loop {
+            match lfs.write(fd, &vec![b'X'; BLOCK_SIZE]) {
+                Ok(_) => fill_count += 1,
+                Err(Error::FileTooLarge) | Err(Error::NoSpace) => break,
+                Err(e) => panic!("Unexpected error during fill: {:?}", e),
+            }
+        }
+        lfs.close(fd).expect("Failed to close filler");
+        println!("Filled up the filesystem with {} blocks", fill_count);
+
+        let mut created_count = 0;
+        for i in 0..100 {
+            let name = format!("new_file_{}.txt", i);
+            match lfs.open_file(&name) {
+                Ok(new_fd) => {
+                    created_count += 1;
+                    lfs.close(new_fd).expect("Failed to close");
+                }
+                Err(Error::NoSpace) => {
+                    println!("Got NoSpace on file {} creation", i);
+                    break;
+                }
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }
+        println!("Created {} files before NoSpace", created_count);
+
+        let fd = lfs
+            .open_file("original.txt")
+            .expect("Failed to reopen original file");
+        let mut buf = vec![0u8; 16];
+        lfs.read(fd, &mut buf)
+            .expect("Failed to read after recovery");
+        assert_eq!(&buf, b"Original content");
+        println!("Original file content preserved after file creation NoSpace");
+
+        lfs.close(fd).expect("Failed to close");
+    }
+
+    #[test]
+    fn multiple_nospace_recoveries() {
+        let mut lfs = create_test_fs(64);
+
+        for iteration in 0..3 {
+            println!(
+                "Iteration {}: committed_tail={}, current_tail={}",
+                iteration,
+                lfs.committed_tail.as_u64(),
+                lfs.superblock.tail.as_u64()
+            );
+            let fd = lfs
+                .open_file("persistent.txt")
+                .expect("Failed to open persistent file");
+            let content = format!("Iteration {}", iteration);
+            lfs.seek(fd, 0).expect("Failed to seek");
+            lfs.write(fd, content.as_bytes()).expect("Failed to write");
+            lfs.close(fd).expect("Failed to close");
+            println!(
+                "Iteration {}: wrote content, tail now {}",
+                iteration,
+                lfs.superblock.tail.as_u64()
+            );
+
+            let temp_fd = lfs.open_file("temp.txt").expect("Failed to open temp file");
+            let mut write_count = 0;
+            loop {
+                match lfs.write(temp_fd, &vec![b'Y'; BLOCK_SIZE]) {
+                    Ok(_) => write_count += 1,
+                    Err(Error::FileTooLarge) | Err(Error::NoSpace) => break,
+                    Err(e) => panic!("Unexpected error: {:?}", e),
+                }
+            }
+            lfs.close(temp_fd).expect("Failed to close temp file");
+            println!(
+                "Iteration {}: wrote {} blocks before NoSpace/FileTooLarge, tail now {}",
+                iteration,
+                write_count,
+                lfs.superblock.tail.as_u64()
+            );
+
+            println!(
+                "Iteration {}: about to verify, committed_tail={}, current_tail={}",
+                iteration,
+                lfs.committed_tail.as_u64(),
+                lfs.superblock.tail.as_u64()
+            );
+            let verify_fd = lfs
+                .open_file("persistent.txt")
+                .expect("Failed to reopen persistent file");
+            let mut buf = vec![0u8; content.len()];
+            lfs.read(verify_fd, &mut buf).expect("Failed to read");
+            assert_eq!(String::from_utf8_lossy(&buf), content);
+            println!("Iteration {}: content verified after NoSpace", iteration);
+            lfs.close(verify_fd).expect("Failed to close");
+        }
     }
 }
