@@ -14,6 +14,7 @@ use synfs::BlockAddress;
 use synfs::Error;
 use synfs::FileDescriptor;
 use synfs::Lfs;
+use synfs::MemoryBlockDevice;
 
 /// Block size must match the LFS implementation.
 const BLOCK_SIZE: usize = 4096;
@@ -187,12 +188,12 @@ impl ReferenceFs {
 
 /// Adapter to track open file descriptors for LFS.
 struct LfsAdapter {
-    lfs: Lfs,
+    lfs: Lfs<MemoryBlockDevice>,
     open_fds: Vec<Option<FileDescriptor>>,
 }
 
 impl LfsAdapter {
-    fn new(lfs: Lfs) -> Self {
+    fn new(lfs: Lfs<MemoryBlockDevice>) -> Self {
         Self {
             lfs,
             open_fds: Vec::new(),
@@ -434,7 +435,7 @@ fn execute_op(
 /// Run a sequence of operations on both implementations.
 fn run_ops(ops: &[FsOp]) -> (LfsAdapter, ReferenceFs) {
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-    let lfs = Lfs::new(data).expect("Failed to create LFS");
+    let lfs = Lfs::from_vec(data).expect("Failed to create LFS");
     let max_file_size = TEST_FS_BLOCKS * BLOCK_SIZE / 10;
 
     let mut lfs_adapter = LfsAdapter::new(lfs);
@@ -460,7 +461,7 @@ proptest! {
         // Close all open fds in lfs so we can reopen and verify
         let tail = lfs.tail();
         let data = lfs.into_inner();
-        let mut lfs_verify = Lfs::open(data, tail).expect("Failed to reopen LFS for verification");
+        let mut lfs_verify = Lfs::open_vec(data, tail).expect("Failed to reopen LFS for verification");
 
         // Verify each file's contents match the reference
         for (name, ref_file) in &reference.files {
@@ -495,7 +496,7 @@ proptest! {
         let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut restored_lfs = Lfs::open(data, tail).expect("Failed to restore LFS");
+        let mut restored_lfs = Lfs::open_vec(data, tail).expect("Failed to restore LFS");
 
         for (name, ref_file) in &reference.files {
             let fd = restored_lfs.open_file(name).expect("Failed to open restored file");

@@ -42,6 +42,83 @@ const PTRS_PER_BLOCK: usize = BLOCK_SIZE / 8;
 /// Size of a directory entry in bytes.
 const DIR_ENTRY_SIZE: u64 = 272;
 
+////////////////////////////////////////////// BlockDevice /////////////////////////////////////////////
+
+/// A minimal block device trait for the LFS implementation.
+///
+/// Implementations of this trait provide block-level read and write operations.
+/// All operations work with fixed-size blocks of `BLOCK_SIZE` bytes.
+pub trait BlockDevice {
+    /// Reads a block from the device into the provided buffer.
+    ///
+    /// # Arguments
+    /// * `block` - The block address to read from.
+    /// * `buf` - A mutable buffer of exactly `BLOCK_SIZE` bytes to read into.
+    ///
+    /// # Errors
+    /// Returns an error if the block address is invalid or the read fails.
+    fn read_block(&self, block: BlockAddress, buf: &mut [u8; BLOCK_SIZE]) -> Result<()>;
+
+    /// Writes a block to the device from the provided buffer.
+    ///
+    /// # Arguments
+    /// * `block` - The block address to write to.
+    /// * `buf` - A buffer of exactly `BLOCK_SIZE` bytes to write.
+    ///
+    /// # Errors
+    /// Returns an error if the block address is invalid or the write fails.
+    fn write_block(&mut self, block: BlockAddress, buf: &[u8; BLOCK_SIZE]) -> Result<()>;
+}
+
+/////////////////////////////////////////// MemoryBlockDevice //////////////////////////////////////////
+
+/// An in-memory block device backed by a `Vec<u8>`.
+pub struct MemoryBlockDevice {
+    data: Vec<u8>,
+}
+
+impl MemoryBlockDevice {
+    /// Creates a new memory block device with the given data buffer.
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+
+    /// Returns the total number of blocks in the device.
+    pub fn total_blocks(&self) -> u64 {
+        (self.data.len() / BLOCK_SIZE) as u64
+    }
+
+    /// Consumes the device and returns the underlying data buffer.
+    pub fn into_inner(self) -> Vec<u8> {
+        self.data
+    }
+
+    /// Returns a reference to the underlying data.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl BlockDevice for MemoryBlockDevice {
+    fn read_block(&self, block: BlockAddress, buf: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        let offset = block.byte_offset();
+        if offset + BLOCK_SIZE > self.data.len() {
+            return Err(Error::InvalidOffset);
+        }
+        buf.copy_from_slice(&self.data[offset..offset + BLOCK_SIZE]);
+        Ok(())
+    }
+
+    fn write_block(&mut self, block: BlockAddress, buf: &[u8; BLOCK_SIZE]) -> Result<()> {
+        let offset = block.byte_offset();
+        if offset + BLOCK_SIZE > self.data.len() {
+            return Err(Error::InvalidOffset);
+        }
+        self.data[offset..offset + BLOCK_SIZE].copy_from_slice(buf);
+        Ok(())
+    }
+}
+
 ////////////////////////////////////////////// InodeNumber /////////////////////////////////////////////
 
 /// A strongly-typed inode number.
@@ -389,8 +466,8 @@ struct OpenFile {
 ///////////////////////////////////////////////// Lfs //////////////////////////////////////////////////
 
 /// Log-structured File System.
-pub struct Lfs {
-    data: Vec<u8>,
+pub struct Lfs<D: BlockDevice> {
+    device: D,
     superblock: Superblock,
     inode_map: BTreeMap<InodeNumber, BlockAddress>,
     segment_summary: BTreeMap<BlockAddress, SegmentSummaryEntry>,
@@ -402,24 +479,23 @@ pub struct Lfs {
     committed_tail: BlockAddress,
 }
 
-impl Lfs {
-    /// Creates a new LFS on the given buffer.
+impl<D: BlockDevice> Lfs<D> {
+    /// Creates a new LFS on the given block device.
     ///
-    /// The buffer must be at least 16 blocks (64KB) in size.
-    pub fn new(data: Vec<u8>) -> Result<Self> {
-        let total_blocks = data.len() / BLOCK_SIZE;
+    /// The device must have at least 16 blocks.
+    pub fn new(mut device: D, total_blocks: u64) -> Result<Self> {
         if total_blocks < 16 {
             return Err(Error::BufferTooSmall);
         }
 
-        let max_file_size = (data.len() / 10) as u64;
+        let max_file_size = (total_blocks as usize * BLOCK_SIZE / 10) as u64;
         let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(total_blocks as u64);
+        let log_end = BlockAddress::new(total_blocks);
 
         let superblock = Superblock {
             magic: MAGIC,
             block_size: BLOCK_SIZE as u32,
-            total_blocks: total_blocks as u64,
+            total_blocks,
             log_start,
             log_end,
             tail: log_start,
@@ -428,8 +504,14 @@ impl Lfs {
         };
 
         let committed_tail = log_start;
+
+        // Write the superblock to block 0
+        let mut superblock_block = [0u8; BLOCK_SIZE];
+        superblock_block[..64].copy_from_slice(&superblock.as_bytes());
+        device.write_block(BlockAddress::new(0), &superblock_block)?;
+
         let mut lfs = Self {
-            data,
+            device,
             superblock,
             inode_map: BTreeMap::new(),
             segment_summary: BTreeMap::new(),
@@ -439,30 +521,33 @@ impl Lfs {
             committed_tail,
         };
 
-        lfs.write_superblock()?;
         lfs.create_root_directory()?;
         lfs.committed_tail = lfs.superblock.tail;
 
         Ok(lfs)
     }
 
-    /// Opens an existing LFS from the given buffer, using the provided tail offset.
-    pub fn open(data: Vec<u8>, tail: BlockAddress) -> Result<Self> {
-        if data.len() < BLOCK_SIZE {
+    /// Opens an existing LFS from the given block device, using the provided tail offset.
+    pub fn open(device: D, total_blocks: u64, tail: BlockAddress) -> Result<Self> {
+        if total_blocks < 1 {
             return Err(Error::BufferTooSmall);
         }
 
+        // Read superblock from block 0
+        let mut superblock_block = [0u8; BLOCK_SIZE];
+        device.read_block(BlockAddress::new(0), &mut superblock_block)?;
+
         let superblock =
-            Superblock::from_bytes(&data[..BLOCK_SIZE]).ok_or(Error::CorruptFilesystem)?;
+            Superblock::from_bytes(&superblock_block).ok_or(Error::CorruptFilesystem)?;
 
         if superblock.magic != MAGIC {
             return Err(Error::CorruptFilesystem);
         }
 
-        let max_file_size = (data.len() / 10) as u64;
+        let max_file_size = (total_blocks as usize * BLOCK_SIZE / 10) as u64;
 
         let mut lfs = Self {
-            data,
+            device,
             superblock,
             inode_map: BTreeMap::new(),
             segment_summary: BTreeMap::new(),
@@ -484,14 +569,14 @@ impl Lfs {
         self.superblock.tail
     }
 
-    /// Returns the underlying data buffer.
-    pub fn into_inner(self) -> Vec<u8> {
-        self.data
+    /// Consumes the filesystem and returns the underlying block device.
+    pub fn into_device(self) -> D {
+        self.device
     }
 
-    /// Returns a reference to the underlying data.
-    pub fn data(&self) -> &[u8] {
-        &self.data
+    /// Returns a reference to the underlying block device.
+    pub fn device(&self) -> &D {
+        &self.device
     }
 
     /// Opens or creates a file by name.
@@ -561,9 +646,10 @@ impl Lfs {
             if !block_addr.is_valid() {
                 buf[bytes_read..bytes_read + bytes_in_block].fill(0);
             } else {
-                let disk_offset = block_addr.byte_offset() + block_offset;
+                let mut block_data = [0u8; BLOCK_SIZE];
+                self.read_block(block_addr, &mut block_data)?;
                 buf[bytes_read..bytes_read + bytes_in_block]
-                    .copy_from_slice(&self.data[disk_offset..disk_offset + bytes_in_block]);
+                    .copy_from_slice(&block_data[block_offset..block_offset + bytes_in_block]);
             }
 
             bytes_read += bytes_in_block;
@@ -611,8 +697,7 @@ impl Lfs {
 
             let old_block_addr = self.get_block_addr(&inode, block_idx)?;
             if old_block_addr.is_valid() && bytes_in_block < BLOCK_SIZE {
-                let disk_offset = old_block_addr.byte_offset();
-                block_data.copy_from_slice(&self.data[disk_offset..disk_offset + BLOCK_SIZE]);
+                self.read_block(old_block_addr, &mut block_data)?;
             }
 
             block_data[block_offset..block_offset + bytes_in_block]
@@ -691,6 +776,41 @@ impl Lfs {
         let new_last_block = BlockIndex::blocks_for_size(size);
         let old_last_block = BlockIndex::blocks_for_size(inode.size);
 
+        // If the new size doesn't align to a block boundary, we need to zero
+        // out the bytes beyond the new size in the last partial block.
+        let block_offset = (size % BLOCK_SIZE as u64) as usize;
+        if block_offset > 0 && new_last_block > 0 {
+            let last_block_idx = BlockIndex::new(new_last_block - 1);
+            let block_addr = self.get_block_addr(&inode, last_block_idx)?;
+            if block_addr.is_valid() {
+                // Read the existing block
+                let mut block_data = [0u8; BLOCK_SIZE];
+                self.read_block(block_addr, &mut block_data)?;
+
+                // Zero out bytes beyond the new size
+                block_data[block_offset..].fill(0);
+
+                // Write as a new block
+                let new_block_addr = self.allocate_block()?;
+                self.write_block(new_block_addr, &block_data)?;
+
+                // Update segment summary
+                self.segment_summary.remove(&block_addr);
+                self.segment_summary.insert(
+                    new_block_addr,
+                    SegmentSummaryEntry {
+                        ino: inode.ino,
+                        block_index: last_block_idx,
+                        entry_type: SegmentEntryType::Data,
+                    },
+                );
+
+                // Update inode to point to new block
+                self.set_block_addr(&mut inode, last_block_idx, new_block_addr)?;
+            }
+        }
+
+        // Remove blocks that are entirely beyond the new size
         for block_num in new_last_block..old_last_block {
             let block_idx = BlockIndex::new(block_num);
             let block_addr = self.get_block_addr(&inode, block_idx)?;
@@ -779,8 +899,7 @@ impl Lfs {
                 }
 
                 let mut block_data = [0u8; BLOCK_SIZE];
-                let disk_offset = old_addr.byte_offset();
-                block_data.copy_from_slice(&self.data[disk_offset..disk_offset + BLOCK_SIZE]);
+                self.read_block(old_addr, &mut block_data)?;
 
                 let new_addr = self.allocate_block()?;
                 self.write_block(new_addr, &block_data)?;
@@ -824,8 +943,9 @@ impl Lfs {
     /// contiguously at the tail, we can simply reset to the committed tail
     /// position and reload all in-memory structures.
     fn recover_from_partial_write(&mut self) -> Result<()> {
-        self.superblock =
-            Superblock::from_bytes(&self.data[..BLOCK_SIZE]).ok_or(Error::CorruptFilesystem)?;
+        let mut block = [0u8; BLOCK_SIZE];
+        self.read_block(BlockAddress::new(0), &mut block)?;
+        self.superblock = Superblock::from_bytes(&block).ok_or(Error::CorruptFilesystem)?;
         self.superblock.tail = self.committed_tail;
         self.inode_map.clear();
         self.segment_summary.clear();
@@ -840,9 +960,9 @@ impl Lfs {
     }
 
     fn write_superblock(&mut self) -> Result<()> {
-        let bytes = self.superblock.as_bytes();
-        self.data[..64].copy_from_slice(&bytes);
-        Ok(())
+        let mut block = [0u8; BLOCK_SIZE];
+        block[..64].copy_from_slice(&self.superblock.as_bytes());
+        self.device.write_block(BlockAddress::new(0), &block)
     }
 
     fn create_root_directory(&mut self) -> Result<()> {
@@ -858,9 +978,9 @@ impl Lfs {
 
     fn read_inode_from_map(&self, ino: InodeNumber) -> Result<Inode> {
         let block_addr = self.inode_map.get(&ino).ok_or(Error::NotFound)?;
-        let disk_offset = block_addr.byte_offset();
-        Inode::from_bytes(&self.data[disk_offset..disk_offset + BLOCK_SIZE])
-            .ok_or(Error::CorruptFilesystem)
+        let mut block = [0u8; BLOCK_SIZE];
+        self.read_block(*block_addr, &mut block)?;
+        Inode::from_bytes(&block).ok_or(Error::CorruptFilesystem)
     }
 
     fn write_inode(&mut self, inode: &Inode) -> Result<()> {
@@ -911,12 +1031,11 @@ impl Lfs {
     }
 
     fn write_block(&mut self, block: BlockAddress, data: &[u8; BLOCK_SIZE]) -> Result<()> {
-        let offset = block.byte_offset();
-        if offset + BLOCK_SIZE > self.data.len() {
-            return Err(Error::InvalidOffset);
-        }
-        self.data[offset..offset + BLOCK_SIZE].copy_from_slice(data);
-        Ok(())
+        self.device.write_block(block, data)
+    }
+
+    fn read_block(&self, block: BlockAddress, buf: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        self.device.read_block(block, buf)
     }
 
     fn get_block_addr(&self, inode: &Inode, block_idx: BlockIndex) -> Result<BlockAddress> {
@@ -931,9 +1050,10 @@ impl Lfs {
             if !inode.indirect.is_valid() {
                 return Ok(BlockAddress::INVALID);
             }
-            let disk_offset = inode.indirect.byte_offset() + indirect_idx as usize * 8;
-            let ptr =
-                u64::from_le_bytes(self.data[disk_offset..disk_offset + 8].try_into().unwrap());
+            let mut block = [0u8; BLOCK_SIZE];
+            self.read_block(inode.indirect, &mut block)?;
+            let offset = indirect_idx as usize * 8;
+            let ptr = u64::from_le_bytes(block[offset..offset + 8].try_into().unwrap());
             return Ok(BlockAddress::new(ptr));
         }
 
@@ -946,9 +1066,11 @@ impl Lfs {
             let first_level_idx = double_idx / PTRS_PER_BLOCK as u64;
             let second_level_idx = double_idx % PTRS_PER_BLOCK as u64;
 
-            let first_offset = inode.double_indirect.byte_offset() + first_level_idx as usize * 8;
+            let mut double_block = [0u8; BLOCK_SIZE];
+            self.read_block(inode.double_indirect, &mut double_block)?;
+            let first_offset = first_level_idx as usize * 8;
             let first_ptr = u64::from_le_bytes(
-                self.data[first_offset..first_offset + 8]
+                double_block[first_offset..first_offset + 8]
                     .try_into()
                     .unwrap(),
             );
@@ -958,9 +1080,11 @@ impl Lfs {
                 return Ok(BlockAddress::INVALID);
             }
 
-            let second_offset = first_addr.byte_offset() + second_level_idx as usize * 8;
+            let mut first_block = [0u8; BLOCK_SIZE];
+            self.read_block(first_addr, &mut first_block)?;
+            let second_offset = second_level_idx as usize * 8;
             let second_ptr = u64::from_le_bytes(
-                self.data[second_offset..second_offset + 8]
+                first_block[second_offset..second_offset + 8]
                     .try_into()
                     .unwrap(),
             );
@@ -1003,8 +1127,11 @@ impl Lfs {
                 );
             }
 
-            let disk_offset = inode.indirect.byte_offset() + indirect_idx as usize * 8;
-            self.data[disk_offset..disk_offset + 8].copy_from_slice(&addr.as_u64().to_le_bytes());
+            let mut block = [0u8; BLOCK_SIZE];
+            self.read_block(inode.indirect, &mut block)?;
+            let offset = indirect_idx as usize * 8;
+            block[offset..offset + 8].copy_from_slice(&addr.as_u64().to_le_bytes());
+            self.write_block(inode.indirect, &block)?;
             return Ok(());
         }
 
@@ -1031,9 +1158,11 @@ impl Lfs {
             let first_level_idx = double_idx / PTRS_PER_BLOCK as u64;
             let second_level_idx = double_idx % PTRS_PER_BLOCK as u64;
 
-            let first_offset = inode.double_indirect.byte_offset() + first_level_idx as usize * 8;
+            let mut double_block = [0u8; BLOCK_SIZE];
+            self.read_block(inode.double_indirect, &mut double_block)?;
+            let first_offset = first_level_idx as usize * 8;
             let first_ptr = u64::from_le_bytes(
-                self.data[first_offset..first_offset + 8]
+                double_block[first_offset..first_offset + 8]
                     .try_into()
                     .unwrap(),
             );
@@ -1046,8 +1175,9 @@ impl Lfs {
                     chunk.copy_from_slice(&BlockAddress::INVALID.as_u64().to_le_bytes());
                 }
                 self.write_block(new_block, &block_data)?;
-                self.data[first_offset..first_offset + 8]
+                double_block[first_offset..first_offset + 8]
                     .copy_from_slice(&new_block.as_u64().to_le_bytes());
+                self.write_block(inode.double_indirect, &double_block)?;
                 first_addr = new_block;
                 self.segment_summary.insert(
                     new_block,
@@ -1059,9 +1189,12 @@ impl Lfs {
                 );
             }
 
-            let second_offset = first_addr.byte_offset() + second_level_idx as usize * 8;
-            self.data[second_offset..second_offset + 8]
+            let mut first_block = [0u8; BLOCK_SIZE];
+            self.read_block(first_addr, &mut first_block)?;
+            let second_offset = second_level_idx as usize * 8;
+            first_block[second_offset..second_offset + 8]
                 .copy_from_slice(&addr.as_u64().to_le_bytes());
+            self.write_block(first_addr, &first_block)?;
             return Ok(());
         }
 
@@ -1085,8 +1218,9 @@ impl Lfs {
                 continue;
             }
 
-            let disk_offset = block_addr.byte_offset() + block_offset;
-            if let Some(entry) = DirEntry::from_bytes(&self.data[disk_offset..])
+            let mut block = [0u8; BLOCK_SIZE];
+            self.read_block(block_addr, &mut block)?;
+            if let Some(entry) = DirEntry::from_bytes(&block[block_offset..])
                 && entry.ino.is_valid()
                 && entry.name() == name
             {
@@ -1129,8 +1263,7 @@ impl Lfs {
         let old_block_addr = self.get_block_addr(&dir_inode, block_idx)?;
 
         if old_block_addr.is_valid() {
-            let disk_offset = old_block_addr.byte_offset();
-            block_data.copy_from_slice(&self.data[disk_offset..disk_offset + BLOCK_SIZE]);
+            self.read_block(old_block_addr, &mut block_data)?;
         }
 
         let entry_end = block_offset + DIR_ENTRY_SIZE as usize;
@@ -1166,7 +1299,8 @@ impl Lfs {
     fn persist_inode_map(&mut self) -> Result<()> {
         let entries: Vec<(InodeNumber, BlockAddress)> =
             self.inode_map.iter().map(|(&k, &v)| (k, v)).collect();
-        let entries_per_block = BLOCK_SIZE / 16;
+        // First 8 bytes are reserved for next-block pointer, each entry is 16 bytes
+        let entries_per_block = (BLOCK_SIZE - 8) / 16;
         let num_blocks = entries.len().div_ceil(entries_per_block);
 
         if num_blocks == 0 {
@@ -1221,25 +1355,22 @@ impl Lfs {
             return Ok(());
         }
 
-        let entries_per_block = BLOCK_SIZE / 16;
+        // First 8 bytes are reserved for next-block pointer, each entry is 16 bytes
+        let entries_per_block = (BLOCK_SIZE - 8) / 16;
 
         while block_addr.is_valid() {
-            let disk_offset = block_addr.byte_offset();
-            if disk_offset + BLOCK_SIZE > self.data.len() {
-                return Err(Error::CorruptFilesystem);
-            }
+            let mut block = [0u8; BLOCK_SIZE];
+            self.read_block(block_addr, &mut block)?;
 
-            let next_block = BlockAddress::new(u64::from_le_bytes(
-                self.data[disk_offset..disk_offset + 8].try_into().unwrap(),
-            ));
+            let next_block = BlockAddress::new(u64::from_le_bytes(block[0..8].try_into().unwrap()));
 
-            for i in 0..entries_per_block - 1 {
-                let offset = disk_offset + 8 + i * 16;
+            for i in 0..entries_per_block {
+                let offset = 8 + i * 16;
                 let ino = InodeNumber::new(u64::from_le_bytes(
-                    self.data[offset..offset + 8].try_into().unwrap(),
+                    block[offset..offset + 8].try_into().unwrap(),
                 ));
                 let addr = BlockAddress::new(u64::from_le_bytes(
-                    self.data[offset + 8..offset + 16].try_into().unwrap(),
+                    block[offset + 8..offset + 16].try_into().unwrap(),
                 ));
 
                 if ino.is_valid() && addr.is_valid() {
@@ -1311,13 +1442,44 @@ impl Lfs {
     }
 }
 
+impl Lfs<MemoryBlockDevice> {
+    /// Creates a new LFS on the given buffer.
+    ///
+    /// This is a convenience constructor for using a `Vec<u8>` as the backing store.
+    /// The buffer must be at least 16 blocks (64KB) in size.
+    pub fn from_vec(data: Vec<u8>) -> Result<Self> {
+        let total_blocks = (data.len() / BLOCK_SIZE) as u64;
+        let device = MemoryBlockDevice::new(data);
+        Self::new(device, total_blocks)
+    }
+
+    /// Opens an existing LFS from the given buffer, using the provided tail offset.
+    ///
+    /// This is a convenience constructor for using a `Vec<u8>` as the backing store.
+    pub fn open_vec(data: Vec<u8>, tail: BlockAddress) -> Result<Self> {
+        let total_blocks = (data.len() / BLOCK_SIZE) as u64;
+        let device = MemoryBlockDevice::new(data);
+        Self::open(device, total_blocks, tail)
+    }
+
+    /// Consumes the filesystem and returns the underlying data buffer.
+    pub fn into_inner(self) -> Vec<u8> {
+        self.device.into_inner()
+    }
+
+    /// Returns a reference to the underlying data.
+    pub fn data(&self) -> &[u8] {
+        self.device.data()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn create_test_fs(blocks: usize) -> Lfs {
+    fn create_test_fs(blocks: usize) -> Lfs<MemoryBlockDevice> {
         let data = vec![0u8; blocks * BLOCK_SIZE];
-        Lfs::new(data).expect("Failed to create filesystem")
+        Lfs::from_vec(data).expect("Failed to create filesystem")
     }
 
     #[test]
@@ -1512,7 +1674,7 @@ mod tests {
     #[test]
     fn persist_and_restore() {
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::new(data).expect("Failed to create filesystem");
+        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
 
         let fd = lfs.open_file("persist.txt").expect("Failed to open file");
         lfs.write(fd, b"Saved data").expect("Failed to write");
@@ -1523,7 +1685,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open(data, tail).expect("Failed to reopen filesystem");
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("Failed to reopen filesystem");
         let fd = lfs2.open_file("persist.txt").expect("Failed to open file");
         let mut buf = vec![0u8; 10];
         lfs2.read(fd, &mut buf).expect("Failed to read");
@@ -1571,7 +1733,7 @@ mod tests {
     #[test]
     fn buffer_too_small() {
         let data = vec![0u8; 8 * BLOCK_SIZE];
-        let result = Lfs::new(data);
+        let result = Lfs::from_vec(data);
         assert!(result.is_err(), "Expected BufferTooSmall error");
         match result {
             Err(Error::BufferTooSmall) => println!("Buffer too small correctly rejected"),
@@ -2040,7 +2202,7 @@ mod tests {
     #[test]
     fn persist_multiple_files() {
         let data = vec![0u8; 128 * BLOCK_SIZE];
-        let mut lfs = Lfs::new(data).expect("Failed to create filesystem");
+        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
 
         let files = [
             ("alpha.txt", "Alpha content"),
@@ -2057,7 +2219,7 @@ mod tests {
         let tail = lfs.tail();
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open(data, tail).expect("Failed to reopen filesystem");
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("Failed to reopen filesystem");
 
         for (name, expected_content) in &files {
             let fd = lfs2.open_file(name).expect("Failed to open file");
@@ -2167,7 +2329,7 @@ mod tests {
     #[test]
     fn minimum_filesystem_size() {
         let data = vec![0u8; 16 * BLOCK_SIZE];
-        let lfs = Lfs::new(data).expect("Minimum size filesystem should work");
+        let lfs = Lfs::from_vec(data).expect("Minimum size filesystem should work");
         assert!(lfs.free_blocks() > 0);
         println!("Minimum filesystem has {} free blocks", lfs.free_blocks());
     }
@@ -2175,7 +2337,7 @@ mod tests {
     #[test]
     fn filesystem_15_blocks_fails() {
         let data = vec![0u8; 15 * BLOCK_SIZE];
-        let result = Lfs::new(data);
+        let result = Lfs::from_vec(data);
         match result {
             Err(Error::BufferTooSmall) => println!("15 blocks correctly rejected"),
             Err(e) => panic!("Expected BufferTooSmall, got {:?}", e),
@@ -2188,7 +2350,7 @@ mod tests {
         let mut data = vec![0u8; 64 * BLOCK_SIZE];
         data[0..8].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
 
-        let result = Lfs::open(data, BlockAddress::new(1));
+        let result = Lfs::open_vec(data, BlockAddress::new(1));
         match result {
             Err(Error::CorruptFilesystem) => println!("Corrupt magic number correctly detected"),
             Err(e) => panic!("Expected CorruptFilesystem, got {:?}", e),
@@ -2387,5 +2549,452 @@ mod tests {
             println!("Iteration {}: content verified after NoSpace", iteration);
             lfs.close(verify_fd).expect("Failed to close");
         }
+    }
+
+    #[test]
+    fn debug_inode_map_persist_restore() {
+        // Create filesystem and write a file
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
+
+        let fd = lfs.open_file("test.txt").expect("Failed to open file");
+        let write_data = b"Hello, World!";
+        lfs.write(fd, write_data).expect("Failed to write");
+        lfs.close(fd).expect("Failed to close");
+
+        // Check inode map before persist
+        println!("Inode map before persist: {:?}", lfs.inode_map);
+        println!(
+            "Superblock inode_map_block: {:?}",
+            lfs.superblock.inode_map_block.as_u64()
+        );
+
+        let tail = lfs.tail();
+        println!("Tail: {}", tail.as_u64());
+        let data = lfs.into_inner();
+
+        // Restore and check inode map
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("Failed to restore");
+        println!("Inode map after restore: {:?}", lfs2.inode_map);
+        println!(
+            "Superblock inode_map_block after restore: {:?}",
+            lfs2.superblock.inode_map_block.as_u64()
+        );
+
+        // Try to open the file
+        let fd2 = lfs2
+            .open_file("test.txt")
+            .expect("Failed to open after restore");
+        let size = lfs2.file_size(fd2).expect("Failed to get size");
+        println!("File size after restore: {}", size);
+
+        let mut buf = vec![0u8; 20];
+        let n = lfs2.read(fd2, &mut buf).expect("Failed to read");
+        println!("Read {} bytes: {:?}", n, &buf[..n]);
+
+        assert_eq!(n, write_data.len(), "Size mismatch");
+        assert_eq!(&buf[..n], write_data, "Data mismatch");
+    }
+
+    #[test]
+    fn debug_open_after_restore_creates_new_file() {
+        // This test checks if opening a NEW file after restore works correctly
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
+
+        // Write to file a.txt
+        let fd = lfs.open_file("a.txt").expect("open a.txt");
+        lfs.write(fd, b"Content A").expect("write");
+        lfs.close(fd).expect("close");
+
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+
+        // Restore
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+
+        // Open a NEW file b.txt (not existing before)
+        let fd_b = lfs2.open_file("b.txt").expect("open b.txt");
+        lfs2.write(fd_b, b"Content B").expect("write b");
+        lfs2.close(fd_b).expect("close b");
+
+        // Now open a.txt and verify its content
+        let fd_a = lfs2.open_file("a.txt").expect("open a.txt after");
+        let mut buf = vec![0u8; 20];
+        let n = lfs2.read(fd_a, &mut buf).expect("read a");
+        println!(
+            "a.txt: read {} bytes: {:?}",
+            n,
+            String::from_utf8_lossy(&buf[..n])
+        );
+        assert_eq!(&buf[..n], b"Content A", "a.txt content mismatch");
+
+        // Open b.txt and verify
+        let fd_b2 = lfs2.open_file("b.txt").expect("open b.txt after");
+        let mut buf2 = vec![0u8; 20];
+        let n2 = lfs2.read(fd_b2, &mut buf2).expect("read b");
+        println!(
+            "b.txt: read {} bytes: {:?}",
+            n2,
+            String::from_utf8_lossy(&buf2[..n2])
+        );
+        assert_eq!(&buf2[..n2], b"Content B", "b.txt content mismatch");
+    }
+
+    #[test]
+    fn debug_large_write_after_restore() {
+        // Test with larger data that spans multiple blocks
+        let data = vec![0u8; 256 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        let fd = lfs.open_file("large.txt").expect("open");
+        let write_data: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
+        lfs.write(fd, &write_data).expect("write");
+        lfs.close(fd).expect("close");
+
+        println!("Before restore: inode_map = {:?}", lfs.inode_map);
+
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+        println!("After restore: inode_map = {:?}", lfs2.inode_map);
+
+        let fd2 = lfs2.open_file("large.txt").expect("open after restore");
+        let size = lfs2.file_size(fd2).expect("size");
+        println!("File size after restore: {}", size);
+        assert_eq!(size, 10000, "Size mismatch");
+
+        let mut buf = vec![0u8; 10000];
+        let n = lfs2.read(fd2, &mut buf).expect("read");
+        println!("Read {} bytes, first 20: {:?}", n, &buf[..20]);
+
+        // Find first mismatch if any
+        for i in 0..n {
+            if buf[i] != write_data[i] {
+                println!(
+                    "First mismatch at {}: got {}, expected {}",
+                    i, buf[i], write_data[i]
+                );
+                break;
+            }
+        }
+
+        assert_eq!(n, 10000, "Read size mismatch");
+        assert_eq!(&buf[..], &write_data[..], "Data mismatch");
+    }
+
+    #[test]
+    fn debug_many_files_persist_restore() {
+        // Test with enough files to potentially overflow one inode map block
+        // (BLOCK_SIZE - 8) / 16 = 255 entries per block
+        let data = vec![0u8; 512 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        // Create 10 files
+        for i in 0..10 {
+            let name = format!("file{}.txt", i);
+            let fd = lfs.open_file(&name).expect("open");
+            let content = format!("Content of file {}", i);
+            lfs.write(fd, content.as_bytes()).expect("write");
+            lfs.close(fd).expect("close");
+        }
+
+        println!("Before restore: {} inodes", lfs.inode_map.len());
+
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+        println!("After restore: {} inodes", lfs2.inode_map.len());
+
+        // Verify all files
+        for i in 0..10 {
+            let name = format!("file{}.txt", i);
+            let expected = format!("Content of file {}", i);
+            let fd = lfs2.open_file(&name).expect("open after restore");
+            let mut buf = vec![0u8; 50];
+            let n = lfs2.read(fd, &mut buf).expect("read");
+            let got = String::from_utf8_lossy(&buf[..n]).to_string();
+            println!("file{}.txt: '{}'", i, got);
+            assert_eq!(got, expected, "Content mismatch for file{}.txt", i);
+            lfs2.close(fd).expect("close");
+        }
+    }
+
+    #[test]
+    fn debug_regression_open_open_write() {
+        // Regression case: [Open { name: "a.txt" }, Open { name: "a.txt" }, Write { fd_index: 0, data: [...] }]
+        let write_data: Vec<u8> = vec![
+            252, 3, 189, 132, 108, 138, 241, 109, 95, 125, 118, 177, 187, 98, 111, 236, 12, 241,
+            68, 146, 38, 187, 212, 122, 139, 96, 173, 125, 97, 11, 155, 202, 35, 87, 33, 4, 144,
+            101, 61, 105, 103, 36, 148, 154, 138, 187, 158, 123, 97, 46, 90, 48, 36, 10, 93, 96,
+            64, 91, 82, 121, 211, 40, 20, 103, 71, 186, 80, 43, 159, 116, 21, 100, 157, 155, 236,
+            169, 100, 119, 239, 135, 128, 33, 98, 23, 52, 209, 130, 226, 112, 208, 248, 112, 163,
+            77, 45, 255, 238, 83, 133, 251, 194, 247, 241, 82, 99, 112, 82, 234, 203, 209, 32, 129,
+            252, 132, 238, 164, 81, 221, 143, 230, 93, 140, 153, 70, 81, 176, 245, 207, 32, 23,
+            229, 129, 208, 107, 219, 160, 226, 89, 81, 171, 139, 72, 49, 101, 194, 238, 2, 6, 14,
+            83, 62, 10, 157, 72, 51, 192, 132, 21, 182, 57, 110, 133, 155, 16, 176, 131, 34, 74,
+            134, 24, 189, 106, 179, 91, 210, 87, 182, 249, 228, 219, 224, 209, 124, 151, 217, 172,
+            153, 32, 48, 179, 61, 0, 64, 75, 67, 89, 206, 159, 241, 145, 241, 119, 162, 111, 160,
+            197, 43, 154, 70, 74, 70, 170, 217, 56, 127, 245, 34, 152, 186, 215, 123, 202, 147, 29,
+            225, 150, 55, 178, 47, 36, 99, 84, 147, 56, 188, 189, 224, 243, 251, 28, 228, 163, 187,
+            144, 47, 176, 39, 41, 111, 160, 171, 25, 140, 68, 238, 6,
+        ];
+
+        let data = vec![0u8; 256 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        // Open { name: "a.txt" }
+        let fd0 = lfs.open_file("a.txt").expect("open 1");
+        // Open { name: "a.txt" }
+        let _fd1 = lfs.open_file("a.txt").expect("open 2");
+        // Write { fd_index: 0, data: [...] }
+        lfs.write(fd0, &write_data).expect("write");
+
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+
+        let mut lfs_verify = Lfs::open_vec(data, tail).expect("reopen");
+
+        let fd = lfs_verify.open_file("a.txt").expect("open for verify");
+        lfs_verify.seek(fd, 0).expect("seek");
+
+        let mut buf = vec![0u8; write_data.len()];
+        let n = lfs_verify.read(fd, &mut buf).expect("read");
+
+        println!("Expected {} bytes, got {}", write_data.len(), n);
+        println!("First 16 expected: {:?}", &write_data[..16]);
+        println!("First 16 got: {:?}", &buf[..16.min(n)]);
+
+        assert_eq!(n, write_data.len(), "Size mismatch");
+        assert_eq!(&buf[..n], &write_data[..], "Data mismatch");
+    }
+
+    #[test]
+    fn debug_regression_open_open_write_large() {
+        // Same pattern but with data large enough to span multiple blocks
+        let write_data: Vec<u8> = (0..8000).map(|i| (i % 256) as u8).collect();
+
+        let data = vec![0u8; 256 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        let fd0 = lfs.open_file("a.txt").expect("open 1");
+        let _fd1 = lfs.open_file("a.txt").expect("open 2");
+        lfs.write(fd0, &write_data).expect("write");
+
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+
+        let mut lfs_verify = Lfs::open_vec(data, tail).expect("reopen");
+
+        let fd = lfs_verify.open_file("a.txt").expect("open for verify");
+        lfs_verify.seek(fd, 0).expect("seek");
+
+        let mut buf = vec![0u8; write_data.len()];
+        let n = lfs_verify.read(fd, &mut buf).expect("read");
+
+        println!("Expected {} bytes, got {}", write_data.len(), n);
+
+        // Find first mismatch
+        for i in 0..n.min(write_data.len()) {
+            if buf[i] != write_data[i] {
+                println!(
+                    "First mismatch at byte {}: got {}, expected {}",
+                    i, buf[i], write_data[i]
+                );
+                break;
+            }
+        }
+
+        assert_eq!(n, write_data.len(), "Size mismatch");
+        assert_eq!(&buf[..n], &write_data[..], "Data mismatch");
+    }
+
+    #[test]
+    fn debug_regression_seek_truncate_write() {
+        // Exact failing case from proptest:
+        // Open a.txt 5 times, Seek fd4 to 18509, Write 10642 bytes, Truncate to 29150, Write 9688 bytes
+        let data = vec![0u8; 256 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        // Open "a.txt" 5 times
+        let _fd0 = lfs.open_file("a.txt").expect("open 0");
+        let _fd1 = lfs.open_file("a.txt").expect("open 1");
+        let _fd2 = lfs.open_file("a.txt").expect("open 2");
+        let _fd3 = lfs.open_file("a.txt").expect("open 3");
+        let fd4 = lfs.open_file("a.txt").expect("open 4");
+
+        // Seek fd4 to pos 18509
+        lfs.seek(fd4, 18509).expect("seek");
+
+        // Write 10642 bytes
+        let write1: Vec<u8> = (0..10642).map(|i| (i % 256) as u8).collect();
+        lfs.write(fd4, &write1).expect("write 1");
+
+        // Truncate to 29150
+        lfs.truncate(fd4, 29150).expect("truncate");
+
+        // Write 9688 bytes
+        let write2: Vec<u8> = (0..9688).map(|i| ((i + 100) % 256) as u8).collect();
+        lfs.write(fd4, &write2).expect("write 2");
+
+        // Build expected data (what reference implementation would have)
+        let mut expected = vec![0u8; 29150];
+        // After seek to 18509 and write 10642 bytes: positions 18509..29151
+        for (i, &b) in write1.iter().enumerate() {
+            let pos = 18509 + i;
+            if pos < expected.len() {
+                expected[pos] = b;
+            }
+        }
+        // After truncate to 29150: expected is already 29150 long, but data beyond 29150 is gone
+        // The write of 10642 bytes ends at 18509+10642=29151, but truncate cuts it to 29150
+        // So position 29150 is gone
+        expected.truncate(29150);
+        // The seek position after truncate depends on implementation...
+        // Actually the file descriptor position was at 18509+10642=29151, truncate doesn't change it
+        // Then write2 starts at position 29151 which extends the file
+        // So final size should be 29151 + 9688 = 38839
+        let final_size = 29151 + 9688;
+        expected.resize(final_size, 0);
+        for (i, &b) in write2.iter().enumerate() {
+            expected[29151 + i] = b;
+        }
+
+        // Now verify
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+        let mut lfs_verify = Lfs::open_vec(data, tail).expect("reopen");
+
+        let fd = lfs_verify.open_file("a.txt").expect("open for verify");
+        lfs_verify.seek(fd, 0).expect("seek to start");
+
+        let size = lfs_verify.file_size(fd).expect("get size");
+        println!("File size: {}, expected: {}", size, final_size);
+
+        let mut buf = vec![0u8; final_size];
+        let n = lfs_verify.read(fd, &mut buf).expect("read");
+        println!("Read {} bytes", n);
+
+        // Find first mismatch
+        for i in 0..n.min(expected.len()) {
+            if buf[i] != expected[i] {
+                println!(
+                    "First mismatch at byte {}: got {}, expected {}",
+                    i, buf[i], expected[i]
+                );
+                println!(
+                    "Context: buf[{}..{}] = {:?}",
+                    i.saturating_sub(5),
+                    (i + 10).min(n),
+                    &buf[i.saturating_sub(5)..(i + 10).min(n)]
+                );
+                println!(
+                    "Context: expected[{}..{}] = {:?}",
+                    i.saturating_sub(5),
+                    (i + 10).min(expected.len()),
+                    &expected[i.saturating_sub(5)..(i + 10).min(expected.len())]
+                );
+                break;
+            }
+        }
+
+        assert_eq!(n, final_size, "Size mismatch");
+        assert_eq!(&buf[..n], &expected[..], "Data mismatch");
+    }
+
+    #[test]
+    fn debug_truncate_zeroing() {
+        // Simpler test: does truncate properly zero data?
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        let fd = lfs.open_file("test.txt").expect("open");
+
+        // Write 1000 bytes of 0xFF
+        let write1 = vec![0xFF; 1000];
+        lfs.write(fd, &write1).expect("write");
+
+        // Truncate to 500
+        lfs.truncate(fd, 500).expect("truncate");
+
+        // Verify size
+        let size = lfs.file_size(fd).expect("size");
+        println!("Size after truncate: {}", size);
+        assert_eq!(size, 500);
+
+        // Read and verify - should be 500 bytes of 0xFF
+        lfs.seek(fd, 0).expect("seek");
+        let mut buf = vec![0u8; 500];
+        let n = lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(n, 500);
+        assert!(buf.iter().all(|&b| b == 0xFF), "Data should be 0xFF");
+
+        // Now persist/restore
+        let tail = lfs.tail();
+        let data = lfs.into_inner();
+        let mut lfs2 = Lfs::open_vec(data, tail).expect("restore");
+
+        let fd2 = lfs2.open_file("test.txt").expect("open after restore");
+        let size2 = lfs2.file_size(fd2).expect("size after restore");
+        println!("Size after restore: {}", size2);
+        assert_eq!(size2, 500, "Size changed after restore!");
+
+        let mut buf2 = vec![0u8; 500];
+        let n2 = lfs2.read(fd2, &mut buf2).expect("read after restore");
+        assert_eq!(n2, 500);
+        assert!(
+            buf2.iter().all(|&b| b == 0xFF),
+            "Data should still be 0xFF after restore"
+        );
+    }
+
+    #[test]
+    fn truncate_then_write_zeros_gap() {
+        // Test: write n bytes, truncate to n-1, then write more.
+        // The byte at position n-1 (after truncate and before new write) should be zero.
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data).expect("create fs");
+
+        let fd = lfs.open_file("test.txt").expect("open");
+
+        // Write 100 bytes of 0xFF
+        let write1 = vec![0xFF; 100];
+        lfs.write(fd, &write1).expect("write 100 bytes");
+        // Position is now at 100
+
+        // Truncate to 50 - this should logically zero bytes 50..100
+        lfs.truncate(fd, 50).expect("truncate to 50");
+
+        // Write 10 more bytes at position 100 (seek there first)
+        // This creates a hole from 50 to 100 that should be zeros
+        lfs.seek(fd, 100).expect("seek to 100");
+        let write2 = vec![0xAA; 10];
+        lfs.write(fd, &write2).expect("write 10 bytes at 100");
+
+        // Now read the whole file and verify
+        lfs.seek(fd, 0).expect("seek to start");
+        let mut buf = vec![0u8; 110];
+        let n = lfs.read(fd, &mut buf).expect("read all");
+
+        println!("Read {} bytes", n);
+        println!("Bytes 0..50 (should be 0xFF): {:?}", &buf[0..50]);
+        println!("Bytes 50..100 (should be 0x00): {:?}", &buf[50..100.min(n)]);
+        println!("Bytes 100..110 (should be 0xAA): {:?}", &buf[100.min(n)..n]);
+
+        assert_eq!(n, 110, "File size should be 110");
+        assert!(
+            buf[0..50].iter().all(|&b| b == 0xFF),
+            "First 50 bytes should be 0xFF"
+        );
+        assert!(
+            buf[50..100].iter().all(|&b| b == 0x00),
+            "Bytes 50..100 should be 0x00 (truncated region)"
+        );
+        assert!(
+            buf[100..110].iter().all(|&b| b == 0xAA),
+            "Last 10 bytes should be 0xAA"
+        );
     }
 }
