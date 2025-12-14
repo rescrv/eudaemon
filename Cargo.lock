@@ -302,6 +302,7 @@ dependencies = [
 name = "synfs"
 version = "0.1.0"
 dependencies = [
+ "getopts",
  "guacamole",
  "proptest",
 ]

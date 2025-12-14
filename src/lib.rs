@@ -425,27 +425,31 @@ struct Superblock {
     total_blocks: u64,
     log_start: BlockAddress,
     log_end: BlockAddress,
+    /// Head of the log - oldest live data. Cleaner advances this.
+    head: BlockAddress,
+    /// Tail of the log - where new writes go.
     tail: BlockAddress,
     inode_map_block: BlockAddress,
     next_inode: InodeNumber,
 }
 
 impl Superblock {
-    fn as_bytes(self) -> [u8; 64] {
-        let mut buf = [0u8; 64];
+    fn as_bytes(self) -> [u8; 72] {
+        let mut buf = [0u8; 72];
         buf[0..8].copy_from_slice(&self.magic.to_le_bytes());
         buf[8..12].copy_from_slice(&self.block_size.to_le_bytes());
         buf[16..24].copy_from_slice(&self.total_blocks.to_le_bytes());
         buf[24..32].copy_from_slice(&self.log_start.as_u64().to_le_bytes());
         buf[32..40].copy_from_slice(&self.log_end.as_u64().to_le_bytes());
-        buf[40..48].copy_from_slice(&self.tail.as_u64().to_le_bytes());
-        buf[48..56].copy_from_slice(&self.inode_map_block.as_u64().to_le_bytes());
-        buf[56..64].copy_from_slice(&self.next_inode.as_u64().to_le_bytes());
+        buf[40..48].copy_from_slice(&self.head.as_u64().to_le_bytes());
+        buf[48..56].copy_from_slice(&self.tail.as_u64().to_le_bytes());
+        buf[56..64].copy_from_slice(&self.inode_map_block.as_u64().to_le_bytes());
+        buf[64..72].copy_from_slice(&self.next_inode.as_u64().to_le_bytes());
         buf
     }
 
     fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 64 {
+        if buf.len() < 72 {
             return None;
         }
         Some(Self {
@@ -454,9 +458,10 @@ impl Superblock {
             total_blocks: u64::from_le_bytes(buf[16..24].try_into().ok()?),
             log_start: BlockAddress::new(u64::from_le_bytes(buf[24..32].try_into().ok()?)),
             log_end: BlockAddress::new(u64::from_le_bytes(buf[32..40].try_into().ok()?)),
-            tail: BlockAddress::new(u64::from_le_bytes(buf[40..48].try_into().ok()?)),
-            inode_map_block: BlockAddress::new(u64::from_le_bytes(buf[48..56].try_into().ok()?)),
-            next_inode: InodeNumber::new(u64::from_le_bytes(buf[56..64].try_into().ok()?)),
+            head: BlockAddress::new(u64::from_le_bytes(buf[40..48].try_into().ok()?)),
+            tail: BlockAddress::new(u64::from_le_bytes(buf[48..56].try_into().ok()?)),
+            inode_map_block: BlockAddress::new(u64::from_le_bytes(buf[56..64].try_into().ok()?)),
+            next_inode: InodeNumber::new(u64::from_le_bytes(buf[64..72].try_into().ok()?)),
         })
     }
 }
@@ -677,6 +682,9 @@ pub struct Lfs<D: BlockDevice, T: Fn() -> i64> {
     open_files: BTreeMap<FileDescriptor, OpenFile>,
     next_fd: FileDescriptor,
     max_file_size: u64,
+    /// The committed head position from the last successful operation.
+    /// Used to recover from partial writes on NoSpace errors.
+    committed_head: BlockAddress,
     /// The committed tail position from the last successful operation.
     /// Used to recover from partial writes on NoSpace errors.
     committed_tail: BlockAddress,
@@ -712,6 +720,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
             total_blocks,
             log_start,
             log_end,
+            head: log_start,
             tail: log_start,
             inode_map_block: BlockAddress::INVALID,
             next_inode: InodeNumber::ROOT.next(),
@@ -721,7 +730,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
 
         // Write the superblock to block 0
         let mut superblock_block = [0u8; BLOCK_SIZE];
-        superblock_block[..64].copy_from_slice(&superblock.as_bytes());
+        superblock_block[..72].copy_from_slice(&superblock.as_bytes());
         device.write_block(BlockAddress::new(0), &superblock_block)?;
 
         let mut lfs = Self {
@@ -732,6 +741,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
             open_files: BTreeMap::new(),
             next_fd: FileDescriptor::new(0),
             max_file_size,
+            committed_head: log_start,
             committed_tail,
             unlinked_inodes: BTreeSet::new(),
             dev,
@@ -739,6 +749,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         };
 
         lfs.create_root_directory()?;
+        lfs.committed_head = lfs.superblock.head;
         lfs.committed_tail = lfs.superblock.tail;
 
         Ok(lfs)
@@ -768,6 +779,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         }
 
         let max_file_size = (total_blocks as usize * BLOCK_SIZE / 10) as u64;
+        let head = superblock.head;
         let tail = superblock.tail;
 
         let mut lfs = Self {
@@ -778,6 +790,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
             open_files: BTreeMap::new(),
             next_fd: FileDescriptor::new(0),
             max_file_size,
+            committed_head: head,
             committed_tail: tail,
             unlinked_inodes: BTreeSet::new(),
             dev,
@@ -1431,9 +1444,10 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
 
     /// Checks if a directory is empty (contains no valid entries).
     fn is_directory_empty(&self, dir_inode: &Inode) -> Result<bool> {
-        let num_entries = dir_inode.size / DIR_ENTRY_SIZE;
+        // dir_inode.size stores the number of entries
+        let num_entries = dir_inode.size;
         for i in 0..num_entries {
-            let offset = i * DIR_ENTRY_SIZE;
+            let offset = Self::dir_entry_offset(i);
             let block_idx = BlockIndex::from_byte_offset(offset);
             let block_offset = (offset % BLOCK_SIZE as u64) as usize;
 
@@ -1459,7 +1473,17 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         let inode = self.read_inode(ino)?;
 
         // Remove data blocks from segment summary
-        let num_blocks = BlockIndex::blocks_for_size(inode.size);
+        // For directories, size is entry count; for files/symlinks, size is bytes
+        let num_blocks = if inode.is_directory() {
+            // Number of blocks needed to hold all directory entries
+            if inode.size == 0 {
+                0
+            } else {
+                (inode.size - 1) / Self::DIR_ENTRIES_PER_BLOCK + 1
+            }
+        } else {
+            BlockIndex::blocks_for_size(inode.size)
+        };
         for block_num in 0..num_blocks {
             let block_idx = BlockIndex::new(block_num);
             let block_addr = self.get_block_addr(&inode, block_idx)?;
@@ -1500,10 +1524,11 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
 
     fn remove_dir_entry(&mut self, dir_ino: InodeNumber, name: &str) -> Result<()> {
         let mut dir_inode = self.read_inode(dir_ino)?;
-        let num_entries = dir_inode.size / DIR_ENTRY_SIZE;
+        // dir_inode.size stores the number of entries
+        let num_entries = dir_inode.size;
 
         for i in 0..num_entries {
-            let offset = i * DIR_ENTRY_SIZE;
+            let offset = Self::dir_entry_offset(i);
             let block_idx = BlockIndex::from_byte_offset(offset);
             let block_offset = (offset % BLOCK_SIZE as u64) as usize;
 
@@ -1567,81 +1592,127 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         }
     }
 
+    /// Advances `addr` by one block in the circular log.
+    fn next_log_block(&self, addr: BlockAddress) -> BlockAddress {
+        let next = addr.next();
+        if next.as_u64() >= self.superblock.log_end.as_u64() {
+            self.superblock.log_start
+        } else {
+            next
+        }
+    }
+
     fn clean_inner(&mut self) -> Result<usize> {
-        let live_blocks: Vec<(BlockAddress, SegmentSummaryEntry)> = self
-            .segment_summary
-            .iter()
-            .filter(|(_, entry)| entry.entry_type == SegmentEntryType::Data)
-            .map(|(&addr, &entry)| (addr, entry))
-            .collect();
+        let mut blocks_cleaned = 0;
+        let mut inodes_to_update: BTreeMap<InodeNumber, Inode> = BTreeMap::new();
 
-        if live_blocks.is_empty() {
-            return Ok(0);
-        }
+        // Clean blocks starting from the head, moving towards the tail
+        // We stop when head reaches tail (log is empty) or we've cleaned enough
+        let log_size = self.superblock.log_end.as_u64() - self.superblock.log_start.as_u64();
+        let target_free = log_size / 4; // Try to free at least 25%
 
-        let mut blocks_by_inode: BTreeMap<InodeNumber, Vec<(BlockAddress, BlockIndex)>> =
-            BTreeMap::new();
-        for (addr, entry) in &live_blocks {
-            blocks_by_inode
-                .entry(entry.ino)
-                .or_default()
-                .push((*addr, entry.block_index));
-        }
-
-        let old_tail = self.superblock.tail;
-        let mut blocks_reclaimed = 0;
-
-        for (ino, blocks) in blocks_by_inode {
-            if !self.inode_map.contains_key(&ino) {
-                for (addr, _) in &blocks {
-                    self.segment_summary.remove(addr);
-                    blocks_reclaimed += 1;
-                }
-                continue;
+        while self.superblock.head != self.superblock.tail {
+            let current_free = self.log_distance(self.superblock.tail, self.superblock.head);
+            if current_free >= target_free {
+                break;
             }
 
-            let mut inode = match self.read_inode(ino) {
-                Ok(inode) => inode,
-                Err(_) => continue,
-            };
+            let head_block = self.superblock.head;
 
-            for (old_addr, block_index) in blocks {
-                let current_addr = self.get_block_addr(&inode, block_index)?;
-                if current_addr != old_addr {
-                    self.segment_summary.remove(&old_addr);
-                    blocks_reclaimed += 1;
+            // Check if this block is live
+            if let Some(entry) = self.segment_summary.get(&head_block).copied() {
+                // Block is live - need to relocate it
+                let ino = entry.ino;
+
+                // Get or load the inode
+                let inode = if let Some(inode) = inodes_to_update.get(&ino) {
+                    inode.clone()
+                } else if self.inode_map.contains_key(&ino) {
+                    match self.read_inode(ino) {
+                        Ok(inode) => inode,
+                        Err(_) => {
+                            // Can't read inode, mark block as dead
+                            self.segment_summary.remove(&head_block);
+                            self.superblock.head = self.next_log_block(head_block);
+                            blocks_cleaned += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    // Inode no longer exists, block is garbage
+                    self.segment_summary.remove(&head_block);
+                    self.superblock.head = self.next_log_block(head_block);
+                    blocks_cleaned += 1;
                     continue;
+                };
+
+                // For data blocks, check if this is still the current block for this file position
+                if entry.entry_type == SegmentEntryType::Data {
+                    let current_addr = self.get_block_addr(&inode, entry.block_index)?;
+                    if current_addr != head_block {
+                        // This block is stale, just remove it
+                        self.segment_summary.remove(&head_block);
+                        self.superblock.head = self.next_log_block(head_block);
+                        blocks_cleaned += 1;
+                        continue;
+                    }
                 }
 
+                // Read the block data
                 let mut block_data = [0u8; BLOCK_SIZE];
-                self.read_block(old_addr, &mut block_data)?;
+                self.read_block(head_block, &mut block_data)?;
 
+                // Remove from segment summary before allocating (so head advances for free space calc)
+                self.segment_summary.remove(&head_block);
+
+                // Advance head first to free up space for allocation
+                self.superblock.head = self.next_log_block(head_block);
+
+                // Allocate new block at tail
                 let new_addr = self.allocate_block()?;
                 self.write_block(new_addr, &block_data)?;
 
-                self.segment_summary.remove(&old_addr);
-                self.segment_summary.insert(
-                    new_addr,
-                    SegmentSummaryEntry {
-                        ino,
-                        block_index,
-                        entry_type: SegmentEntryType::Data,
-                    },
-                );
+                // Add to segment summary at new location
+                self.segment_summary.insert(new_addr, entry);
 
-                self.set_block_addr(&mut inode, block_index, new_addr)?;
+                // Update the inode if it's a data block
+                if entry.entry_type == SegmentEntryType::Data {
+                    let mut updated_inode = inodes_to_update.remove(&ino).unwrap_or(inode);
+                    self.set_block_addr(&mut updated_inode, entry.block_index, new_addr)?;
+                    inodes_to_update.insert(ino, updated_inode);
+                } else if entry.entry_type == SegmentEntryType::Inode {
+                    // Update inode map to point to new location
+                    self.inode_map.insert(ino, new_addr);
+                } else if entry.entry_type == SegmentEntryType::Indirect {
+                    // For indirect blocks, we need to update the parent inode
+                    let mut updated_inode = inodes_to_update.remove(&ino).unwrap_or(inode);
+                    // Check if it's the indirect or double indirect block
+                    if updated_inode.indirect == head_block {
+                        updated_inode.indirect = new_addr;
+                    } else if updated_inode.double_indirect == head_block {
+                        updated_inode.double_indirect = new_addr;
+                    }
+                    // Could also be a first-level block within double indirect - skip for now
+                    inodes_to_update.insert(ino, updated_inode);
+                }
+
+                blocks_cleaned += 1;
+            } else {
+                // Block is not in segment summary, it's already free
+                // Just advance head
+                self.superblock.head = self.next_log_block(head_block);
+                blocks_cleaned += 1;
             }
+        }
 
+        // Write all updated inodes
+        for (_, inode) in inodes_to_update {
             self.write_inode(&inode)?;
         }
 
         self.persist_inode_map()?;
 
-        if self.superblock.tail.as_u64() > old_tail.as_u64() {
-            blocks_reclaimed += (self.superblock.tail.as_u64() - old_tail.as_u64()) as usize;
-        }
-
-        Ok(blocks_reclaimed)
+        Ok(blocks_cleaned)
     }
 
     /// Returns the number of free blocks available.
@@ -1652,17 +1723,33 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         total_log_blocks.saturating_sub(used_blocks)
     }
 
+    /// Returns the total number of blocks in the log region.
+    pub fn total_log_blocks(&self) -> u64 {
+        self.superblock.log_end.as_u64() - self.superblock.log_start.as_u64()
+    }
+
+    /// Returns the current usage percentage of the filesystem (0-100).
+    pub fn usage_percent(&self) -> u64 {
+        let total = self.total_log_blocks();
+        if total == 0 {
+            return 100;
+        }
+        let used = total - self.free_blocks();
+        (used * 100) / total
+    }
+
     /// Recovers from a partial write by reloading in-memory state from disk.
     ///
     /// This is called when an operation fails with NoSpace. Since LFS writes
-    /// contiguously at the tail, we can simply reset to the committed tail
-    /// position and reload all in-memory structures.
+    /// contiguously at the tail, we can simply reset to the committed head/tail
+    /// positions and reload all in-memory structures.
     fn recover_from_partial_write(&mut self) -> Result<()> {
         // Reset device sequence tracking since we're about to write to earlier blocks
         self.device.reset_sequence();
         let mut block = [0u8; BLOCK_SIZE];
         self.read_block(BlockAddress::new(0), &mut block)?;
         self.superblock = Superblock::from_bytes(&block).ok_or(Error::CorruptFilesystem)?;
+        self.superblock.head = self.committed_head;
         self.superblock.tail = self.committed_tail;
         self.inode_map.clear();
         self.segment_summary.clear();
@@ -1671,14 +1758,15 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         Ok(())
     }
 
-    /// Commits the current state by updating committed_tail to match the superblock.
+    /// Commits the current state by updating committed head/tail to match the superblock.
     fn commit(&mut self) {
+        self.committed_head = self.superblock.head;
         self.committed_tail = self.superblock.tail;
     }
 
     fn write_superblock(&mut self) -> Result<()> {
         let mut block = [0u8; BLOCK_SIZE];
-        block[..64].copy_from_slice(&self.superblock.as_bytes());
+        block[..72].copy_from_slice(&self.superblock.as_bytes());
         self.device.write_block(BlockAddress::new(0), &block)
     }
 
@@ -1724,23 +1812,52 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         Ok(())
     }
 
+    /// Computes the distance from `from` to `to` in the circular log.
+    fn log_distance(&self, from: BlockAddress, to: BlockAddress) -> u64 {
+        let log_start = self.superblock.log_start.as_u64();
+        let log_end = self.superblock.log_end.as_u64();
+
+        let from_val = from.as_u64();
+        let to_val = to.as_u64();
+
+        if to_val >= from_val {
+            to_val - from_val
+        } else {
+            // Wraparound case
+            (log_end - from_val) + (to_val - log_start)
+        }
+    }
+
     fn allocate_block(&mut self) -> Result<BlockAddress> {
         let log_size = self.superblock.log_end.as_u64() - self.superblock.log_start.as_u64();
-        let reserved_blocks = log_size / 4;
-        let used_blocks = self.segment_summary.len() as u64;
+        // Reserve 20% of space for cleaner headroom (NoSpace at 80% usage)
+        let reserved_blocks = log_size / 5;
 
-        if used_blocks >= log_size.saturating_sub(reserved_blocks) {
+        // Check if tail would catch up to head
+        // Distance from tail to head is the free space available
+        // Special case: when head == tail, the log is either empty or completely full
+        // We use segment_summary to distinguish: empty means free, non-empty means full
+        let free_space = if self.superblock.tail == self.superblock.head {
+            if self.segment_summary.is_empty() {
+                // Log is empty, all space is free
+                log_size
+            } else {
+                // Log is full (tail has wrapped around to meet head)
+                0
+            }
+        } else {
+            self.log_distance(self.superblock.tail, self.superblock.head)
+        };
+
+        // We need at least reserved_blocks of free space
+        if free_space <= reserved_blocks {
             return Err(Error::NoSpace);
         }
 
         let block = self.superblock.tail;
 
-        if self.segment_summary.contains_key(&block) {
-            return Err(Error::NoSpace);
-        }
-
+        // Advance tail
         self.superblock.tail = self.superblock.tail.next();
-
         if self.superblock.tail.as_u64() >= self.superblock.log_end.as_u64() {
             self.superblock.tail = self.superblock.log_start;
         }
@@ -2143,9 +2260,10 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     }
 
     fn lookup_in_dir(&self, dir_inode: &Inode, name: &str) -> Result<Option<InodeNumber>> {
-        let num_entries = dir_inode.size / DIR_ENTRY_SIZE;
+        // dir_inode.size stores the number of entries
+        let num_entries = dir_inode.size;
         for i in 0..num_entries {
-            let offset = i * DIR_ENTRY_SIZE;
+            let offset = Self::dir_entry_offset(i);
             let block_idx = BlockIndex::from_byte_offset(offset);
             let block_offset = (offset % BLOCK_SIZE as u64) as usize;
 
@@ -2198,6 +2316,17 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         Ok(ino)
     }
 
+    /// Number of directory entries that fit in a single block.
+    const DIR_ENTRIES_PER_BLOCK: u64 = BLOCK_SIZE as u64 / DIR_ENTRY_SIZE;
+
+    /// Computes the byte offset of the n-th directory entry, accounting for
+    /// block-aligned layout (entries don't span blocks).
+    fn dir_entry_offset(entry_index: u64) -> u64 {
+        let block_num = entry_index / Self::DIR_ENTRIES_PER_BLOCK;
+        let entry_in_block = entry_index % Self::DIR_ENTRIES_PER_BLOCK;
+        block_num * BLOCK_SIZE as u64 + entry_in_block * DIR_ENTRY_SIZE
+    }
+
     fn add_dir_entry(
         &mut self,
         dir_ino: InodeNumber,
@@ -2208,7 +2337,11 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         let entry_bytes = entry.to_bytes();
 
         let mut dir_inode = self.read_inode(dir_ino)?;
-        let offset = dir_inode.size;
+
+        // Directory size stores the number of entries (not bytes)
+        let entry_index = dir_inode.size;
+        let offset = Self::dir_entry_offset(entry_index);
+
         let block_idx = BlockIndex::from_byte_offset(offset);
         let block_offset = (offset % BLOCK_SIZE as u64) as usize;
 
@@ -2219,12 +2352,8 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
             self.read_block(old_block_addr, &mut block_data)?;
         }
 
-        let entry_end = block_offset + DIR_ENTRY_SIZE as usize;
-        if entry_end > BLOCK_SIZE {
-            return Err(Error::NoSpace);
-        }
-
-        block_data[block_offset..entry_end].copy_from_slice(&entry_bytes);
+        block_data[block_offset..block_offset + DIR_ENTRY_SIZE as usize]
+            .copy_from_slice(&entry_bytes);
 
         let new_block_addr = self.allocate_block()?;
         self.write_block(new_block_addr, &block_data)?;
@@ -2243,7 +2372,8 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         );
 
         self.set_block_addr(&mut dir_inode, block_idx, new_block_addr)?;
-        dir_inode.size += DIR_ENTRY_SIZE;
+        // Size stores the number of entries
+        dir_inode.size = entry_index + 1;
         self.write_inode(&dir_inode)?;
 
         Ok(())
@@ -2349,7 +2479,16 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
             );
 
             if let Ok(inode) = self.read_inode_from_map(ino) {
-                let num_blocks = BlockIndex::blocks_for_size(inode.size);
+                // For directories, size is entry count; for files/symlinks, size is bytes
+                let num_blocks = if inode.is_directory() {
+                    if inode.size == 0 {
+                        0
+                    } else {
+                        (inode.size - 1) / Self::DIR_ENTRIES_PER_BLOCK + 1
+                    }
+                } else {
+                    BlockIndex::blocks_for_size(inode.size)
+                };
 
                 for block_num in 0..num_blocks {
                     let block_idx = BlockIndex::new(block_num);
@@ -3470,15 +3609,10 @@ mod tests {
 
     #[test]
     fn multiple_nospace_recoveries() {
-        let mut lfs = create_test_fs(64);
+        // Use a larger filesystem to allow multiple fill/recover cycles
+        let mut lfs = create_test_fs(256);
 
         for iteration in 0..3 {
-            println!(
-                "Iteration {}: committed_tail={}, current_tail={}",
-                iteration,
-                lfs.committed_tail.as_u64(),
-                lfs.superblock.tail.as_u64()
-            );
             let fd = lfs
                 .open_file("persistent.txt")
                 .expect("Failed to open persistent file");
@@ -3503,18 +3637,10 @@ mod tests {
             }
             lfs.close(temp_fd).expect("Failed to close temp file");
             println!(
-                "Iteration {}: wrote {} blocks before NoSpace/FileTooLarge, tail now {}",
-                iteration,
-                write_count,
-                lfs.superblock.tail.as_u64()
+                "Iteration {}: wrote {} blocks before NoSpace/FileTooLarge",
+                iteration, write_count
             );
 
-            println!(
-                "Iteration {}: about to verify, committed_tail={}, current_tail={}",
-                iteration,
-                lfs.committed_tail.as_u64(),
-                lfs.superblock.tail.as_u64()
-            );
             let verify_fd = lfs
                 .open_file("persistent.txt")
                 .expect("Failed to reopen persistent file");
@@ -3523,6 +3649,9 @@ mod tests {
             assert_eq!(String::from_utf8_lossy(&buf), content);
             println!("Iteration {}: content verified after NoSpace", iteration);
             lfs.close(verify_fd).expect("Failed to close");
+
+            // Run cleaner to advance head and reclaim space for next iteration
+            lfs.clean().expect("Failed to clean");
         }
     }
 
