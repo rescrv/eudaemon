@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::Write;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 use utf8path::Path;
 
@@ -499,8 +499,8 @@ pub fn parse_size(s: &str) -> Option<u64> {
 #[cfg(test)]
 pub mod test_utils {
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use utf8path::Path;
 

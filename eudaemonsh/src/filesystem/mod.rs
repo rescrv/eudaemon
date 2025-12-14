@@ -1,6 +1,6 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::Error;
 
@@ -574,12 +574,12 @@ struct MockFilesystemInner {
 
 /// A mock filesystem backed by a HashMap.
 #[derive(Clone)]
-pub struct MockFilesystem(Rc<RefCell<MockFilesystemInner>>);
+pub struct MockFilesystem(Arc<Mutex<MockFilesystemInner>>);
 
 impl MockFilesystem {
     /// Create a new empty MockFilesystem.
     pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(MockFilesystemInner {
+        Self(Arc::new(Mutex::new(MockFilesystemInner {
             entries: HashMap::new(),
             next_ino: 1,
         })))
@@ -587,7 +587,7 @@ impl MockFilesystem {
 
     /// Allocate a new inode number.
     fn alloc_ino(&self) -> u64 {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         let ino = inner.next_ino;
         inner.next_ino += 1;
         ino
@@ -596,7 +596,7 @@ impl MockFilesystem {
     /// Add a file to the mock filesystem.
     pub fn add_file(&self, path: &str, contents: &str) {
         let ino = self.alloc_ino();
-        self.0.borrow_mut().entries.insert(
+        self.0.lock().unwrap().entries.insert(
             path.to_string(),
             MockEntry::File(
                 contents.to_string(),
@@ -611,7 +611,7 @@ impl MockFilesystem {
     /// Add a file to the mock filesystem with specific timestamps.
     pub fn add_file_with_times(&self, path: &str, contents: &str, atime_ms: i64, mtime_ms: i64) {
         let ino = self.alloc_ino();
-        self.0.borrow_mut().entries.insert(
+        self.0.lock().unwrap().entries.insert(
             path.to_string(),
             MockEntry::File(
                 contents.to_string(),
@@ -627,7 +627,7 @@ impl MockFilesystem {
     /// Add a directory to the mock filesystem.
     pub fn add_directory(&self, path: &str) {
         let ino = self.alloc_ino();
-        self.0.borrow_mut().entries.insert(
+        self.0.lock().unwrap().entries.insert(
             path.to_string(),
             MockEntry::Directory(MockTimes {
                 ino,
@@ -639,7 +639,7 @@ impl MockFilesystem {
     /// Add a symbolic link to the mock filesystem.
     pub fn add_symlink(&self, linkpath: &str, target: &str) {
         let ino = self.alloc_ino();
-        self.0.borrow_mut().entries.insert(
+        self.0.lock().unwrap().entries.insert(
             linkpath.to_string(),
             MockEntry::Symlink(
                 target.to_string(),
@@ -723,11 +723,11 @@ impl Default for MockFilesystem {
 
 impl Filesystem for MockFilesystem {
     fn dup(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self(Arc::clone(&self.0))
     }
 
     fn read_to_string(&self, path: &str) -> Result<String, Error> {
-        let inner = self.0.borrow();
+        let inner = self.0.lock().unwrap();
         let mut current_path = path.to_string();
         let mut depth = 0;
         loop {
@@ -759,12 +759,13 @@ impl Filesystem for MockFilesystem {
     }
 
     fn exists(&self, path: &str) -> bool {
-        self.0.borrow().entries.contains_key(path)
+        self.0.lock().unwrap().entries.contains_key(path)
     }
 
     fn metadata(&self, path: &str) -> Result<FileMetadata, Error> {
         self.0
-            .borrow()
+            .lock()
+            .unwrap()
             .entries
             .get(path)
             .map(|entry| FileMetadata {
@@ -779,7 +780,7 @@ impl Filesystem for MockFilesystem {
 
     fn truncate(&self, path: &str, size: u64) -> Result<(), Error> {
         let ino = self.alloc_ino();
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         let entry = inner.entries.entry(path.to_string()).or_insert_with(|| {
             MockEntry::File(
                 String::new(),
@@ -801,7 +802,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         if let Some(MockEntry::File(contents, _)) = inner.entries.get_mut(path) {
             let size = size as usize;
             if contents.len() > size {
@@ -816,7 +817,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         let contents = match inner.entries.get_mut(path) {
             Some(MockEntry::File(contents, _)) => contents,
             _ => {
@@ -847,7 +848,7 @@ impl Filesystem for MockFilesystem {
 
     fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
         let ino = self.alloc_ino();
-        self.0.borrow_mut().entries.insert(
+        self.0.lock().unwrap().entries.insert(
             path.to_string(),
             MockEntry::File(
                 contents.to_string(),
@@ -862,7 +863,7 @@ impl Filesystem for MockFilesystem {
 
     fn append_string(&self, path: &str, contents: &str) -> Result<(), Error> {
         let ino = self.alloc_ino();
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         match inner.entries.entry(path.to_string()).or_insert_with(|| {
             MockEntry::File(
                 String::new(),
@@ -891,7 +892,7 @@ impl Filesystem for MockFilesystem {
 
     fn mkdir(&self, path: &str) -> Result<(), Error> {
         let ino = self.alloc_ino();
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         // Check if it already exists
         if inner.entries.contains_key(path) {
             return Err(Error::Io(std::io::Error::new(
@@ -933,7 +934,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn mkdir_all(&self, path: &str) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         // If it already exists as a directory, success
         if let Some(entry) = inner.entries.get(path) {
             match entry {
@@ -982,7 +983,8 @@ impl Filesystem for MockFilesystem {
 
     fn is_dir(&self, path: &str) -> bool {
         self.0
-            .borrow()
+            .lock()
+            .unwrap()
             .entries
             .get(path)
             .map(|entry| matches!(entry, MockEntry::Directory(_)))
@@ -990,7 +992,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error> {
-        let inner = self.0.borrow();
+        let inner = self.0.lock().unwrap();
 
         // Check if path is a directory
         match inner.entries.get(path) {
@@ -1050,7 +1052,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn stat(&self, path: &str) -> Result<DirEntry, Error> {
-        let inner = self.0.borrow();
+        let inner = self.0.lock().unwrap();
         let has_trailing_slash = path.len() > 1 && path.ends_with('/');
         let normalized = path.trim_end_matches('/');
         let mut current_path = if normalized.is_empty() {
@@ -1107,7 +1109,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn lstat(&self, path: &str) -> Result<DirEntry, Error> {
-        let inner = self.0.borrow();
+        let inner = self.0.lock().unwrap();
         match inner.entries.get(path) {
             Some(MockEntry::File(contents, times)) => Ok(DirEntry {
                 file_type: FileType::RegularFile,
@@ -1142,7 +1144,7 @@ impl Filesystem for MockFilesystem {
 
     fn symlink(&self, target: &str, linkpath: &str) -> Result<(), Error> {
         let ino = self.alloc_ino();
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         if inner.entries.contains_key(linkpath) {
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -1163,7 +1165,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn link(&self, src: &str, dst: &str) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         if inner.entries.contains_key(dst) {
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -1191,7 +1193,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn unlink(&self, path: &str) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         match inner.entries.get(path) {
             Some(MockEntry::Directory(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
@@ -1209,7 +1211,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn rmdir(&self, path: &str) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         match inner.entries.get(path) {
             Some(MockEntry::Directory(_)) => {
                 let prefix = format!("{}/", path.trim_end_matches('/'));
@@ -1235,7 +1237,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn readlink(&self, path: &str) -> Result<String, Error> {
-        let inner = self.0.borrow();
+        let inner = self.0.lock().unwrap();
         match inner.entries.get(path) {
             Some(MockEntry::Symlink(target, _)) => Ok(target.clone()),
             Some(_) => Err(Error::Io(std::io::Error::new(
@@ -1250,7 +1252,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn set_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         let mut current_path = path.to_string();
         let mut depth = 0;
 
@@ -1304,7 +1306,7 @@ impl Filesystem for MockFilesystem {
     }
 
     fn lset_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1339,7 +1341,7 @@ impl Filesystem for MockFilesystem {
 
     fn create_file(&self, path: &str) -> Result<bool, Error> {
         let ino = self.alloc_ino();
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
         if inner.entries.contains_key(path) {
             return Ok(false);
         }
@@ -1359,11 +1361,11 @@ impl Filesystem for MockFilesystem {
     fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
         // First resolve the destination path (following symlinks in parent directories)
         let dst_resolved = {
-            let inner = self.0.borrow();
+            let inner = self.0.lock().unwrap();
             self.resolve_parent_path(&inner, dst)?
         };
 
-        let mut inner = self.0.borrow_mut();
+        let mut inner = self.0.lock().unwrap();
 
         // Check if we're trying to move a directory into itself
         let src_trimmed = src.trim_end_matches('/');
@@ -1483,7 +1485,7 @@ impl Filesystem for MockFilesystem {
             }
 
             let ino = self.alloc_ino();
-            let mut inner = self.0.borrow_mut();
+            let mut inner = self.0.lock().unwrap();
 
             let path_obj = std::path::Path::new(&path);
             if let Some(parent) = path_obj.parent() {
@@ -1559,7 +1561,7 @@ impl Filesystem for MockFilesystem {
             }
 
             let ino = self.alloc_ino();
-            let mut inner = self.0.borrow_mut();
+            let mut inner = self.0.lock().unwrap();
 
             let path_obj = std::path::Path::new(&path);
             if let Some(parent) = path_obj.parent() {
