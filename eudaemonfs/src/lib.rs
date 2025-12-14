@@ -233,6 +233,65 @@ impl InodeType {
     }
 }
 
+/////////////////////////////////////////////// FileType ////////////////////////////////////////////////
+
+/// The type of a file system entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileType {
+    /// A regular file.
+    RegularFile,
+    /// A directory.
+    Directory,
+    /// A symbolic link.
+    Symlink,
+    /// Other file type.
+    Other,
+}
+
+impl From<InodeType> for FileType {
+    fn from(inode_type: InodeType) -> Self {
+        match inode_type {
+            InodeType::File => FileType::RegularFile,
+            InodeType::Directory => FileType::Directory,
+            InodeType::Symlink => FileType::Symlink,
+        }
+    }
+}
+
+/////////////////////////////////////////////// StatInfo ////////////////////////////////////////////////
+
+/// Metadata information about a file or directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatInfo {
+    /// The type of the file (regular file, directory, symlink, etc.).
+    pub file_type: FileType,
+    /// Size in bytes.
+    pub size: u64,
+    /// Access time in milliseconds since UNIX epoch.
+    pub atime_ms: i64,
+    /// Modification time in milliseconds since UNIX epoch.
+    pub mtime_ms: i64,
+    /// Device ID.
+    pub dev: u64,
+    /// Inode number.
+    pub ino: u64,
+    /// Number of hard links.
+    pub link_count: u32,
+}
+
+/////////////////////////////////////////////// TimeSpec ////////////////////////////////////////////////
+
+/// Specification for setting file timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSpec {
+    /// Set to current time.
+    Now,
+    /// Leave unchanged.
+    Omit,
+    /// Set to specific milliseconds since UNIX epoch.
+    Time(i64),
+}
+
 ////////////////////////////////////////////// InodeNumber /////////////////////////////////////////////
 
 /// A strongly-typed inode number.
@@ -412,6 +471,36 @@ pub enum Error {
     DirectoryNotEmpty,
 }
 
+impl Error {
+    /// Converts this error to a `std::io::Error`.
+    pub fn to_io_error(self) -> std::io::Error {
+        use std::io::ErrorKind;
+        let kind = match self {
+            Error::NotFound => ErrorKind::NotFound,
+            Error::AlreadyExists => ErrorKind::AlreadyExists,
+            Error::IsDirectory => ErrorKind::IsADirectory,
+            Error::NotADirectory => ErrorKind::NotADirectory,
+            Error::DirectoryNotEmpty => ErrorKind::DirectoryNotEmpty,
+            Error::NoSpace => ErrorKind::StorageFull,
+            Error::InvalidFd => ErrorKind::InvalidInput,
+            Error::FilenameTooLong => ErrorKind::InvalidInput,
+            Error::InvalidOffset => ErrorKind::InvalidInput,
+            Error::FileTooLarge => ErrorKind::FileTooLarge,
+            Error::InvalidArgument => ErrorKind::InvalidInput,
+            Error::NotOpen => ErrorKind::InvalidInput,
+            Error::CorruptFilesystem => ErrorKind::InvalidData,
+            Error::BufferTooSmall => ErrorKind::InvalidInput,
+        };
+        std::io::Error::new(kind, format!("{:?}", self))
+    }
+}
+
+impl From<Error> for std::io::Error {
+    fn from(err: Error) -> Self {
+        err.to_io_error()
+    }
+}
+
 /// Result type for filesystem operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -543,6 +632,18 @@ impl Inode {
 
     fn is_symlink(&self) -> bool {
         self.inode_type == InodeType::Symlink
+    }
+
+    fn to_stat_info(&self, dev: DeviceId) -> StatInfo {
+        StatInfo {
+            file_type: self.inode_type.into(),
+            size: self.size,
+            atime_ms: self.atime_ms,
+            mtime_ms: self.mtime_ms,
+            dev: dev.as_u64(),
+            ino: self.ino.as_u64(),
+            link_count: self.link_count,
+        }
     }
 
     fn to_bytes(&self) -> [u8; 128] {
@@ -826,6 +927,341 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     /// Returns a reference to the underlying block device.
     pub fn device(&self) -> &D {
         &self.device
+    }
+
+    /// Gets metadata for a path, following symlinks.
+    pub fn stat(&self, path: &str) -> Result<StatInfo> {
+        let ino = self.resolve_path_to_inode(path)?;
+        let inode = self.read_inode(ino)?;
+        Ok(inode.to_stat_info(self.dev))
+    }
+
+    /// Gets metadata for a path, not following the final symlink component.
+    pub fn lstat(&self, path: &str) -> Result<StatInfo> {
+        let ino = self.resolve_path_no_follow_final(path)?;
+        let inode = self.read_inode(ino)?;
+        Ok(inode.to_stat_info(self.dev))
+    }
+
+    /// Resolves a path to its inode number, following all symlinks.
+    fn resolve_path_to_inode(&self, path: &str) -> Result<InodeNumber> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        let ino = self
+            .lookup_in_dir(&parent_inode, name)?
+            .ok_or(Error::NotFound)?;
+
+        // Follow symlink if it is one
+        let inode = self.read_inode(ino)?;
+        if inode.is_symlink() {
+            let target = self.read_symlink_target(&inode)?;
+            // Resolve the symlink target
+            self.resolve_path_to_inode(&target)
+        } else {
+            Ok(ino)
+        }
+    }
+
+    /// Lists directory contents with metadata.
+    pub fn read_dir(&self, path: &str) -> Result<Vec<(String, StatInfo)>> {
+        let ino = self.resolve_path_to_inode(path)?;
+        let dir_inode = self.read_inode(ino)?;
+
+        if !dir_inode.is_directory() {
+            return Err(Error::NotADirectory);
+        }
+
+        let mut entries = Vec::new();
+        let num_entries = dir_inode.size;
+
+        for i in 0..num_entries {
+            let offset = Self::dir_entry_offset(i);
+            let block_idx = BlockIndex::from_byte_offset(offset);
+            let block_offset = (offset % BLOCK_SIZE as u64) as usize;
+
+            let block_addr = self.get_block_addr(&dir_inode, block_idx)?;
+            if !block_addr.is_valid() {
+                continue;
+            }
+
+            let mut block = [0u8; BLOCK_SIZE];
+            self.read_block(block_addr, &mut block)?;
+
+            if let Some(entry) = DirEntry::from_bytes(&block[block_offset..])
+                && entry.ino.is_valid()
+            {
+                let entry_inode = self.read_inode(entry.ino)?;
+                let stat_info = entry_inode.to_stat_info(self.dev);
+                entries.push((entry.name().to_string(), stat_info));
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Checks if a path exists.
+    pub fn exists(&self, path: &str) -> bool {
+        self.resolve_path_to_inode(path).is_ok()
+    }
+
+    /// Checks if a path is a directory.
+    pub fn is_dir(&self, path: &str) -> bool {
+        match self.resolve_path_to_inode(path) {
+            Ok(ino) => match self.read_inode(ino) {
+                Ok(inode) => inode.is_directory(),
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
+    }
+
+    /// Reads entire file contents as bytes.
+    pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        let fd = self.open_file(path)?;
+        let size = self.file_size(fd)?;
+        let mut buf = vec![0u8; size as usize];
+        self.read(fd, &mut buf)?;
+        self.close(fd)?;
+        Ok(buf)
+    }
+
+    /// Writes bytes to a file (create or overwrite).
+    pub fn write_file(&mut self, path: &str, contents: &[u8]) -> Result<()> {
+        let fd = self.open_file(path)?;
+        self.truncate(fd, 0)?;
+        self.write(fd, contents)?;
+        self.close(fd)?;
+        Ok(())
+    }
+
+    /// Appends bytes to a file (create if needed).
+    pub fn append_file(&mut self, path: &str, contents: &[u8]) -> Result<()> {
+        let fd = self.open_file(path)?;
+        let size = self.file_size(fd)?;
+        self.seek(fd, size)?;
+        self.write(fd, contents)?;
+        self.close(fd)?;
+        Ok(())
+    }
+
+    /// Truncates or extends a file to the given size. Creates if not exists.
+    pub fn truncate_path(&mut self, path: &str, size: u64) -> Result<()> {
+        let fd = self.open_file(path)?;
+        self.truncate(fd, size)?;
+        self.close(fd)?;
+        Ok(())
+    }
+
+    /// Truncates only if file exists. Returns Ok(false) if not found.
+    pub fn truncate_existing(&mut self, path: &str, size: u64) -> Result<bool> {
+        // Check if file exists first by trying to resolve the path
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        match self.lookup_in_dir(&parent_inode, name)? {
+            Some(ino) => {
+                // Check that it's not a directory
+                let inode = self.read_inode(ino)?;
+                if inode.is_directory() {
+                    return Err(Error::IsDirectory);
+                }
+                let fd = self.open_file(path)?;
+                self.truncate(fd, size)?;
+                self.close(fd)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Sets access and modification times for a path (follows symlinks).
+    pub fn set_times(&mut self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<()> {
+        let ino = self.resolve_path_to_inode(path)?;
+        self.set_times_for_inode(ino, atime, mtime)
+    }
+
+    /// Sets times without following symlinks.
+    pub fn lset_times(&mut self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<()> {
+        let ino = self.resolve_path_no_follow_final(path)?;
+        self.set_times_for_inode(ino, atime, mtime)
+    }
+
+    fn set_times_for_inode(
+        &mut self,
+        ino: InodeNumber,
+        atime: TimeSpec,
+        mtime: TimeSpec,
+    ) -> Result<()> {
+        match self.set_times_for_inode_inner(ino, atime, mtime) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn set_times_for_inode_inner(
+        &mut self,
+        ino: InodeNumber,
+        atime: TimeSpec,
+        mtime: TimeSpec,
+    ) -> Result<()> {
+        let mut inode = self.read_inode(ino)?;
+        let now = self.now_ms();
+
+        match atime {
+            TimeSpec::Now => inode.atime_ms = now,
+            TimeSpec::Time(t) => inode.atime_ms = t,
+            TimeSpec::Omit => {}
+        }
+
+        match mtime {
+            TimeSpec::Now => inode.mtime_ms = now,
+            TimeSpec::Time(t) => inode.mtime_ms = t,
+            TimeSpec::Omit => {}
+        }
+
+        self.write_inode(&inode)?;
+        self.persist_inode_map()?;
+        Ok(())
+    }
+
+    /// Creates an empty file if it doesn't exist.
+    /// Returns true if created, false if already existed.
+    pub fn create_file(&mut self, path: &str) -> Result<bool> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        if self.lookup_in_dir(&parent_inode, name)?.is_some() {
+            // File already exists
+            return Ok(false);
+        }
+
+        // Create the file
+        let fd = self.open_file(path)?;
+        self.close(fd)?;
+        Ok(true)
+    }
+
+    /// Renames a file or directory from src to dst.
+    pub fn rename(&mut self, src: &str, dst: &str) -> Result<()> {
+        match self.rename_inner(src, dst) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn rename_inner(&mut self, src: &str, dst: &str) -> Result<()> {
+        // Resolve source path
+        let (src_parent_ino, src_name) = self.resolve_path(src)?;
+        let src_name = src_name.to_string();
+        let src_parent_inode = self.read_inode(src_parent_ino)?;
+
+        let src_ino = self
+            .lookup_in_dir(&src_parent_inode, &src_name)?
+            .ok_or(Error::NotFound)?;
+
+        // Resolve destination path
+        let (dst_parent_ino, dst_name) = self.resolve_path(dst)?;
+        let dst_name = dst_name.to_string();
+        let dst_parent_inode = self.read_inode(dst_parent_ino)?;
+
+        // Check if destination exists
+        if let Some(dst_ino) = self.lookup_in_dir(&dst_parent_inode, &dst_name)? {
+            // Remove the existing destination
+            let dst_inode = self.read_inode(dst_ino)?;
+            if dst_inode.is_directory() {
+                // Check if empty before removing
+                if !self.is_directory_empty(&dst_inode)? {
+                    return Err(Error::DirectoryNotEmpty);
+                }
+                self.remove_dir_entry(dst_parent_ino, &dst_name)?;
+                self.free_inode_blocks(dst_ino)?;
+            } else {
+                // Remove the file
+                self.remove_dir_entry(dst_parent_ino, &dst_name)?;
+                let is_open = self.open_files.values().any(|f| f.ino == dst_ino);
+                if is_open {
+                    self.unlinked_inodes.insert(dst_ino);
+                } else {
+                    self.free_inode_blocks(dst_ino)?;
+                }
+            }
+        }
+
+        // Remove from source directory
+        self.remove_dir_entry(src_parent_ino, &src_name)?;
+
+        // Add to destination directory
+        self.add_dir_entry(dst_parent_ino, src_ino, &dst_name)?;
+
+        self.persist_inode_map()?;
+        Ok(())
+    }
+
+    /// Creates a directory and all parent directories as needed.
+    pub fn mkdir_all(&mut self, path: &str) -> Result<()> {
+        // Split path into components
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        if components.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // Try to create each directory in the path
+        let mut current_path = String::new();
+        for component in components {
+            current_path.push('/');
+            current_path.push_str(component);
+
+            // Try to create this directory, ignoring AlreadyExists errors
+            match self.mkdir(&current_path) {
+                Ok(()) => {}
+                Err(Error::AlreadyExists) => {
+                    // Check that it's actually a directory
+                    if !self.is_dir(&current_path) {
+                        return Err(Error::NotADirectory);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Writes NUL bytes at offset for length bytes.
+    /// Extends file if offset+length exceeds current size.
+    pub fn punch_hole(&mut self, path: &str, offset: u64, length: u64) -> Result<()> {
+        let fd = self.open_file(path)?;
+        let current_size = self.file_size(fd)?;
+
+        // Write zeros at the specified range
+        self.seek(fd, offset)?;
+        let zeros = vec![0u8; length as usize];
+        self.write(fd, &zeros)?;
+
+        // If the file was larger, we may have extended it; truncate back if needed
+        let new_size = self.file_size(fd)?;
+        if new_size > current_size.max(offset + length) {
+            self.truncate(fd, current_size.max(offset + length))?;
+        }
+
+        self.close(fd)?;
+        Ok(())
     }
 
     /// Opens or creates a file by name.
@@ -4976,5 +5412,148 @@ mod tests {
         assert_eq!(result, Err(Error::InvalidArgument));
 
         println!("Empty path correctly rejected");
+    }
+
+    #[test]
+    fn error_to_io_error_not_found() {
+        use std::io::ErrorKind;
+        let err = Error::NotFound;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::NotFound);
+        println!("NotFound maps to ErrorKind::NotFound");
+    }
+
+    #[test]
+    fn error_to_io_error_already_exists() {
+        use std::io::ErrorKind;
+        let err = Error::AlreadyExists;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::AlreadyExists);
+        println!("AlreadyExists maps to ErrorKind::AlreadyExists");
+    }
+
+    #[test]
+    fn error_to_io_error_is_directory() {
+        use std::io::ErrorKind;
+        let err = Error::IsDirectory;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::IsADirectory);
+        println!("IsDirectory maps to ErrorKind::IsADirectory");
+    }
+
+    #[test]
+    fn error_to_io_error_not_a_directory() {
+        use std::io::ErrorKind;
+        let err = Error::NotADirectory;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::NotADirectory);
+        println!("NotADirectory maps to ErrorKind::NotADirectory");
+    }
+
+    #[test]
+    fn error_to_io_error_directory_not_empty() {
+        use std::io::ErrorKind;
+        let err = Error::DirectoryNotEmpty;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::DirectoryNotEmpty);
+        println!("DirectoryNotEmpty maps to ErrorKind::DirectoryNotEmpty");
+    }
+
+    #[test]
+    fn error_to_io_error_no_space() {
+        use std::io::ErrorKind;
+        let err = Error::NoSpace;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::StorageFull);
+        println!("NoSpace maps to ErrorKind::StorageFull");
+    }
+
+    #[test]
+    fn error_to_io_error_file_too_large() {
+        use std::io::ErrorKind;
+        let err = Error::FileTooLarge;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::FileTooLarge);
+        println!("FileTooLarge maps to ErrorKind::FileTooLarge");
+    }
+
+    #[test]
+    fn error_to_io_error_corrupt_filesystem() {
+        use std::io::ErrorKind;
+        let err = Error::CorruptFilesystem;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidData);
+        println!("CorruptFilesystem maps to ErrorKind::InvalidData");
+    }
+
+    #[test]
+    fn error_to_io_error_invalid_input_variants() {
+        use std::io::ErrorKind;
+
+        // InvalidFd
+        let err = Error::InvalidFd;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidInput);
+        println!("InvalidFd maps to ErrorKind::InvalidInput");
+
+        // FilenameTooLong
+        let err = Error::FilenameTooLong;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidInput);
+        println!("FilenameTooLong maps to ErrorKind::InvalidInput");
+
+        // InvalidOffset
+        let err = Error::InvalidOffset;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidInput);
+        println!("InvalidOffset maps to ErrorKind::InvalidInput");
+
+        // InvalidArgument
+        let err = Error::InvalidArgument;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidInput);
+        println!("InvalidArgument maps to ErrorKind::InvalidInput");
+
+        // NotOpen
+        let err = Error::NotOpen;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidInput);
+        println!("NotOpen maps to ErrorKind::InvalidInput");
+
+        // BufferTooSmall
+        let err = Error::BufferTooSmall;
+        let io_err = err.to_io_error();
+        assert_eq!(io_err.kind(), ErrorKind::InvalidInput);
+        println!("BufferTooSmall maps to ErrorKind::InvalidInput");
+    }
+
+    #[test]
+    fn error_from_trait_conversion() {
+        use std::io::ErrorKind;
+
+        // Test the From trait implementation
+        let err: std::io::Error = Error::NotFound.into();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+        println!("From<Error> for std::io::Error works correctly");
+
+        // Test in a function context that requires std::io::Error
+        fn takes_io_error(_: std::io::Error) -> bool {
+            true
+        }
+        assert!(takes_io_error(Error::AlreadyExists.into()));
+        println!("Error converts to std::io::Error via Into trait");
+    }
+
+    #[test]
+    fn error_message_preserved() {
+        let err = Error::NotFound;
+        let io_err = err.to_io_error();
+        let msg = format!("{}", io_err);
+        assert!(
+            msg.contains("NotFound"),
+            "Error message should contain variant name: {}",
+            msg
+        );
+        println!("Error message preserved in conversion: {}", msg);
     }
 }
