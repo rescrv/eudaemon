@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(env.fs.metadata("file.txt").unwrap().size, 15);
         assert_eq!(
             env.fs.read_to_string("file.txt").unwrap(),
-            "0123456789     "
+            "0123456789\0\0\0\0\0"
         );
     }
 
@@ -814,7 +814,10 @@ mod tests {
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "     56789");
+        assert_eq!(
+            env.fs.read_to_string("file.txt").unwrap(),
+            "\0\0\0\0\x0056789"
+        );
     }
 
     #[test]
@@ -823,7 +826,10 @@ mod tests {
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "012    789");
+        assert_eq!(
+            env.fs.read_to_string("file.txt").unwrap(),
+            "012\0\0\0\x00789"
+        );
     }
 
     #[test]
@@ -832,7 +838,7 @@ mod tests {
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "0123456   ");
+        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "0123456\0\0\0");
     }
 
     #[test]
@@ -845,7 +851,7 @@ mod tests {
         let contents = env.fs.read_to_string("file.txt").unwrap();
         println!("contents: {:?}", contents);
         assert_eq!(contents.len(), 13);
-        assert_eq!(contents, "01234567     ");
+        assert_eq!(contents, "01234567\0\0\0\0\0");
     }
 
     #[test]
@@ -854,7 +860,10 @@ mod tests {
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "     56789");
+        assert_eq!(
+            env.fs.read_to_string("file.txt").unwrap(),
+            "\0\0\0\0\x0056789"
+        );
     }
 
     #[test]
@@ -863,7 +872,10 @@ mod tests {
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "          ");
+        assert_eq!(
+            env.fs.read_to_string("file.txt").unwrap(),
+            "\0\0\0\0\0\0\0\0\0\0"
+        );
     }
 
     #[test]
@@ -893,8 +905,8 @@ mod tests {
         env.fs.add_file("b.txt", "abcdefghij");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("a.txt").unwrap(), "01   56789");
-        assert_eq!(env.fs.read_to_string("b.txt").unwrap(), "ab   fghij");
+        assert_eq!(env.fs.read_to_string("a.txt").unwrap(), "01\0\0\x0056789");
+        assert_eq!(env.fs.read_to_string("b.txt").unwrap(), "ab\0\0\0fghij");
     }
 
     #[test]
@@ -903,7 +915,10 @@ mod tests {
         env.fs.add_file("file.txt", "0123456789");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert_eq!(env.fs.read_to_string("file.txt").unwrap(), "     56789");
+        assert_eq!(
+            env.fs.read_to_string("file.txt").unwrap(),
+            "\0\0\0\0\x0056789"
+        );
     }
 
     #[test]

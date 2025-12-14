@@ -415,10 +415,10 @@ impl Filesystem for RealFilesystem {
             file.set_len(end).map_err(Error::Io)?;
         }
 
-        // Seek to offset and write spaces
+        // Seek to offset and write NUL bytes
         file.seek(SeekFrom::Start(offset)).map_err(Error::Io)?;
-        let spaces = vec![b' '; length as usize];
-        file.write_all(&spaces).map_err(Error::Io)?;
+        let nulls = vec![b'\0'; length as usize];
+        file.write_all(&nulls).map_err(Error::Io)?;
 
         Ok(())
     }
@@ -1014,7 +1014,7 @@ impl Filesystem for MockFilesystem {
             if contents.len() > size {
                 contents.truncate(size);
             } else {
-                contents.extend(std::iter::repeat_n(' ', size - contents.len()));
+                contents.extend(std::iter::repeat_n('\0', size - contents.len()));
             }
         }
         Ok(())
@@ -1027,7 +1027,7 @@ impl Filesystem for MockFilesystem {
             if contents.len() > size {
                 contents.truncate(size);
             } else {
-                contents.extend(std::iter::repeat_n(' ', size - contents.len()));
+                contents.extend(std::iter::repeat_n('\0', size - contents.len()));
             }
             Ok(true)
         } else {
@@ -1053,13 +1053,13 @@ impl Filesystem for MockFilesystem {
 
         // Extend file if necessary
         if contents.len() < end {
-            contents.extend(std::iter::repeat_n(' ', end - contents.len()));
+            contents.extend(std::iter::repeat_n('\0', end - contents.len()));
         }
 
-        // Replace characters at offset..end with spaces
+        // Replace characters at offset..end with NUL bytes
         let bytes = unsafe { contents.as_bytes_mut() };
         for byte in bytes.iter_mut().skip(offset).take(length) {
-            *byte = b' ';
+            *byte = b'\0';
         }
 
         Ok(())
