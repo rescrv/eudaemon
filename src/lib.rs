@@ -68,6 +68,12 @@ pub trait BlockDevice {
     /// # Errors
     /// Returns an error if the block address is invalid or the write fails.
     fn write_block(&mut self, block: BlockAddress, buf: &[u8; BLOCK_SIZE]) -> Result<()>;
+
+    /// Resets any sequential write tracking maintained by the device.
+    ///
+    /// This is called before recovery operations that may write to earlier blocks.
+    /// The default implementation does nothing.
+    fn reset_sequence(&mut self) {}
 }
 
 /////////////////////////////////////////// MemoryBlockDevice //////////////////////////////////////////
@@ -116,6 +122,69 @@ impl BlockDevice for MemoryBlockDevice {
         }
         self.data[offset..offset + BLOCK_SIZE].copy_from_slice(buf);
         Ok(())
+    }
+}
+
+//////////////////////////////////////// SequentialBlockDevice /////////////////////////////////////////
+
+/// A block device wrapper that enforces sequential block writes.
+///
+/// This is intended for testing to verify that the LFS implementation writes blocks
+/// in strictly sequential order, which is a key property of log-structured filesystems.
+/// Block 0 (superblock) is exempt from sequential ordering requirements.
+pub struct SequentialBlockDevice<D: BlockDevice> {
+    inner: D,
+    next_write_block: Option<BlockAddress>,
+}
+
+impl<D: BlockDevice> SequentialBlockDevice<D> {
+    /// Creates a new sequential block device wrapper.
+    ///
+    /// The first non-superblock write establishes the starting point for sequential writes.
+    pub fn new(inner: D) -> Self {
+        Self {
+            inner,
+            next_write_block: None,
+        }
+    }
+
+    /// Consumes the wrapper and returns the inner device.
+    pub fn into_inner(self) -> D {
+        self.inner
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for SequentialBlockDevice<D> {
+    fn read_block(&self, block: BlockAddress, buf: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        self.inner.read_block(block, buf)
+    }
+
+    fn write_block(&mut self, block: BlockAddress, buf: &[u8; BLOCK_SIZE]) -> Result<()> {
+        // Block 0 (superblock) is exempt from sequential ordering
+        if block.as_u64() != 0 {
+            match self.next_write_block {
+                None => {
+                    // First non-superblock write establishes the sequence
+                    self.next_write_block = Some(block.next());
+                }
+                Some(expected) => {
+                    assert_eq!(
+                        block,
+                        expected,
+                        "Non-sequential write detected: expected block {}, got block {}",
+                        expected.as_u64(),
+                        block.as_u64()
+                    );
+                    self.next_write_block = Some(block.next());
+                }
+            }
+        }
+        self.inner.write_block(block, buf)
+    }
+
+    fn reset_sequence(&mut self) {
+        self.next_write_block = None;
+        self.inner.reset_sequence();
     }
 }
 
@@ -945,6 +1014,8 @@ impl<D: BlockDevice> Lfs<D> {
     /// contiguously at the tail, we can simply reset to the committed tail
     /// position and reload all in-memory structures.
     fn recover_from_partial_write(&mut self) -> Result<()> {
+        // Reset device sequence tracking since we're about to write to earlier blocks
+        self.device.reset_sequence();
         let mut block = [0u8; BLOCK_SIZE];
         self.read_block(BlockAddress::new(0), &mut block)?;
         self.superblock = Superblock::from_bytes(&block).ok_or(Error::CorruptFilesystem)?;
@@ -1111,92 +1182,114 @@ impl<D: BlockDevice> Lfs<D> {
 
         let indirect_idx = idx - DIRECT_BLOCKS as u64;
         if indirect_idx < PTRS_PER_BLOCK as u64 {
-            if !inode.indirect.is_valid() {
-                let indirect_block = self.allocate_block()?;
-                let mut block_data = [0u8; BLOCK_SIZE];
-                for chunk in block_data.chunks_exact_mut(8) {
+            // Read existing indirect block or create empty one
+            let mut block = [0u8; BLOCK_SIZE];
+            if inode.indirect.is_valid() {
+                self.read_block(inode.indirect, &mut block)?;
+                // Remove old indirect block from segment summary
+                self.segment_summary.remove(&inode.indirect);
+            } else {
+                // Initialize with INVALID pointers
+                for chunk in block.chunks_exact_mut(8) {
                     chunk.copy_from_slice(&BlockAddress::INVALID.as_u64().to_le_bytes());
                 }
-                self.write_block(indirect_block, &block_data)?;
-                inode.indirect = indirect_block;
-                self.segment_summary.insert(
-                    indirect_block,
-                    SegmentSummaryEntry {
-                        ino: inode.ino,
-                        block_index: BlockIndex::new(0),
-                        entry_type: SegmentEntryType::Indirect,
-                    },
-                );
             }
 
-            let mut block = [0u8; BLOCK_SIZE];
-            self.read_block(inode.indirect, &mut block)?;
+            // Update the pointer in the block
             let offset = indirect_idx as usize * 8;
             block[offset..offset + 8].copy_from_slice(&addr.as_u64().to_le_bytes());
-            self.write_block(inode.indirect, &block)?;
+
+            // Allocate new block and write (copy-on-write)
+            let new_indirect_block = self.allocate_block()?;
+            self.write_block(new_indirect_block, &block)?;
+            inode.indirect = new_indirect_block;
+            self.segment_summary.insert(
+                new_indirect_block,
+                SegmentSummaryEntry {
+                    ino: inode.ino,
+                    block_index: BlockIndex::new(0),
+                    entry_type: SegmentEntryType::Indirect,
+                },
+            );
             return Ok(());
         }
 
         let double_idx = indirect_idx - PTRS_PER_BLOCK as u64;
         if double_idx < (PTRS_PER_BLOCK * PTRS_PER_BLOCK) as u64 {
-            if !inode.double_indirect.is_valid() {
-                let double_block = self.allocate_block()?;
-                let mut block_data = [0u8; BLOCK_SIZE];
-                for chunk in block_data.chunks_exact_mut(8) {
-                    chunk.copy_from_slice(&BlockAddress::INVALID.as_u64().to_le_bytes());
-                }
-                self.write_block(double_block, &block_data)?;
-                inode.double_indirect = double_block;
-                self.segment_summary.insert(
-                    double_block,
-                    SegmentSummaryEntry {
-                        ino: inode.ino,
-                        block_index: BlockIndex::new(0),
-                        entry_type: SegmentEntryType::Indirect,
-                    },
-                );
-            }
-
             let first_level_idx = double_idx / PTRS_PER_BLOCK as u64;
             let second_level_idx = double_idx % PTRS_PER_BLOCK as u64;
 
+            // Read existing double indirect block or create empty one
             let mut double_block = [0u8; BLOCK_SIZE];
-            self.read_block(inode.double_indirect, &mut double_block)?;
+            if inode.double_indirect.is_valid() {
+                self.read_block(inode.double_indirect, &mut double_block)?;
+            } else {
+                // Initialize with INVALID pointers
+                for chunk in double_block.chunks_exact_mut(8) {
+                    chunk.copy_from_slice(&BlockAddress::INVALID.as_u64().to_le_bytes());
+                }
+            }
+
+            // Get the first-level indirect block address
             let first_offset = first_level_idx as usize * 8;
             let first_ptr = u64::from_le_bytes(
                 double_block[first_offset..first_offset + 8]
                     .try_into()
                     .unwrap(),
             );
-            let mut first_addr = BlockAddress::new(first_ptr);
+            let old_first_addr = BlockAddress::new(first_ptr);
 
-            if !first_addr.is_valid() {
-                let new_block = self.allocate_block()?;
-                let mut block_data = [0u8; BLOCK_SIZE];
-                for chunk in block_data.chunks_exact_mut(8) {
+            // Read existing first-level block or create empty one
+            let mut first_block = [0u8; BLOCK_SIZE];
+            if old_first_addr.is_valid() {
+                self.read_block(old_first_addr, &mut first_block)?;
+                // Remove old first-level block from segment summary
+                self.segment_summary.remove(&old_first_addr);
+            } else {
+                // Initialize with INVALID pointers
+                for chunk in first_block.chunks_exact_mut(8) {
                     chunk.copy_from_slice(&BlockAddress::INVALID.as_u64().to_le_bytes());
                 }
-                self.write_block(new_block, &block_data)?;
-                double_block[first_offset..first_offset + 8]
-                    .copy_from_slice(&new_block.as_u64().to_le_bytes());
-                self.write_block(inode.double_indirect, &double_block)?;
-                first_addr = new_block;
-                self.segment_summary.insert(
-                    new_block,
-                    SegmentSummaryEntry {
-                        ino: inode.ino,
-                        block_index: BlockIndex::new(0),
-                        entry_type: SegmentEntryType::Indirect,
-                    },
-                );
             }
 
-            let mut first_block = [0u8; BLOCK_SIZE];
-            self.read_block(first_addr, &mut first_block)?;
+            // Update the data pointer in the first-level block
             let second_offset = second_level_idx as usize * 8;
             first_block[second_offset..second_offset + 8]
                 .copy_from_slice(&addr.as_u64().to_le_bytes());
-            self.write_block(first_addr, &first_block)?;
+
+            // Allocate new first-level block and write (copy-on-write)
+            let new_first_addr = self.allocate_block()?;
+            self.write_block(new_first_addr, &first_block)?;
+            self.segment_summary.insert(
+                new_first_addr,
+                SegmentSummaryEntry {
+                    ino: inode.ino,
+                    block_index: BlockIndex::new(0),
+                    entry_type: SegmentEntryType::Indirect,
+                },
+            );
+
+            // Update the pointer to the first-level block in the double indirect block
+            double_block[first_offset..first_offset + 8]
+                .copy_from_slice(&new_first_addr.as_u64().to_le_bytes());
+
+            // Remove old double indirect block from segment summary if it existed
+            if inode.double_indirect.is_valid() {
+                self.segment_summary.remove(&inode.double_indirect);
+            }
+
+            // Allocate new double indirect block and write (copy-on-write)
+            let new_double_block = self.allocate_block()?;
+            self.write_block(new_double_block, &double_block)?;
+            inode.double_indirect = new_double_block;
+            self.segment_summary.insert(
+                new_double_block,
+                SegmentSummaryEntry {
+                    ino: inode.ino,
+                    block_index: BlockIndex::new(0),
+                    entry_type: SegmentEntryType::Indirect,
+                },
+            );
             return Ok(());
         }
 
@@ -2989,5 +3082,110 @@ mod tests {
             buf[100..110].iter().all(|&b| b == 0xAA),
             "Last 10 bytes should be 0xAA"
         );
+    }
+
+    #[test]
+    fn sequential_block_device_enforces_ordering() {
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let device = SequentialBlockDevice::new(mem_device);
+
+        let mut lfs = Lfs::new(device, 64).expect("create fs with sequential device");
+
+        let fd = lfs.open_file("test.txt").expect("open");
+        lfs.write(fd, b"Hello, sequential world!")
+            .expect("write to sequential device");
+        lfs.close(fd).expect("close");
+        println!("Write succeeded on sequential block device");
+
+        let fd = lfs.open_file("test.txt").expect("reopen");
+        let mut buf = vec![0u8; 24];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Hello, sequential world!");
+        println!("Data verified: {:?}", String::from_utf8_lossy(&buf));
+        lfs.close(fd).expect("close");
+    }
+
+    #[test]
+    fn sequential_block_device_with_multiple_files() {
+        let data = vec![0u8; 128 * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let device = SequentialBlockDevice::new(mem_device);
+
+        let mut lfs = Lfs::new(device, 128).expect("create fs with sequential device");
+
+        for i in 0..5 {
+            let name = format!("file{}.txt", i);
+            let fd = lfs.open_file(&name).expect("open");
+            let content = format!("Content of file {} with some padding data", i);
+            lfs.write(fd, content.as_bytes()).expect("write");
+            lfs.close(fd).expect("close");
+        }
+        println!("Created 5 files on sequential block device");
+
+        for i in 0..5 {
+            let name = format!("file{}.txt", i);
+            let fd = lfs.open_file(&name).expect("reopen");
+            let expected = format!("Content of file {} with some padding data", i);
+            let mut buf = vec![0u8; expected.len()];
+            lfs.read(fd, &mut buf).expect("read");
+            assert_eq!(buf, expected.as_bytes());
+            lfs.close(fd).expect("close");
+        }
+        println!("All 5 files verified on sequential block device");
+    }
+
+    #[test]
+    fn sequential_block_device_with_large_write() {
+        let data = vec![0u8; 256 * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let device = SequentialBlockDevice::new(mem_device);
+
+        let mut lfs = Lfs::new(device, 256).expect("create fs with sequential device");
+
+        let fd = lfs.open_file("large.bin").expect("open");
+        let large_data: Vec<u8> = (0..BLOCK_SIZE * 10).map(|i| (i % 256) as u8).collect();
+        lfs.write(fd, &large_data)
+            .expect("write large data to sequential device");
+        lfs.close(fd).expect("close");
+        println!(
+            "Wrote {} bytes across multiple blocks sequentially",
+            large_data.len()
+        );
+
+        let fd = lfs.open_file("large.bin").expect("reopen");
+        let mut buf = vec![0u8; large_data.len()];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(buf, large_data);
+        lfs.close(fd).expect("close");
+        println!("Large file data verified on sequential block device");
+    }
+
+    #[test]
+    fn sequential_block_device_with_overwrites() {
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let device = SequentialBlockDevice::new(mem_device);
+
+        let mut lfs = Lfs::new(device, 64).expect("create fs with sequential device");
+
+        let fd = lfs.open_file("overwrite.txt").expect("open");
+        lfs.write(fd, b"First version of data")
+            .expect("write first version");
+        lfs.seek(fd, 0).expect("seek to start");
+        lfs.write(fd, b"Second version!!!!!!!!")
+            .expect("write second version (should allocate new block sequentially)");
+        lfs.close(fd).expect("close");
+        println!("Overwrites succeeded on sequential block device");
+
+        let fd = lfs.open_file("overwrite.txt").expect("reopen");
+        let mut buf = vec![0u8; 22];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Second version!!!!!!!!");
+        println!(
+            "Overwritten data verified: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+        lfs.close(fd).expect("close");
     }
 }

@@ -10,11 +10,11 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-use synfs::BlockAddress;
 use synfs::Error;
 use synfs::FileDescriptor;
 use synfs::Lfs;
 use synfs::MemoryBlockDevice;
+use synfs::SequentialBlockDevice;
 
 /// Block size must match the LFS implementation.
 const BLOCK_SIZE: usize = 4096;
@@ -187,13 +187,16 @@ impl ReferenceFs {
 /////////////////////////////////////////// LfsAdapter /////////////////////////////////////////////////
 
 /// Adapter to track open file descriptors for LFS.
+///
+/// Uses `SequentialBlockDevice` to enforce that all block writes happen in strictly
+/// sequential order, verifying a key property of log-structured filesystems.
 struct LfsAdapter {
-    lfs: Lfs<MemoryBlockDevice>,
+    lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>>,
     open_fds: Vec<Option<FileDescriptor>>,
 }
 
 impl LfsAdapter {
-    fn new(lfs: Lfs<MemoryBlockDevice>) -> Self {
+    fn new(lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>>) -> Self {
         Self {
             lfs,
             open_fds: Vec::new(),
@@ -252,12 +255,8 @@ impl LfsAdapter {
         self.lfs.truncate(fd, size)
     }
 
-    fn tail(&self) -> BlockAddress {
-        self.lfs.tail()
-    }
-
     fn into_inner(self) -> Vec<u8> {
-        self.lfs.into_inner()
+        self.lfs.into_device().into_inner().into_inner()
     }
 }
 
@@ -433,9 +432,15 @@ fn execute_op(
 }
 
 /// Run a sequence of operations on both implementations.
+///
+/// The LFS uses a `SequentialBlockDevice` wrapper to enforce that all block writes
+/// happen in strictly sequential order, which is a key invariant of log-structured
+/// filesystems.
 fn run_ops(ops: &[FsOp]) -> (LfsAdapter, ReferenceFs) {
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-    let lfs = Lfs::from_vec(data).expect("Failed to create LFS");
+    let mem_device = MemoryBlockDevice::new(data);
+    let seq_device = SequentialBlockDevice::new(mem_device);
+    let lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
     let max_file_size = TEST_FS_BLOCKS * BLOCK_SIZE / 10;
 
     let mut lfs_adapter = LfsAdapter::new(lfs);
