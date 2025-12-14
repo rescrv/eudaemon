@@ -1,6 +1,4 @@
 df
-du
 install
-split
 timeout
 uname
