@@ -29,6 +29,7 @@ mod seq;
 pub mod sh;
 mod shuf;
 mod sort;
+mod split;
 mod stat;
 mod tail;
 mod tee;
@@ -82,6 +83,7 @@ where
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
         "shuf" | "/usr/bin/shuf" => Ok(shuf::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
+        "split" | "/usr/bin/split" => Ok(split::bin),
         "stat" | "/usr/bin/stat" => Ok(stat::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),
         "tee" | "/usr/bin/tee" => Ok(tee::bin),
