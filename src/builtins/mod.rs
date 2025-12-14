@@ -27,6 +27,7 @@ mod rm;
 mod rmdir;
 mod seq;
 pub mod sh;
+mod shuf;
 mod sort;
 mod stat;
 mod tail;
@@ -79,6 +80,7 @@ where
         "rm" | "/bin/rm" => Ok(rm::bin),
         "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
         "seq" | "/usr/bin/seq" => Ok(seq::bin),
+        "shuf" | "/usr/bin/shuf" => Ok(shuf::bin),
         "sort" | "/usr/bin/sort" => Ok(sort::bin),
         "stat" | "/usr/bin/stat" => Ok(stat::bin),
         "tail" | "/usr/bin/tail" => Ok(tail::bin),

@@ -1,11 +1,6 @@
-chroot
-date
 df
 du
 install
-link
-readlink
-shuf
 split
 timeout
 uname

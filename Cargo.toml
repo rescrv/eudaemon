@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 chrono = "0.4"
 getopts = "0.2.24"
+rand = "0.9"
 regex = "1.12.2"
 rustyline = "15"
 shvar = "0.8.0"
