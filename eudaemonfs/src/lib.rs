@@ -1282,16 +1282,28 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     }
 
     fn open_file_inner(&mut self, path: &str) -> Result<FileDescriptor> {
+        self.open_file_inner_with_hops(path, 0)
+    }
+
+    fn open_file_inner_with_hops(&mut self, path: &str, hops: usize) -> Result<FileDescriptor> {
+        if hops > Self::MAX_SYMLINK_HOPS {
+            return Err(Error::InvalidArgument); // Too many symlink hops (loop)
+        }
+
         let (parent_ino, name) = self.resolve_path(path)?;
         let name = name.to_string(); // Copy to avoid borrow issues
         let parent_inode = self.read_inode(parent_ino)?;
 
         let ino = match self.lookup_in_dir(&parent_inode, &name)? {
             Some(ino) => {
-                // Check that it's not a directory
                 let inode = self.read_inode(ino)?;
                 if inode.is_directory() {
                     return Err(Error::IsDirectory);
+                }
+                if inode.is_symlink() {
+                    // Follow the symlink
+                    let target = self.read_symlink_target(&inode)?;
+                    return self.open_file_inner_with_hops(&target, hops + 1);
                 }
                 ino
             }
@@ -5148,6 +5160,33 @@ mod tests {
         assert_eq!(lfs.readlink("link3.txt").unwrap(), "link2.txt");
 
         println!("Symlink chain test passed");
+    }
+
+    #[test]
+    fn open_file_follows_symlink() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a target file with content
+        let fd = lfs.open_file("target.txt").expect("create target");
+        lfs.write(fd, b"target content").expect("write target");
+        lfs.close(fd).expect("close target");
+
+        // Create a symlink pointing to the target
+        lfs.symlink("target.txt", "link.txt")
+            .expect("create symlink");
+
+        // Open the symlink - should follow it and open the target file
+        let fd = lfs.open_file("link.txt").expect("open via symlink");
+        let mut buf = vec![0u8; 14];
+        lfs.read(fd, &mut buf).expect("read via symlink");
+        lfs.close(fd).expect("close");
+
+        // Should get the target file's content, not the symlink target path
+        assert_eq!(
+            &buf, b"target content",
+            "open_file should follow symlink to target file"
+        );
+        println!("open_file follows symlink test passed");
     }
 
     #[test]
