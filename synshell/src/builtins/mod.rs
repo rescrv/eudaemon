@@ -1,0 +1,348 @@
+use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+
+mod base64;
+mod basename;
+mod cat;
+mod comm;
+mod cp;
+mod cut;
+mod date;
+mod du;
+mod echo;
+mod env;
+pub mod expand;
+mod fold;
+mod head;
+mod ln;
+mod ls;
+mod mkdir;
+mod mktemp;
+mod mv;
+mod nl;
+mod paste;
+mod printf;
+mod pwd;
+mod readlink;
+mod realpath;
+mod rm;
+mod rmdir;
+mod seq;
+pub mod sh;
+mod shuf;
+mod sort;
+mod split;
+mod stat;
+mod tail;
+mod tee;
+mod test;
+mod touch;
+mod tr;
+mod truncate;
+mod uname;
+mod unexpand;
+mod uniq;
+mod wc;
+mod yes;
+
+/// Look up a builtin binary by name.
+#[allow(clippy::type_complexity)]
+pub fn lookup_bin<SI, SO, SE, FS>(
+    bin: &str,
+) -> Result<fn(&Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    match bin {
+        "base64" | "/usr/bin/base64" => Ok(base64::bin),
+        "basename" | "/usr/bin/basename" => Ok(basename::bin),
+        "cat" | "/bin/cat" => Ok(cat::bin),
+        "comm" | "/usr/bin/comm" => Ok(comm::bin),
+        "cp" | "/bin/cp" => Ok(cp::bin),
+        "cut" | "/usr/bin/cut" => Ok(cut::bin),
+        "date" | "/bin/date" => Ok(date::bin),
+        "du" | "/usr/bin/du" => Ok(du::bin),
+        "echo" | "/bin/echo" => Ok(echo::bin),
+        "env" | "/usr/bin/env" => Ok(env::bin),
+        "exit" => Ok(exit_bin),
+        "expand" | "/usr/bin/expand" => Ok(expand::bin),
+        "fold" | "/usr/bin/fold" => Ok(fold::bin),
+        "head" | "/usr/bin/head" => Ok(head::bin),
+        "ln" | "/bin/ln" => Ok(ln::bin),
+        "ls" | "/bin/ls" => Ok(ls::bin),
+        "mkdir" | "/bin/mkdir" => Ok(mkdir::bin),
+        "mktemp" | "/usr/bin/mktemp" => Ok(mktemp::bin),
+        "mv" | "/bin/mv" => Ok(mv::bin),
+        "nl" | "/usr/bin/nl" => Ok(nl::bin),
+        "paste" | "/usr/bin/paste" => Ok(paste::bin),
+        "printf" | "/usr/bin/printf" => Ok(printf::bin),
+        "pwd" | "/bin/pwd" => Ok(pwd::bin),
+        "readlink" | "/usr/bin/readlink" => Ok(readlink::bin),
+        "realpath" | "/bin/realpath" => Ok(realpath::bin),
+        "rm" | "/bin/rm" => Ok(rm::bin),
+        "rmdir" | "/bin/rmdir" => Ok(rmdir::bin),
+        "seq" | "/usr/bin/seq" => Ok(seq::bin),
+        "shuf" | "/usr/bin/shuf" => Ok(shuf::bin),
+        "sort" | "/usr/bin/sort" => Ok(sort::bin),
+        "split" | "/usr/bin/split" => Ok(split::bin),
+        "stat" | "/usr/bin/stat" => Ok(stat::bin),
+        "tail" | "/usr/bin/tail" => Ok(tail::bin),
+        "tee" | "/usr/bin/tee" => Ok(tee::bin),
+        "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
+        "touch" | "/usr/bin/touch" => Ok(touch::bin),
+        "tr" | "/usr/bin/tr" => Ok(tr::bin),
+        "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
+        "sh" | "/bin/sh" => Ok(sh::bin),
+        "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
+        "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
+        "uname" | "/usr/bin/uname" => Ok(uname::bin),
+        "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
+        "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
+        "unlink" | "/bin/unlink" => Ok(rm::bin),
+        "wc" | "/usr/bin/wc" => Ok(wc::bin),
+        "yes" | "/usr/bin/yes" => Ok(yes::bin),
+        _ => Err(Error::UnknownBinary(bin.to_string())),
+    }
+}
+
+/// The exit builtin: exit the shell with an optional exit code.
+///
+/// Usage:
+///   exit [n]
+///
+/// If n is omitted, the exit code is 0.
+fn exit_bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    let code = if env.args.len() > 1 {
+        match env.args[1].parse::<i8>() {
+            Ok(n) => n,
+            Err(_) => {
+                env.stderr
+                    .write_line(&format!("exit: {}: numeric argument required", env.args[1]))?;
+                return Ok(ExitCode::from(2));
+            }
+        }
+    } else {
+        0
+    };
+    env.signal_exit();
+    Ok(ExitCode::from(code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::make_test_env;
+    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+
+    // ========================================================================
+    // exit builtin tests
+    // ========================================================================
+
+    #[test]
+    fn exit_no_args_returns_zero() {
+        let env = make_test_env(vec!["exit"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_zero_returns_zero() {
+        let env = make_test_env(vec!["exit", "0"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_one_returns_one() {
+        let env = make_test_env(vec!["exit", "1"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(1, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_42_returns_42() {
+        let env = make_test_env(vec!["exit", "42"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(42, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_negative_returns_negative() {
+        let env = make_test_env(vec!["exit", "-1"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(-1, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_127_returns_127() {
+        let env = make_test_env(vec!["exit", "127"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(127, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_non_numeric_returns_error() {
+        let env = make_test_env(vec!["exit", "abc"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(2, result.code());
+        assert!(!env.is_exit_signaled());
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert!(stderr.contains("numeric argument required"));
+        assert!(stderr.contains("abc"));
+    }
+
+    #[test]
+    fn exit_empty_string_returns_error() {
+        let env = make_test_env(vec!["exit", ""]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(2, result.code());
+        assert!(!env.is_exit_signaled());
+    }
+
+    #[test]
+    fn exit_overflow_returns_error() {
+        let env = make_test_env(vec!["exit", "999"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(2, result.code());
+        assert!(!env.is_exit_signaled());
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert!(stderr.contains("numeric argument required"));
+    }
+
+    #[test]
+    fn exit_extra_args_ignored() {
+        let env = make_test_env(vec!["exit", "5", "extra", "args"]);
+        let result = exit_bin(&env).unwrap();
+        assert_eq!(5, result.code());
+        assert!(env.is_exit_signaled());
+    }
+
+    // ========================================================================
+    // true builtin tests
+    // ========================================================================
+
+    #[test]
+    fn true_returns_zero() {
+        let env = make_test_env(vec!["true"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+    }
+
+    #[test]
+    fn true_with_args_returns_zero() {
+        let env = make_test_env(vec!["true", "ignored", "arguments"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+    }
+
+    #[test]
+    fn true_via_path_returns_zero() {
+        let env = make_test_env(vec!["/bin/true"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("/bin/true")
+                .unwrap();
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+    }
+
+    #[test]
+    fn true_produces_no_output() {
+        let env = make_test_env(vec!["true"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
+        let _ = bin(&env).unwrap();
+        assert_eq!("", env.stdout.into_string());
+        assert_eq!("", env.stderr.into_string());
+    }
+
+    // ========================================================================
+    // false builtin tests
+    // ========================================================================
+
+    #[test]
+    fn false_returns_one() {
+        let env = make_test_env(vec!["false"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
+        let result = bin(&env).unwrap();
+        assert_eq!(1, result.code());
+    }
+
+    #[test]
+    fn false_with_args_returns_one() {
+        let env = make_test_env(vec!["false", "ignored", "arguments"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
+        let result = bin(&env).unwrap();
+        assert_eq!(1, result.code());
+    }
+
+    #[test]
+    fn false_via_path_returns_one() {
+        let env = make_test_env(vec!["/bin/false"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("/bin/false")
+                .unwrap();
+        let result = bin(&env).unwrap();
+        assert_eq!(1, result.code());
+    }
+
+    #[test]
+    fn false_produces_no_output() {
+        let env = make_test_env(vec!["false"]);
+        let bin =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
+        let _ = bin(&env).unwrap();
+        assert_eq!("", env.stdout.into_string());
+        assert_eq!("", env.stderr.into_string());
+    }
+
+    // ========================================================================
+    // lookup_bin tests
+    // ========================================================================
+
+    #[test]
+    fn lookup_exit() {
+        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("exit");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lookup_true() {
+        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lookup_false() {
+        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lookup_unknown_returns_error() {
+        let result =
+            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("nonexistent");
+        assert!(matches!(result, Err(Error::UnknownBinary(_))));
+    }
+}
