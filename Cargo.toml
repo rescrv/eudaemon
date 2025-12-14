@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+guacamole = "0.14.0"
 
 [dev-dependencies]
-guacamole = "0.14.0"
 proptest = "1.4"

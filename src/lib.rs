@@ -36,7 +36,7 @@ const MAGIC: u64 = 0x4C46535F53594E46; // "LFS_SYNF"
 const MAX_FILENAME_LEN: usize = 255;
 
 /// Maximum number of direct block pointers in an inode.
-const DIRECT_BLOCKS: usize = 12;
+const DIRECT_BLOCKS: usize = 9;
 
 /// Number of block pointers per indirect block.
 const PTRS_PER_BLOCK: usize = BLOCK_SIZE / 8;
@@ -209,6 +209,30 @@ impl<D: BlockDevice> BlockDevice for SequentialBlockDevice<D> {
     }
 }
 
+/////////////////////////////////////////////// InodeType //////////////////////////////////////////////
+
+/// The type of an inode (file, directory, or symlink).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InodeType {
+    /// A regular file.
+    File = 0,
+    /// A directory.
+    Directory = 1,
+    /// A symbolic link.
+    Symlink = 2,
+}
+
+impl InodeType {
+    fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(InodeType::File),
+            1 => Some(InodeType::Directory),
+            2 => Some(InodeType::Symlink),
+            _ => None,
+        }
+    }
+}
+
 ////////////////////////////////////////////// InodeNumber /////////////////////////////////////////////
 
 /// A strongly-typed inode number.
@@ -240,6 +264,24 @@ impl InodeNumber {
     /// Returns the next inode number.
     fn next(self) -> Self {
         Self(self.0 + 1)
+    }
+}
+
+/////////////////////////////////////////////// DeviceId ////////////////////////////////////////////////
+
+/// A strongly-typed device identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeviceId(u64);
+
+impl DeviceId {
+    /// Creates a new device ID from a raw value.
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw u64 value.
+    pub fn as_u64(self) -> u64 {
+        self.0
     }
 }
 
@@ -362,6 +404,12 @@ pub enum Error {
     InvalidArgument,
     /// The file is not open for the requested operation.
     NotOpen,
+    /// The path refers to a directory, not a file.
+    IsDirectory,
+    /// The path refers to a file, not a directory.
+    NotADirectory,
+    /// The directory is not empty.
+    DirectoryNotEmpty,
 }
 
 /// Result type for filesystem operations.
@@ -416,32 +464,93 @@ impl Superblock {
 //////////////////////////////////////////////// Inode /////////////////////////////////////////////////
 
 /// On-disk inode structure.
+///
+/// Layout (128 bytes):
+/// - bytes 0-7: inode number (u64)
+/// - byte 8: inode type (u8)
+/// - bytes 9-12: link count (u32)
+/// - bytes 13-15: reserved (3 bytes for alignment)
+/// - bytes 16-23: size (u64)
+/// - bytes 24-31: atime_ms (i64)
+/// - bytes 32-39: mtime_ms (i64)
+/// - bytes 40-111: direct block pointers (9 * 8 = 72 bytes)
+/// - bytes 112-119: indirect block pointer (u64)
+/// - bytes 120-127: double indirect block pointer (u64)
 #[derive(Debug, Clone)]
 struct Inode {
     ino: InodeNumber,
+    inode_type: InodeType,
+    link_count: u32,
     size: u64,
+    atime_ms: i64,
+    mtime_ms: i64,
     direct: [BlockAddress; DIRECT_BLOCKS],
     indirect: BlockAddress,
     double_indirect: BlockAddress,
 }
 
 impl Inode {
-    fn new(ino: InodeNumber) -> Self {
+    fn new_file(ino: InodeNumber, now_ms: i64) -> Self {
         Self {
             ino,
+            inode_type: InodeType::File,
+            link_count: 1,
             size: 0,
+            atime_ms: now_ms,
+            mtime_ms: now_ms,
             direct: [BlockAddress::INVALID; DIRECT_BLOCKS],
             indirect: BlockAddress::INVALID,
             double_indirect: BlockAddress::INVALID,
         }
     }
 
+    fn new_directory(ino: InodeNumber, now_ms: i64) -> Self {
+        Self {
+            ino,
+            inode_type: InodeType::Directory,
+            link_count: 1,
+            size: 0,
+            atime_ms: now_ms,
+            mtime_ms: now_ms,
+            direct: [BlockAddress::INVALID; DIRECT_BLOCKS],
+            indirect: BlockAddress::INVALID,
+            double_indirect: BlockAddress::INVALID,
+        }
+    }
+
+    fn new_symlink(ino: InodeNumber, now_ms: i64) -> Self {
+        Self {
+            ino,
+            inode_type: InodeType::Symlink,
+            link_count: 1,
+            size: 0,
+            atime_ms: now_ms,
+            mtime_ms: now_ms,
+            direct: [BlockAddress::INVALID; DIRECT_BLOCKS],
+            indirect: BlockAddress::INVALID,
+            double_indirect: BlockAddress::INVALID,
+        }
+    }
+
+    fn is_directory(&self) -> bool {
+        self.inode_type == InodeType::Directory
+    }
+
+    fn is_symlink(&self) -> bool {
+        self.inode_type == InodeType::Symlink
+    }
+
     fn to_bytes(&self) -> [u8; 128] {
         let mut buf = [0u8; 128];
         buf[0..8].copy_from_slice(&self.ino.as_u64().to_le_bytes());
-        buf[8..16].copy_from_slice(&self.size.to_le_bytes());
+        buf[8] = self.inode_type as u8;
+        buf[9..13].copy_from_slice(&self.link_count.to_le_bytes());
+        // bytes 13-15 reserved for alignment
+        buf[16..24].copy_from_slice(&self.size.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.atime_ms.to_le_bytes());
+        buf[32..40].copy_from_slice(&self.mtime_ms.to_le_bytes());
         for (i, &block) in self.direct.iter().enumerate() {
-            let offset = 16 + i * 8;
+            let offset = 40 + i * 8;
             buf[offset..offset + 8].copy_from_slice(&block.as_u64().to_le_bytes());
         }
         buf[112..120].copy_from_slice(&self.indirect.as_u64().to_le_bytes());
@@ -455,13 +564,17 @@ impl Inode {
         }
         let mut direct = [BlockAddress::INVALID; DIRECT_BLOCKS];
         for (i, block) in direct.iter_mut().enumerate() {
-            let offset = 16 + i * 8;
+            let offset = 40 + i * 8;
             *block =
                 BlockAddress::new(u64::from_le_bytes(buf[offset..offset + 8].try_into().ok()?));
         }
         Some(Self {
             ino: InodeNumber::new(u64::from_le_bytes(buf[0..8].try_into().ok()?)),
-            size: u64::from_le_bytes(buf[8..16].try_into().ok()?),
+            inode_type: InodeType::from_u8(buf[8]).unwrap_or(InodeType::File),
+            link_count: u32::from_le_bytes(buf[9..13].try_into().ok()?),
+            size: u64::from_le_bytes(buf[16..24].try_into().ok()?),
+            atime_ms: i64::from_le_bytes(buf[24..32].try_into().ok()?),
+            mtime_ms: i64::from_le_bytes(buf[32..40].try_into().ok()?),
             direct,
             indirect: BlockAddress::new(u64::from_le_bytes(buf[112..120].try_into().ok()?)),
             double_indirect: BlockAddress::new(u64::from_le_bytes(buf[120..128].try_into().ok()?)),
@@ -556,7 +669,7 @@ struct OpenFile {
 ///////////////////////////////////////////////// Lfs //////////////////////////////////////////////////
 
 /// Log-structured File System.
-pub struct Lfs<D: BlockDevice> {
+pub struct Lfs<D: BlockDevice, T: Fn() -> i64> {
     device: D,
     superblock: Superblock,
     inode_map: BTreeMap<InodeNumber, BlockAddress>,
@@ -570,13 +683,21 @@ pub struct Lfs<D: BlockDevice> {
     /// Inodes that have been unlinked but still have open file descriptors.
     /// These will be fully removed when the last FD is closed.
     unlinked_inodes: BTreeSet<InodeNumber>,
+    /// Device ID for this filesystem instance.
+    dev: DeviceId,
+    /// Time source function returning milliseconds since UNIX epoch.
+    time_source: T,
 }
 
-impl<D: BlockDevice> Lfs<D> {
+impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     /// Creates a new LFS on the given block device.
     ///
-    /// The device must have at least 16 blocks.
-    pub fn new(mut device: D, total_blocks: u64) -> Result<Self> {
+    /// # Arguments
+    /// * `device` - The block device to use for storage.
+    /// * `total_blocks` - Total number of blocks in the device (must be at least 16).
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    pub fn new(mut device: D, total_blocks: u64, dev: DeviceId, time_source: T) -> Result<Self> {
         if total_blocks < 16 {
             return Err(Error::BufferTooSmall);
         }
@@ -613,6 +734,8 @@ impl<D: BlockDevice> Lfs<D> {
             max_file_size,
             committed_tail,
             unlinked_inodes: BTreeSet::new(),
+            dev,
+            time_source,
         };
 
         lfs.create_root_directory()?;
@@ -623,8 +746,12 @@ impl<D: BlockDevice> Lfs<D> {
 
     /// Opens an existing LFS from the given block device.
     ///
-    /// The tail position is read from the superblock on disk.
-    pub fn open(device: D, total_blocks: u64) -> Result<Self> {
+    /// # Arguments
+    /// * `device` - The block device containing an existing filesystem.
+    /// * `total_blocks` - Total number of blocks in the device.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    pub fn open(device: D, total_blocks: u64, dev: DeviceId, time_source: T) -> Result<Self> {
         if total_blocks < 1 {
             return Err(Error::BufferTooSmall);
         }
@@ -653,12 +780,24 @@ impl<D: BlockDevice> Lfs<D> {
             max_file_size,
             committed_tail: tail,
             unlinked_inodes: BTreeSet::new(),
+            dev,
+            time_source,
         };
 
         lfs.load_inode_map()?;
         lfs.rebuild_segment_summary()?;
 
         Ok(lfs)
+    }
+
+    /// Returns the device ID for this filesystem.
+    pub fn dev(&self) -> DeviceId {
+        self.dev
+    }
+
+    /// Returns the current time in milliseconds since UNIX epoch.
+    fn now_ms(&self) -> i64 {
+        (self.time_source)()
     }
 
     /// Returns the current tail offset.
@@ -693,14 +832,21 @@ impl<D: BlockDevice> Lfs<D> {
         }
     }
 
-    fn open_file_inner(&mut self, name: &str) -> Result<FileDescriptor> {
-        if name.len() > MAX_FILENAME_LEN {
-            return Err(Error::FilenameTooLong);
-        }
+    fn open_file_inner(&mut self, path: &str) -> Result<FileDescriptor> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let name = name.to_string(); // Copy to avoid borrow issues
+        let parent_inode = self.read_inode(parent_ino)?;
 
-        let ino = match self.lookup_file(name)? {
-            Some(ino) => ino,
-            None => self.create_file(name)?,
+        let ino = match self.lookup_in_dir(&parent_inode, &name)? {
+            Some(ino) => {
+                // Check that it's not a directory
+                let inode = self.read_inode(ino)?;
+                if inode.is_directory() {
+                    return Err(Error::IsDirectory);
+                }
+                ino
+            }
+            None => self.create_file_in_dir(parent_ino, &name)?,
         };
 
         let fd = self.next_fd;
@@ -967,27 +1113,344 @@ impl<D: BlockDevice> Lfs<D> {
         }
     }
 
-    fn remove_inner(&mut self, name: &str) -> Result<()> {
+    fn remove_inner(&mut self, path: &str) -> Result<()> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let name = name.to_string(); // Copy to avoid borrow issues
+        let parent_inode = self.read_inode(parent_ino)?;
+
         // Find the file's inode number
-        let ino = self.lookup_file(name)?.ok_or(Error::NotFound)?;
+        let ino = self
+            .lookup_in_dir(&parent_inode, &name)?
+            .ok_or(Error::NotFound)?;
+
+        // Check that it's not a directory (use rmdir for directories)
+        let mut inode = self.read_inode(ino)?;
+        if inode.is_directory() {
+            return Err(Error::IsDirectory);
+        }
 
         // Remove the directory entry
-        self.remove_dir_entry(InodeNumber::ROOT, name)?;
+        self.remove_dir_entry(parent_ino, &name)?;
 
-        // Check if the file is currently open
-        let is_open = self.open_files.values().any(|f| f.ino == ino);
+        // Decrement link count
+        inode.link_count = inode.link_count.saturating_sub(1);
 
-        if is_open {
-            // Mark as unlinked - will be fully removed when last FD is closed
-            self.unlinked_inodes.insert(ino);
+        if inode.link_count == 0 {
+            // No more links - check if the file is currently open
+            let is_open = self.open_files.values().any(|f| f.ino == ino);
+
+            if is_open {
+                // Mark as unlinked - will be fully removed when last FD is closed
+                self.unlinked_inodes.insert(ino);
+                // Still write the updated inode with link_count=0
+                self.write_inode(&inode)?;
+            } else {
+                // No open FDs, remove immediately
+                self.free_inode_blocks(ino)?;
+            }
         } else {
-            // No open FDs, remove immediately
-            self.free_inode_blocks(ino)?;
+            // Still has other links, just update the inode with decremented link_count
+            self.write_inode(&inode)?;
         }
 
         self.persist_inode_map()?;
 
         Ok(())
+    }
+
+    /// Creates a hard link at `dst` pointing to the file at `src`.
+    ///
+    /// Both paths must be in existing directories. The source must be a regular
+    /// file (not a directory). After linking, both paths refer to the same inode.
+    pub fn link(&mut self, src: &str, dst: &str) -> Result<()> {
+        match self.link_inner(src, dst) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn link_inner(&mut self, src: &str, dst: &str) -> Result<()> {
+        // Resolve source path to get the inode
+        let (src_parent_ino, src_name) = self.resolve_path(src)?;
+        let src_name = src_name.to_string();
+        let src_parent_inode = self.read_inode(src_parent_ino)?;
+
+        let src_ino = self
+            .lookup_in_dir(&src_parent_inode, &src_name)?
+            .ok_or(Error::NotFound)?;
+
+        // Check that source is not a directory (hard links to directories not allowed)
+        let mut src_inode = self.read_inode(src_ino)?;
+        if src_inode.is_directory() {
+            return Err(Error::IsDirectory);
+        }
+
+        // Resolve destination path
+        let (dst_parent_ino, dst_name) = self.resolve_path(dst)?;
+        let dst_name = dst_name.to_string();
+        let dst_parent_inode = self.read_inode(dst_parent_ino)?;
+
+        // Check that destination doesn't already exist
+        if self.lookup_in_dir(&dst_parent_inode, &dst_name)?.is_some() {
+            return Err(Error::AlreadyExists);
+        }
+
+        // Increment link count
+        src_inode.link_count = src_inode.link_count.saturating_add(1);
+        self.write_inode(&src_inode)?;
+
+        // Add directory entry for the new link
+        self.add_dir_entry(dst_parent_ino, src_ino, &dst_name)?;
+
+        self.persist_inode_map()?;
+
+        Ok(())
+    }
+
+    /// Creates a symbolic link at `linkpath` pointing to `target`.
+    ///
+    /// The `target` is stored as-is and is not validated. The symlink's parent
+    /// directory must exist. Unlike hard links, symlinks can point to directories
+    /// and to paths that don't exist.
+    pub fn symlink(&mut self, target: &str, linkpath: &str) -> Result<()> {
+        match self.symlink_inner(target, linkpath) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn symlink_inner(&mut self, target: &str, linkpath: &str) -> Result<()> {
+        if target.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // Resolve linkpath to get the parent directory
+        let (parent_ino, link_name) = self.resolve_path(linkpath)?;
+        let link_name = link_name.to_string();
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        // Check that destination doesn't already exist
+        if self.lookup_in_dir(&parent_inode, &link_name)?.is_some() {
+            return Err(Error::AlreadyExists);
+        }
+
+        // Create the symlink inode
+        let ino = self.superblock.next_inode;
+        self.superblock.next_inode = self.superblock.next_inode.next();
+
+        let now = self.now_ms();
+        let mut symlink_inode = Inode::new_symlink(ino, now);
+
+        // Write the target string as the symlink's content (stored in data blocks)
+        let target_bytes = target.as_bytes();
+        symlink_inode.size = target_bytes.len() as u64;
+
+        // Write target to data blocks
+        let mut offset = 0;
+        while offset < target_bytes.len() {
+            let block_idx = BlockIndex::from_byte_offset(offset as u64);
+            let block_offset = offset % BLOCK_SIZE;
+            let bytes_in_block = (BLOCK_SIZE - block_offset).min(target_bytes.len() - offset);
+
+            let mut block_data = [0u8; BLOCK_SIZE];
+            block_data[block_offset..block_offset + bytes_in_block]
+                .copy_from_slice(&target_bytes[offset..offset + bytes_in_block]);
+
+            let block_addr = self.allocate_block()?;
+            self.write_block(block_addr, &block_data)?;
+            self.segment_summary.insert(
+                block_addr,
+                SegmentSummaryEntry {
+                    ino,
+                    block_index: block_idx,
+                    entry_type: SegmentEntryType::Data,
+                },
+            );
+
+            self.set_block_addr(&mut symlink_inode, block_idx, block_addr)?;
+            offset += bytes_in_block;
+        }
+
+        self.write_inode(&symlink_inode)?;
+
+        // Add directory entry for the symlink
+        self.add_dir_entry(parent_ino, ino, &link_name)?;
+
+        self.write_superblock()?;
+        self.persist_inode_map()?;
+
+        Ok(())
+    }
+
+    /// Reads the target of a symbolic link.
+    ///
+    /// Returns an error if the path is not a symlink.
+    pub fn readlink(&self, path: &str) -> Result<String> {
+        // Use resolve_path_no_follow to get the symlink inode without following it
+        let ino = self.resolve_path_no_follow_final(path)?;
+        let inode = self.read_inode(ino)?;
+
+        if !inode.is_symlink() {
+            return Err(Error::InvalidArgument);
+        }
+
+        self.read_symlink_target(&inode)
+    }
+
+    /// Reads the target string from a symlink inode's data blocks.
+    fn read_symlink_target(&self, inode: &Inode) -> Result<String> {
+        let mut target = vec![0u8; inode.size as usize];
+        let mut offset = 0;
+
+        while offset < target.len() {
+            let block_idx = BlockIndex::from_byte_offset(offset as u64);
+            let block_offset = offset % BLOCK_SIZE;
+            let bytes_in_block = (BLOCK_SIZE - block_offset).min(target.len() - offset);
+
+            let block_addr = self.get_block_addr(inode, block_idx)?;
+            if !block_addr.is_valid() {
+                // Sparse region - fill with zeros
+                target[offset..offset + bytes_in_block].fill(0);
+            } else {
+                let mut block_data = [0u8; BLOCK_SIZE];
+                self.read_block(block_addr, &mut block_data)?;
+                target[offset..offset + bytes_in_block]
+                    .copy_from_slice(&block_data[block_offset..block_offset + bytes_in_block]);
+            }
+
+            offset += bytes_in_block;
+        }
+
+        String::from_utf8(target).map_err(|_| Error::CorruptFilesystem)
+    }
+
+    /// Resolves a path to an inode number without following the final symlink.
+    ///
+    /// This is used by `readlink` and `lstat` operations.
+    fn resolve_path_no_follow_final(&self, path: &str) -> Result<InodeNumber> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        self.lookup_in_dir(&parent_inode, name)?
+            .ok_or(Error::NotFound)
+    }
+
+    /// Creates a directory at the given path.
+    ///
+    /// All parent directories must already exist.
+    pub fn mkdir(&mut self, path: &str) -> Result<()> {
+        match self.mkdir_inner(path) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn mkdir_inner(&mut self, path: &str) -> Result<()> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let name = name.to_string(); // Copy to avoid borrow issues
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        // Check if the name already exists
+        if self.lookup_in_dir(&parent_inode, &name)?.is_some() {
+            return Err(Error::AlreadyExists);
+        }
+
+        self.create_directory_in_dir(parent_ino, &name)?;
+        Ok(())
+    }
+
+    /// Removes an empty directory at the given path.
+    ///
+    /// Returns an error if the directory is not empty or is not a directory.
+    pub fn rmdir(&mut self, path: &str) -> Result<()> {
+        match self.rmdir_inner(path) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(Error::NoSpace) => {
+                self.recover_from_partial_write()?;
+                Err(Error::NoSpace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn rmdir_inner(&mut self, path: &str) -> Result<()> {
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let name = name.to_string(); // Copy to avoid borrow issues
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        // Find the directory's inode number
+        let ino = self
+            .lookup_in_dir(&parent_inode, &name)?
+            .ok_or(Error::NotFound)?;
+
+        // Check that it's a directory
+        let inode = self.read_inode(ino)?;
+        if !inode.is_directory() {
+            return Err(Error::NotADirectory);
+        }
+
+        // Check that the directory is empty
+        if !self.is_directory_empty(&inode)? {
+            return Err(Error::DirectoryNotEmpty);
+        }
+
+        // Remove the directory entry from parent
+        self.remove_dir_entry(parent_ino, &name)?;
+
+        // Free the directory's inode (no data blocks since it's empty)
+        self.free_inode_blocks(ino)?;
+
+        self.persist_inode_map()?;
+
+        Ok(())
+    }
+
+    /// Checks if a directory is empty (contains no valid entries).
+    fn is_directory_empty(&self, dir_inode: &Inode) -> Result<bool> {
+        let num_entries = dir_inode.size / DIR_ENTRY_SIZE;
+        for i in 0..num_entries {
+            let offset = i * DIR_ENTRY_SIZE;
+            let block_idx = BlockIndex::from_byte_offset(offset);
+            let block_offset = (offset % BLOCK_SIZE as u64) as usize;
+
+            let block_addr = self.get_block_addr(dir_inode, block_idx)?;
+            if !block_addr.is_valid() {
+                continue;
+            }
+
+            let mut block = [0u8; BLOCK_SIZE];
+            self.read_block(block_addr, &mut block)?;
+            if let Some(entry) = DirEntry::from_bytes(&block[block_offset..])
+                && entry.ino.is_valid()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Frees all blocks associated with an inode and removes it from the inode map.
@@ -1220,7 +1683,8 @@ impl<D: BlockDevice> Lfs<D> {
     }
 
     fn create_root_directory(&mut self) -> Result<()> {
-        let root_inode = Inode::new(InodeNumber::ROOT);
+        let now = self.now_ms();
+        let root_inode = Inode::new_directory(InodeNumber::ROOT, now);
         self.write_inode(&root_inode)?;
         self.persist_inode_map()?;
         Ok(())
@@ -1477,9 +1941,205 @@ impl<D: BlockDevice> Lfs<D> {
         Err(Error::FileTooLarge)
     }
 
-    fn lookup_file(&self, name: &str) -> Result<Option<InodeNumber>> {
-        let root_inode = self.read_inode(InodeNumber::ROOT)?;
-        self.lookup_in_dir(&root_inode, name)
+    /// Maximum number of symlink hops to follow before returning an error.
+    const MAX_SYMLINK_HOPS: usize = 40;
+
+    /// Resolves a path to its parent directory inode and the final component name.
+    ///
+    /// For example, "/a/b/c" returns (inode of "/a/b", "c").
+    /// For "file.txt" or "/file.txt", returns (ROOT inode, "file.txt").
+    ///
+    /// Symlinks in intermediate path components are followed. The final component
+    /// is NOT followed (the caller decides whether to follow it).
+    ///
+    /// Returns an error if any intermediate directory component doesn't exist,
+    /// is not a directory (after following symlinks), or if too many symlinks
+    /// are encountered (loop detection).
+    fn resolve_path<'a>(&self, path: &'a str) -> Result<(InodeNumber, &'a str)> {
+        // First try the simple case without symlinks
+        let result = self.resolve_path_simple(path);
+        if result.is_ok() {
+            return result;
+        }
+
+        // If simple resolution failed, try with symlink handling
+        // This requires returning owned strings, so we use a different path
+        let (parent_ino, final_name) = self.resolve_path_following_symlinks(path, 0)?;
+
+        // We need to return a &str, but we have an owned String.
+        // The caller expects the final_name to be a slice of the input path.
+        // Extract the final component from the original path.
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if components.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // If the final name matches what we found, return the slice from input
+        let original_final = components[components.len() - 1];
+        if original_final == final_name {
+            Ok((parent_ino, original_final))
+        } else {
+            // This shouldn't happen in normal operation since symlinks in the
+            // middle of the path don't change the final component name
+            Ok((parent_ino, original_final))
+        }
+    }
+
+    /// Simple path resolution without symlink handling.
+    fn resolve_path_simple<'a>(&self, path: &'a str) -> Result<(InodeNumber, &'a str)> {
+        // Handle empty path
+        if path.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // Split path into components, filtering empty ones (handles leading/trailing slashes)
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        if components.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // The last component is the filename/dirname we're looking for
+        let final_name = components[components.len() - 1];
+
+        // Validate filename length
+        if final_name.len() > MAX_FILENAME_LEN {
+            return Err(Error::FilenameTooLong);
+        }
+
+        // If there's only one component, parent is ROOT
+        if components.len() == 1 {
+            return Ok((InodeNumber::ROOT, final_name));
+        }
+
+        // Walk through intermediate directories
+        let mut current_ino = InodeNumber::ROOT;
+        for &component in &components[..components.len() - 1] {
+            if component.len() > MAX_FILENAME_LEN {
+                return Err(Error::FilenameTooLong);
+            }
+
+            let current_inode = self.read_inode(current_ino)?;
+            if current_inode.is_symlink() {
+                // Found a symlink - need full symlink handling
+                return Err(Error::InvalidArgument);
+            }
+            if !current_inode.is_directory() {
+                return Err(Error::NotADirectory);
+            }
+
+            let next_ino = self
+                .lookup_in_dir(&current_inode, component)?
+                .ok_or(Error::NotFound)?;
+
+            // Check if next component is a symlink
+            let next_inode = self.read_inode(next_ino)?;
+            if next_inode.is_symlink() {
+                // Found a symlink - need full symlink handling
+                return Err(Error::InvalidArgument);
+            }
+
+            current_ino = next_ino;
+        }
+
+        // Verify the parent is actually a directory
+        let parent_inode = self.read_inode(current_ino)?;
+        if !parent_inode.is_directory() {
+            return Err(Error::NotADirectory);
+        }
+
+        Ok((current_ino, final_name))
+    }
+
+    /// Path resolution with full symlink following.
+    fn resolve_path_following_symlinks(
+        &self,
+        path: &str,
+        hops: usize,
+    ) -> Result<(InodeNumber, String)> {
+        if hops > Self::MAX_SYMLINK_HOPS {
+            return Err(Error::InvalidArgument); // Too many symlink hops (loop)
+        }
+
+        // Handle empty path
+        if path.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // Split path into components
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        if components.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+
+        let final_name = components[components.len() - 1].to_string();
+
+        if final_name.len() > MAX_FILENAME_LEN {
+            return Err(Error::FilenameTooLong);
+        }
+
+        if components.len() == 1 {
+            return Ok((InodeNumber::ROOT, final_name));
+        }
+
+        // Walk through intermediate directories, following symlinks
+        let mut current_ino = InodeNumber::ROOT;
+
+        for (i, &component) in components[..components.len() - 1].iter().enumerate() {
+            if component.len() > MAX_FILENAME_LEN {
+                return Err(Error::FilenameTooLong);
+            }
+
+            let current_inode = self.read_inode(current_ino)?;
+            if !current_inode.is_directory() {
+                return Err(Error::NotADirectory);
+            }
+
+            let next_ino = self
+                .lookup_in_dir(&current_inode, component)?
+                .ok_or(Error::NotFound)?;
+
+            let next_inode = self.read_inode(next_ino)?;
+            if next_inode.is_symlink() {
+                // Read the symlink target
+                let target = self.read_symlink_target(&next_inode)?;
+
+                // Build the remaining path
+                let remaining: Vec<&str> = components[i + 1..].to_vec();
+                let remaining_path = remaining.join("/");
+
+                // Resolve the symlink target + remaining path
+                let full_path = if remaining_path.is_empty() {
+                    target.clone()
+                } else {
+                    format!("{}/{}", target, remaining_path)
+                };
+
+                // If target is absolute, start from root; otherwise from current dir
+                // For simplicity, we treat all targets as if starting from root for now
+                // This is because we don't track parent directories
+                let resolved_path = if target.starts_with('/') {
+                    full_path
+                } else {
+                    // Relative path - prepend "/" to resolve from root
+                    // This is a simplification; proper implementation needs parent tracking
+                    format!("/{}", full_path)
+                };
+
+                return self.resolve_path_following_symlinks(&resolved_path, hops + 1);
+            }
+
+            current_ino = next_ino;
+        }
+
+        // Verify the parent is actually a directory
+        let parent_inode = self.read_inode(current_ino)?;
+        if !parent_inode.is_directory() {
+            return Err(Error::NotADirectory);
+        }
+
+        Ok((current_ino, final_name))
     }
 
     fn lookup_in_dir(&self, dir_inode: &Inode, name: &str) -> Result<Option<InodeNumber>> {
@@ -1506,14 +2166,31 @@ impl<D: BlockDevice> Lfs<D> {
         Ok(None)
     }
 
-    fn create_file(&mut self, name: &str) -> Result<InodeNumber> {
+    fn create_file_in_dir(&mut self, dir_ino: InodeNumber, name: &str) -> Result<InodeNumber> {
         let ino = self.superblock.next_inode;
         self.superblock.next_inode = self.superblock.next_inode.next();
 
-        let file_inode = Inode::new(ino);
+        let now = self.now_ms();
+        let file_inode = Inode::new_file(ino, now);
         self.write_inode(&file_inode)?;
 
-        self.add_dir_entry(InodeNumber::ROOT, ino, name)?;
+        self.add_dir_entry(dir_ino, ino, name)?;
+
+        self.write_superblock()?;
+        self.persist_inode_map()?;
+
+        Ok(ino)
+    }
+
+    fn create_directory_in_dir(&mut self, dir_ino: InodeNumber, name: &str) -> Result<InodeNumber> {
+        let ino = self.superblock.next_inode;
+        self.superblock.next_inode = self.superblock.next_inode.next();
+
+        let now = self.now_ms();
+        let dir_inode = Inode::new_directory(ino, now);
+        self.write_inode(&dir_inode)?;
+
+        self.add_dir_entry(dir_ino, ino, name)?;
 
         self.write_superblock()?;
         self.persist_inode_map()?;
@@ -1718,25 +2395,35 @@ impl<D: BlockDevice> Lfs<D> {
     }
 }
 
-impl Lfs<MemoryBlockDevice> {
+impl<T: Fn() -> i64> Lfs<MemoryBlockDevice, T> {
     /// Creates a new LFS on the given buffer.
     ///
     /// This is a convenience constructor for using a `Vec<u8>` as the backing store.
     /// The buffer must be at least 16 blocks (64KB) in size.
-    pub fn from_vec(data: Vec<u8>) -> Result<Self> {
+    ///
+    /// # Arguments
+    /// * `data` - The backing buffer for the filesystem.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    pub fn from_vec(data: Vec<u8>, dev: DeviceId, time_source: T) -> Result<Self> {
         let total_blocks = (data.len() / BLOCK_SIZE) as u64;
         let device = MemoryBlockDevice::new(data);
-        Self::new(device, total_blocks)
+        Self::new(device, total_blocks, dev, time_source)
     }
 
     /// Opens an existing LFS from the given buffer.
     ///
     /// This is a convenience constructor for using a `Vec<u8>` as the backing store.
     /// The tail position is read from the superblock on disk.
-    pub fn open_vec(data: Vec<u8>) -> Result<Self> {
+    ///
+    /// # Arguments
+    /// * `data` - The backing buffer containing an existing filesystem.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    pub fn open_vec(data: Vec<u8>, dev: DeviceId, time_source: T) -> Result<Self> {
         let total_blocks = (data.len() / BLOCK_SIZE) as u64;
         let device = MemoryBlockDevice::new(data);
-        Self::open(device, total_blocks)
+        Self::open(device, total_blocks, dev, time_source)
     }
 
     /// Consumes the filesystem and returns the underlying data buffer.
@@ -1754,9 +2441,19 @@ impl Lfs<MemoryBlockDevice> {
 mod tests {
     use super::*;
 
-    fn create_test_fs(blocks: usize) -> Lfs<MemoryBlockDevice> {
+    fn zero_time() -> i64 {
+        0
+    }
+
+    fn create_test_fs(blocks: usize) -> Lfs<MemoryBlockDevice, fn() -> i64> {
         let data = vec![0u8; blocks * BLOCK_SIZE];
-        Lfs::from_vec(data).expect("Failed to create filesystem")
+        Lfs::from_vec(data, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("Failed to create filesystem")
+    }
+
+    fn open_test_fs(data: Vec<u8>) -> Lfs<MemoryBlockDevice, fn() -> i64> {
+        Lfs::open_vec(data, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("Failed to open filesystem")
     }
 
     #[test]
@@ -1951,7 +2648,8 @@ mod tests {
     #[test]
     fn persist_and_restore() {
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
+        let mut lfs =
+            Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create filesystem");
 
         let fd = lfs.open_file("persist.txt").expect("Failed to open file");
         lfs.write(fd, b"Saved data").expect("Failed to write");
@@ -1961,7 +2659,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data).expect("Failed to reopen filesystem");
+        let mut lfs2 = open_test_fs(data);
         let fd = lfs2.open_file("persist.txt").expect("Failed to open file");
         let mut buf = vec![0u8; 10];
         lfs2.read(fd, &mut buf).expect("Failed to read");
@@ -2009,7 +2707,7 @@ mod tests {
     #[test]
     fn buffer_too_small() {
         let data = vec![0u8; 8 * BLOCK_SIZE];
-        let result = Lfs::from_vec(data);
+        let result = Lfs::from_vec(data, DeviceId::new(1), zero_time);
         assert!(result.is_err(), "Expected BufferTooSmall error");
         match result {
             Err(Error::BufferTooSmall) => println!("Buffer too small correctly rejected"),
@@ -2478,7 +3176,8 @@ mod tests {
     #[test]
     fn persist_multiple_files() {
         let data = vec![0u8; 128 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
+        let mut lfs =
+            Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create filesystem");
 
         let files = [
             ("alpha.txt", "Alpha content"),
@@ -2494,7 +3193,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data).expect("Failed to reopen filesystem");
+        let mut lfs2 = open_test_fs(data);
 
         for (name, expected_content) in &files {
             let fd = lfs2.open_file(name).expect("Failed to open file");
@@ -2604,7 +3303,8 @@ mod tests {
     #[test]
     fn minimum_filesystem_size() {
         let data = vec![0u8; 16 * BLOCK_SIZE];
-        let lfs = Lfs::from_vec(data).expect("Minimum size filesystem should work");
+        let lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time)
+            .expect("Minimum size filesystem should work");
         assert!(lfs.free_blocks() > 0);
         println!("Minimum filesystem has {} free blocks", lfs.free_blocks());
     }
@@ -2612,7 +3312,7 @@ mod tests {
     #[test]
     fn filesystem_15_blocks_fails() {
         let data = vec![0u8; 15 * BLOCK_SIZE];
-        let result = Lfs::from_vec(data);
+        let result = Lfs::from_vec(data, DeviceId::new(1), zero_time);
         match result {
             Err(Error::BufferTooSmall) => println!("15 blocks correctly rejected"),
             Err(e) => panic!("Expected BufferTooSmall, got {:?}", e),
@@ -2625,7 +3325,7 @@ mod tests {
         let mut data = vec![0u8; 64 * BLOCK_SIZE];
         data[0..8].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
 
-        let result = Lfs::open_vec(data);
+        let result = Lfs::open_vec(data, DeviceId::new(1), zero_time);
         match result {
             Err(Error::CorruptFilesystem) => println!("Corrupt magic number correctly detected"),
             Err(e) => panic!("Expected CorruptFilesystem, got {:?}", e),
@@ -2830,7 +3530,8 @@ mod tests {
     fn debug_inode_map_persist_restore() {
         // Create filesystem and write a file
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
+        let mut lfs =
+            Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create filesystem");
 
         let fd = lfs.open_file("test.txt").expect("Failed to open file");
         let write_data = b"Hello, World!";
@@ -2848,7 +3549,7 @@ mod tests {
         let data = lfs.into_inner();
 
         // Restore and check inode map
-        let mut lfs2 = Lfs::open_vec(data).expect("Failed to restore");
+        let mut lfs2 = open_test_fs(data);
         println!("Inode map after restore: {:?}", lfs2.inode_map);
         println!(
             "Superblock inode_map_block after restore: {:?}",
@@ -2874,7 +3575,8 @@ mod tests {
     fn debug_open_after_restore_creates_new_file() {
         // This test checks if opening a NEW file after restore works correctly
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("Failed to create filesystem");
+        let mut lfs =
+            Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create filesystem");
 
         // Write to file a.txt
         let fd = lfs.open_file("a.txt").expect("open a.txt");
@@ -2884,7 +3586,7 @@ mod tests {
         let data = lfs.into_inner();
 
         // Restore
-        let mut lfs2 = Lfs::open_vec(data).expect("restore");
+        let mut lfs2 = open_test_fs(data);
 
         // Open a NEW file b.txt (not existing before)
         let fd_b = lfs2.open_file("b.txt").expect("open b.txt");
@@ -2918,7 +3620,7 @@ mod tests {
     fn debug_large_write_after_restore() {
         // Test with larger data that spans multiple blocks
         let data = vec![0u8; 256 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         let fd = lfs.open_file("large.txt").expect("open");
         let write_data: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
@@ -2929,7 +3631,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data).expect("restore");
+        let mut lfs2 = open_test_fs(data);
         println!("After restore: inode_map = {:?}", lfs2.inode_map);
 
         let fd2 = lfs2.open_file("large.txt").expect("open after restore");
@@ -2961,7 +3663,7 @@ mod tests {
         // Test with enough files to potentially overflow one inode map block
         // (BLOCK_SIZE - 8) / 16 = 255 entries per block
         let data = vec![0u8; 512 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         // Create 10 files
         for i in 0..10 {
@@ -2976,7 +3678,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs2 = Lfs::open_vec(data).expect("restore");
+        let mut lfs2 = open_test_fs(data);
         println!("After restore: {} inodes", lfs2.inode_map.len());
 
         // Verify all files
@@ -3014,7 +3716,7 @@ mod tests {
         ];
 
         let data = vec![0u8; 256 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         // Open { name: "a.txt" }
         let fd0 = lfs.open_file("a.txt").expect("open 1");
@@ -3025,7 +3727,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs_verify = Lfs::open_vec(data).expect("reopen");
+        let mut lfs_verify = open_test_fs(data);
 
         let fd = lfs_verify.open_file("a.txt").expect("open for verify");
         lfs_verify.seek(fd, 0).expect("seek");
@@ -3047,7 +3749,7 @@ mod tests {
         let write_data: Vec<u8> = (0..8000).map(|i| (i % 256) as u8).collect();
 
         let data = vec![0u8; 256 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         let fd0 = lfs.open_file("a.txt").expect("open 1");
         let _fd1 = lfs.open_file("a.txt").expect("open 2");
@@ -3055,7 +3757,7 @@ mod tests {
 
         let data = lfs.into_inner();
 
-        let mut lfs_verify = Lfs::open_vec(data).expect("reopen");
+        let mut lfs_verify = open_test_fs(data);
 
         let fd = lfs_verify.open_file("a.txt").expect("open for verify");
         lfs_verify.seek(fd, 0).expect("seek");
@@ -3085,7 +3787,7 @@ mod tests {
         // Exact failing case from proptest:
         // Open a.txt 5 times, Seek fd4 to 18509, Write 10642 bytes, Truncate to 29150, Write 9688 bytes
         let data = vec![0u8; 256 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         // Open "a.txt" 5 times
         let _fd0 = lfs.open_file("a.txt").expect("open 0");
@@ -3133,7 +3835,7 @@ mod tests {
 
         // Now verify
         let data = lfs.into_inner();
-        let mut lfs_verify = Lfs::open_vec(data).expect("reopen");
+        let mut lfs_verify = open_test_fs(data);
 
         let fd = lfs_verify.open_file("a.txt").expect("open for verify");
         lfs_verify.seek(fd, 0).expect("seek to start");
@@ -3176,7 +3878,7 @@ mod tests {
     fn debug_truncate_zeroing() {
         // Simpler test: does truncate properly zero data?
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         let fd = lfs.open_file("test.txt").expect("open");
 
@@ -3201,7 +3903,7 @@ mod tests {
 
         // Now persist/restore
         let data = lfs.into_inner();
-        let mut lfs2 = Lfs::open_vec(data).expect("restore");
+        let mut lfs2 = open_test_fs(data);
 
         let fd2 = lfs2.open_file("test.txt").expect("open after restore");
         let size2 = lfs2.file_size(fd2).expect("size after restore");
@@ -3222,7 +3924,7 @@ mod tests {
         // Test: write n bytes, truncate to n-1, then write more.
         // The byte at position n-1 (after truncate and before new write) should be zero.
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         let fd = lfs.open_file("test.txt").expect("open");
 
@@ -3273,7 +3975,8 @@ mod tests {
         let log_end = BlockAddress::new(64);
         let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
-        let mut lfs = Lfs::new(device, 64).expect("create fs with sequential device");
+        let mut lfs = Lfs::new(device, 64, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("create fs with sequential device");
 
         let fd = lfs.open_file("test.txt").expect("open");
         lfs.write(fd, b"Hello, sequential world!")
@@ -3297,7 +4000,8 @@ mod tests {
         let log_end = BlockAddress::new(128);
         let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
-        let mut lfs = Lfs::new(device, 128).expect("create fs with sequential device");
+        let mut lfs = Lfs::new(device, 128, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("create fs with sequential device");
 
         for i in 0..5 {
             let name = format!("file{}.txt", i);
@@ -3328,7 +4032,8 @@ mod tests {
         let log_end = BlockAddress::new(256);
         let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
-        let mut lfs = Lfs::new(device, 256).expect("create fs with sequential device");
+        let mut lfs = Lfs::new(device, 256, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("create fs with sequential device");
 
         let fd = lfs.open_file("large.bin").expect("open");
         let large_data: Vec<u8> = (0..BLOCK_SIZE * 10).map(|i| (i % 256) as u8).collect();
@@ -3356,7 +4061,8 @@ mod tests {
         let log_end = BlockAddress::new(64);
         let device = SequentialBlockDevice::new(mem_device, log_start, log_end);
 
-        let mut lfs = Lfs::new(device, 64).expect("create fs with sequential device");
+        let mut lfs = Lfs::new(device, 64, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("create fs with sequential device");
 
         let fd = lfs.open_file("overwrite.txt").expect("open");
         lfs.write(fd, b"First version of data")
@@ -3464,7 +4170,7 @@ mod tests {
     #[test]
     fn remove_persists_across_restore() {
         let data = vec![0u8; 64 * BLOCK_SIZE];
-        let mut lfs = Lfs::from_vec(data).expect("create fs");
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
 
         let fd = lfs.open_file("persist.txt").expect("create file");
         lfs.write(fd, b"Will be removed").expect("write");
@@ -3473,7 +4179,7 @@ mod tests {
         lfs.remove("persist.txt").expect("remove");
 
         let data = lfs.into_inner();
-        let mut lfs2 = Lfs::open_vec(data).expect("restore fs");
+        let mut lfs2 = open_test_fs(data);
 
         let fd = lfs2
             .open_file("persist.txt")
@@ -3525,5 +4231,621 @@ mod tests {
         lfs.close(fd).expect("close");
 
         println!("Multiple file removal works correctly");
+    }
+
+    #[test]
+    fn hard_link_basic() {
+        let mut lfs = create_test_fs(64);
+
+        // Create original file
+        let fd = lfs.open_file("original.txt").expect("create file");
+        lfs.write(fd, b"Shared content").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create hard link
+        lfs.link("original.txt", "linked.txt")
+            .expect("create hard link");
+
+        // Read from original
+        let fd = lfs.open_file("original.txt").expect("open original");
+        let mut buf = vec![0u8; 14];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Shared content");
+        lfs.close(fd).expect("close");
+
+        // Read from link - should have same content
+        let fd = lfs.open_file("linked.txt").expect("open link");
+        let mut buf = vec![0u8; 14];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Shared content");
+        lfs.close(fd).expect("close");
+
+        println!("Hard link basic test passed");
+    }
+
+    #[test]
+    fn hard_link_shared_writes() {
+        let mut lfs = create_test_fs(64);
+
+        // Create original file
+        let fd = lfs.open_file("original.txt").expect("create file");
+        lfs.write(fd, b"Initial").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create hard link
+        lfs.link("original.txt", "linked.txt")
+            .expect("create hard link");
+
+        // Write via link
+        let fd = lfs.open_file("linked.txt").expect("open link");
+        lfs.seek(fd, 0).expect("seek");
+        lfs.write(fd, b"Updated").expect("write via link");
+        lfs.close(fd).expect("close");
+
+        // Read from original - should see the update
+        let fd = lfs.open_file("original.txt").expect("open original");
+        let mut buf = vec![0u8; 7];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Updated");
+        lfs.close(fd).expect("close");
+
+        println!("Hard link shared writes test passed");
+    }
+
+    #[test]
+    fn hard_link_remove_one() {
+        let mut lfs = create_test_fs(64);
+
+        // Create original file
+        let fd = lfs.open_file("original.txt").expect("create file");
+        lfs.write(fd, b"Persistent data").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create hard link
+        lfs.link("original.txt", "linked.txt")
+            .expect("create hard link");
+
+        // Remove original
+        lfs.remove("original.txt").expect("remove original");
+
+        // Link should still work
+        let fd = lfs.open_file("linked.txt").expect("open link");
+        let mut buf = vec![0u8; 15];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Persistent data");
+        lfs.close(fd).expect("close");
+
+        // Original is gone - opening it creates new empty file
+        let fd = lfs.open_file("original.txt").expect("open creates new");
+        let mut buf = vec![0u8; 10];
+        let n = lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(n, 0, "New file should be empty");
+        lfs.close(fd).expect("close");
+
+        println!("Hard link remove one test passed");
+    }
+
+    #[test]
+    fn hard_link_remove_both() {
+        let mut lfs = create_test_fs(64);
+
+        // Create original file
+        let fd = lfs.open_file("original.txt").expect("create file");
+        lfs.write(fd, b"Will be gone").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create hard link
+        lfs.link("original.txt", "linked.txt")
+            .expect("create hard link");
+
+        // Remove both links
+        lfs.remove("original.txt").expect("remove original");
+        lfs.remove("linked.txt").expect("remove link");
+
+        // Both are gone - opening creates new empty files
+        let fd = lfs.open_file("original.txt").expect("open original");
+        let n = lfs.read(fd, &mut [0u8; 10]).expect("read");
+        assert_eq!(n, 0);
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("linked.txt").expect("open link");
+        let n = lfs.read(fd, &mut [0u8; 10]).expect("read");
+        assert_eq!(n, 0);
+        lfs.close(fd).expect("close");
+
+        println!("Hard link remove both test passed");
+    }
+
+    #[test]
+    fn hard_link_to_directory_fails() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("mydir").expect("create directory");
+
+        let result = lfs.link("mydir", "mydir_link");
+        assert_eq!(result, Err(Error::IsDirectory));
+
+        println!("Hard link to directory correctly rejected");
+    }
+
+    #[test]
+    fn hard_link_dst_exists_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("src.txt").expect("create src");
+        lfs.write(fd, b"source").expect("write");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("dst.txt").expect("create dst");
+        lfs.write(fd, b"dest").expect("write");
+        lfs.close(fd).expect("close");
+
+        let result = lfs.link("src.txt", "dst.txt");
+        assert_eq!(result, Err(Error::AlreadyExists));
+
+        println!("Hard link to existing destination correctly rejected");
+    }
+
+    #[test]
+    fn hard_link_src_not_found_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let result = lfs.link("nonexistent.txt", "link.txt");
+        assert_eq!(result, Err(Error::NotFound));
+
+        println!("Hard link to nonexistent source correctly rejected");
+    }
+
+    #[test]
+    fn hard_link_multiple_links() {
+        let mut lfs = create_test_fs(64);
+
+        // Create original file
+        let fd = lfs.open_file("original.txt").expect("create file");
+        lfs.write(fd, b"Many links").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create multiple hard links
+        lfs.link("original.txt", "link1.txt").expect("create link1");
+        lfs.link("original.txt", "link2.txt").expect("create link2");
+        lfs.link("link1.txt", "link3.txt")
+            .expect("create link3 from link1");
+
+        // Remove original and link1
+        lfs.remove("original.txt").expect("remove original");
+        lfs.remove("link1.txt").expect("remove link1");
+
+        // link2 and link3 should still work
+        let fd = lfs.open_file("link2.txt").expect("open link2");
+        let mut buf = vec![0u8; 10];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Many links");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("link3.txt").expect("open link3");
+        let mut buf = vec![0u8; 10];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Many links");
+        lfs.close(fd).expect("close");
+
+        println!("Multiple hard links test passed");
+    }
+
+    #[test]
+    fn symlink_basic() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a file
+        let fd = lfs.open_file("target.txt").expect("create file");
+        lfs.write(fd, b"Target content").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create a symlink to it
+        lfs.symlink("target.txt", "link.txt")
+            .expect("create symlink");
+
+        // Read the symlink target
+        let target = lfs.readlink("link.txt").expect("readlink");
+        assert_eq!(target, "target.txt");
+
+        println!("Symlink basic test passed");
+    }
+
+    #[test]
+    fn symlink_follow_in_path() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a directory
+        lfs.mkdir("realdir").expect("create directory");
+
+        // Create a file in it
+        let fd = lfs.open_file("realdir/file.txt").expect("create file");
+        lfs.write(fd, b"File in realdir").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create a symlink to the directory
+        lfs.symlink("realdir", "linkdir")
+            .expect("create symlink to dir");
+
+        // Access file through the symlink
+        let fd = lfs.open_file("linkdir/file.txt").expect("open via symlink");
+        let mut buf = vec![0u8; 15];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"File in realdir");
+        lfs.close(fd).expect("close");
+
+        println!("Symlink follow in path test passed");
+    }
+
+    #[test]
+    fn symlink_to_nonexistent() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a symlink to a nonexistent target (this is allowed)
+        lfs.symlink("nonexistent.txt", "dangling.txt")
+            .expect("create dangling symlink");
+
+        // Read the symlink target
+        let target = lfs.readlink("dangling.txt").expect("readlink");
+        assert_eq!(target, "nonexistent.txt");
+
+        // Trying to open the file through the symlink should fail
+        // (once we implement symlink following in open_file)
+
+        println!("Symlink to nonexistent test passed");
+    }
+
+    #[test]
+    fn symlink_absolute_target() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a file
+        let fd = lfs.open_file("absolute_target.txt").expect("create file");
+        lfs.write(fd, b"Absolute target").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create a symlink with absolute path
+        lfs.symlink("/absolute_target.txt", "abs_link.txt")
+            .expect("create symlink with absolute target");
+
+        // Read the symlink target
+        let target = lfs.readlink("abs_link.txt").expect("readlink");
+        assert_eq!(target, "/absolute_target.txt");
+
+        println!("Symlink absolute target test passed");
+    }
+
+    #[test]
+    fn symlink_already_exists_fails() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a file
+        let fd = lfs.open_file("existing.txt").expect("create file");
+        lfs.close(fd).expect("close");
+
+        // Try to create symlink where file exists
+        let result = lfs.symlink("target", "existing.txt");
+        assert_eq!(result, Err(Error::AlreadyExists));
+
+        println!("Symlink already exists test passed");
+    }
+
+    #[test]
+    fn symlink_empty_target_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let result = lfs.symlink("", "link.txt");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        println!("Symlink empty target test passed");
+    }
+
+    #[test]
+    fn readlink_not_symlink_fails() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a regular file
+        let fd = lfs.open_file("regular.txt").expect("create file");
+        lfs.close(fd).expect("close");
+
+        // Try to readlink on a regular file
+        let result = lfs.readlink("regular.txt");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        // Create a directory
+        lfs.mkdir("mydir").expect("create dir");
+
+        // Try to readlink on a directory
+        let result = lfs.readlink("mydir");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        println!("Readlink not symlink test passed");
+    }
+
+    #[test]
+    fn symlink_chain() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a file
+        let fd = lfs.open_file("target.txt").expect("create file");
+        lfs.write(fd, b"Chain end").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Create a chain of symlinks
+        lfs.symlink("target.txt", "link1.txt")
+            .expect("create link1");
+        lfs.symlink("link1.txt", "link2.txt").expect("create link2");
+        lfs.symlink("link2.txt", "link3.txt").expect("create link3");
+
+        // Verify each readlink returns the immediate target
+        assert_eq!(lfs.readlink("link1.txt").unwrap(), "target.txt");
+        assert_eq!(lfs.readlink("link2.txt").unwrap(), "link1.txt");
+        assert_eq!(lfs.readlink("link3.txt").unwrap(), "link2.txt");
+
+        println!("Symlink chain test passed");
+    }
+
+    #[test]
+    fn create_directory() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("subdir").expect("create directory");
+        println!("Created directory 'subdir'");
+
+        // Creating the same directory again should fail
+        let result = lfs.mkdir("subdir");
+        assert_eq!(result, Err(Error::AlreadyExists));
+        println!("Creating duplicate directory correctly returns AlreadyExists");
+    }
+
+    #[test]
+    fn create_file_in_subdirectory() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("subdir").expect("create directory");
+
+        let fd = lfs
+            .open_file("subdir/test.txt")
+            .expect("create file in subdir");
+        lfs.write(fd, b"Hello from subdir!").expect("write");
+        lfs.close(fd).expect("close");
+        println!("Created file in subdirectory");
+
+        // Read it back
+        let fd = lfs.open_file("subdir/test.txt").expect("reopen file");
+        let mut buf = vec![0u8; 18];
+        let n = lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(n, 18);
+        assert_eq!(&buf, b"Hello from subdir!");
+        lfs.close(fd).expect("close");
+        println!("Read file from subdirectory successfully");
+    }
+
+    #[test]
+    fn nested_directories() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("a").expect("create a");
+        lfs.mkdir("a/b").expect("create a/b");
+        lfs.mkdir("a/b/c").expect("create a/b/c");
+        println!("Created nested directories a/b/c");
+
+        let fd = lfs.open_file("a/b/c/deep.txt").expect("create deep file");
+        lfs.write(fd, b"Deep file content").expect("write");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("a/b/c/deep.txt").expect("reopen");
+        let mut buf = vec![0u8; 17];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Deep file content");
+        lfs.close(fd).expect("close");
+        println!("Successfully wrote and read file in nested directory");
+    }
+
+    #[test]
+    fn rmdir_empty_directory() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("empty").expect("create directory");
+        lfs.rmdir("empty").expect("remove empty directory");
+        println!("Removed empty directory");
+
+        // Should be able to recreate it
+        lfs.mkdir("empty").expect("recreate directory");
+        println!("Recreated directory after removal");
+    }
+
+    #[test]
+    fn rmdir_nonempty_directory_fails() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("nonempty").expect("create directory");
+        let fd = lfs.open_file("nonempty/file.txt").expect("create file");
+        lfs.write(fd, b"content").expect("write");
+        lfs.close(fd).expect("close");
+
+        let result = lfs.rmdir("nonempty");
+        assert_eq!(result, Err(Error::DirectoryNotEmpty));
+        println!("rmdir on non-empty directory correctly fails");
+    }
+
+    #[test]
+    fn remove_file_in_subdirectory() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("dir").expect("create directory");
+        let fd = lfs.open_file("dir/file.txt").expect("create file");
+        lfs.write(fd, b"content").expect("write");
+        lfs.close(fd).expect("close");
+
+        lfs.remove("dir/file.txt").expect("remove file");
+        println!("Removed file from subdirectory");
+
+        // Now rmdir should work
+        lfs.rmdir("dir").expect("remove now-empty directory");
+        println!("Removed directory after removing its file");
+    }
+
+    #[test]
+    fn open_directory_as_file_fails() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("mydir").expect("create directory");
+
+        let result = lfs.open_file("mydir");
+        assert_eq!(result, Err(Error::IsDirectory));
+        println!("Opening directory as file correctly fails");
+    }
+
+    #[test]
+    fn remove_directory_with_remove_fails() {
+        let mut lfs = create_test_fs(64);
+
+        lfs.mkdir("mydir").expect("create directory");
+
+        let result = lfs.remove("mydir");
+        assert_eq!(result, Err(Error::IsDirectory));
+        println!("remove() on directory correctly returns IsDirectory");
+    }
+
+    #[test]
+    fn rmdir_on_file_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("file.txt").expect("create file");
+        lfs.close(fd).expect("close");
+
+        let result = lfs.rmdir("file.txt");
+        assert_eq!(result, Err(Error::NotADirectory));
+        println!("rmdir() on file correctly returns NotADirectory");
+    }
+
+    #[test]
+    fn path_with_nonexistent_parent_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let result = lfs.open_file("nonexistent/file.txt");
+        assert_eq!(result, Err(Error::NotFound));
+        println!("Creating file in nonexistent directory fails with NotFound");
+    }
+
+    #[test]
+    fn path_traversal_with_file_as_directory_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let fd = lfs.open_file("file.txt").expect("create file");
+        lfs.close(fd).expect("close");
+
+        let result = lfs.open_file("file.txt/subfile.txt");
+        assert_eq!(result, Err(Error::NotADirectory));
+        println!("Using file as directory in path correctly fails");
+    }
+
+    #[test]
+    fn subdirectory_persists_across_restore() {
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("create fs");
+
+        lfs.mkdir("persistent").expect("create directory");
+        let fd = lfs.open_file("persistent/data.txt").expect("create file");
+        lfs.write(fd, b"Persisted content").expect("write");
+        lfs.close(fd).expect("close");
+
+        let data = lfs.into_inner();
+        let mut lfs2 = open_test_fs(data);
+
+        let fd = lfs2
+            .open_file("persistent/data.txt")
+            .expect("open file after restore");
+        let mut buf = vec![0u8; 17];
+        lfs2.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Persisted content");
+        lfs2.close(fd).expect("close");
+        println!("Subdirectory and contents persist across restore");
+    }
+
+    #[test]
+    fn multiple_subdirectories() {
+        let mut lfs = create_test_fs(128);
+
+        lfs.mkdir("dir1").expect("create dir1");
+        lfs.mkdir("dir2").expect("create dir2");
+        lfs.mkdir("dir1/sub1").expect("create dir1/sub1");
+
+        let fd = lfs.open_file("dir1/file.txt").expect("create file in dir1");
+        lfs.write(fd, b"Dir1 file").expect("write");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("dir2/file.txt").expect("create file in dir2");
+        lfs.write(fd, b"Dir2 file").expect("write");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs
+            .open_file("dir1/sub1/file.txt")
+            .expect("create file in dir1/sub1");
+        lfs.write(fd, b"Nested file").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Verify all files
+        let fd = lfs.open_file("dir1/file.txt").expect("open");
+        let mut buf = vec![0u8; 9];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Dir1 file");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("dir2/file.txt").expect("open");
+        let mut buf = vec![0u8; 9];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Dir2 file");
+        lfs.close(fd).expect("close");
+
+        let fd = lfs.open_file("dir1/sub1/file.txt").expect("open");
+        let mut buf = vec![0u8; 11];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"Nested file");
+        lfs.close(fd).expect("close");
+
+        println!("Multiple subdirectories work correctly");
+    }
+
+    #[test]
+    fn leading_slash_in_path() {
+        let mut lfs = create_test_fs(64);
+
+        // Paths with leading slash should work the same as without
+        lfs.mkdir("/subdir").expect("create /subdir");
+
+        let fd = lfs.open_file("/subdir/file.txt").expect("create file");
+        lfs.write(fd, b"test").expect("write");
+        lfs.close(fd).expect("close");
+
+        // Access without leading slash should work too
+        let fd = lfs
+            .open_file("subdir/file.txt")
+            .expect("open without leading slash");
+        let mut buf = vec![0u8; 4];
+        lfs.read(fd, &mut buf).expect("read");
+        assert_eq!(&buf, b"test");
+        lfs.close(fd).expect("close");
+        println!("Leading slash in path handled correctly");
+    }
+
+    #[test]
+    fn empty_path_fails() {
+        let mut lfs = create_test_fs(64);
+
+        let result = lfs.open_file("");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        let result = lfs.mkdir("");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        let result = lfs.remove("");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        let result = lfs.rmdir("");
+        assert_eq!(result, Err(Error::InvalidArgument));
+
+        println!("Empty path correctly rejected");
     }
 }

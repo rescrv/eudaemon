@@ -11,6 +11,7 @@ use proptest::prelude::*;
 use proptest::test_runner::Config;
 
 use synfs::BlockAddress;
+use synfs::DeviceId;
 use synfs::Error;
 use synfs::FileDescriptor;
 use synfs::Lfs;
@@ -28,6 +29,10 @@ const MAX_SEEK_POS: u64 = BLOCK_SIZE as u64 * 8;
 
 /// Number of blocks in the test filesystem.
 const TEST_FS_BLOCKS: usize = 256;
+
+fn zero_time() -> i64 {
+    0
+}
 
 /////////////////////////////////////////////// FsOp ///////////////////////////////////////////////////
 
@@ -251,12 +256,12 @@ impl ReferenceFs {
 /// Uses `SequentialBlockDevice` to enforce that all block writes happen in strictly
 /// sequential order, verifying a key property of log-structured filesystems.
 struct LfsAdapter {
-    lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>>,
+    lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>, fn() -> i64>,
     open_fds: Vec<Option<FileDescriptor>>,
 }
 
 impl LfsAdapter {
-    fn new(lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>>) -> Self {
+    fn new(lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>, fn() -> i64>) -> Self {
         Self {
             lfs,
             open_fds: Vec::new(),
@@ -526,7 +531,13 @@ fn run_ops(ops: &[FsOp]) -> (LfsAdapter, ReferenceFs) {
     let log_start = BlockAddress::new(1);
     let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
     let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-    let lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+    let lfs = Lfs::new(
+        seq_device,
+        TEST_FS_BLOCKS as u64,
+        DeviceId::new(1),
+        zero_time as fn() -> i64,
+    )
+    .expect("Failed to create LFS");
     let max_file_size = TEST_FS_BLOCKS * BLOCK_SIZE / 10;
 
     let mut lfs_adapter = LfsAdapter::new(lfs);
@@ -551,7 +562,8 @@ proptest! {
 
         // Close all open fds in lfs so we can reopen and verify
         let data = lfs.into_inner();
-        let mut lfs_verify = Lfs::open_vec(data).expect("Failed to reopen LFS for verification");
+        let mut lfs_verify = Lfs::open_vec(data, DeviceId::new(1), zero_time)
+            .expect("Failed to reopen LFS for verification");
 
         // Verify each file's contents match the reference
         // Only check files that are still in the directory (not unlinked)
@@ -582,7 +594,13 @@ proptest! {
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
         let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+        let mut lfs = Lfs::new(
+            seq_device,
+            TEST_FS_BLOCKS as u64,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("Failed to create LFS");
 
         // Create file and write initial data
         let fd = lfs.open_file(&name).expect("Failed to open file");
@@ -626,7 +644,13 @@ proptest! {
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
         let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+        let mut lfs = Lfs::new(
+            seq_device,
+            TEST_FS_BLOCKS as u64,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("Failed to create LFS");
 
         // Create file and write initial data
         let fd = lfs.open_file(&name).expect("Failed to open file");
@@ -676,7 +700,13 @@ proptest! {
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
         let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+        let mut lfs = Lfs::new(
+            seq_device,
+            TEST_FS_BLOCKS as u64,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("Failed to create LFS");
 
         // Open file twice
         let fd1 = lfs.open_file(&name).expect("Failed to open file first time");
@@ -736,7 +766,13 @@ proptest! {
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
         let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+        let mut lfs = Lfs::new(
+            seq_device,
+            TEST_FS_BLOCKS as u64,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("Failed to create LFS");
 
         // Create and write initial data
         let fd = lfs.open_file(&name).expect("Failed to open file");
@@ -753,7 +789,8 @@ proptest! {
 
         // Persist and restore
         let raw_data = lfs.into_device().into_inner().into_inner();
-        let mut lfs2 = Lfs::open_vec(raw_data).expect("Failed to restore LFS");
+        let mut lfs2 = Lfs::open_vec(raw_data, DeviceId::new(1), zero_time)
+            .expect("Failed to restore LFS");
 
         // Verify the file has the new data (not the old)
         let fd = lfs2.open_file(&name).expect("Failed to open after restore");
@@ -783,7 +820,13 @@ proptest! {
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
         let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+        let mut lfs = Lfs::new(
+            seq_device,
+            TEST_FS_BLOCKS as u64,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("Failed to create LFS");
 
         // Create first file
         let fd1 = lfs.open_file(&name1).expect("Failed to open file1");
@@ -824,7 +867,13 @@ proptest! {
         let log_start = BlockAddress::new(1);
         let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
         let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+        let mut lfs = Lfs::new(
+            seq_device,
+            TEST_FS_BLOCKS as u64,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("Failed to create LFS");
 
         // First write
         let fd = lfs.open_file(&name).expect("Failed to open");
@@ -879,7 +928,8 @@ proptest! {
 
         let data = lfs.into_inner();
 
-        let mut restored_lfs = Lfs::open_vec(data).expect("Failed to restore LFS");
+        let mut restored_lfs = Lfs::open_vec(data, DeviceId::new(1), zero_time)
+            .expect("Failed to restore LFS");
 
         // Only check files that are still in the directory (not unlinked)
         for (name, &ino) in &reference.directory {
