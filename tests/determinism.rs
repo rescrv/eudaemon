@@ -570,6 +570,298 @@ proptest! {
         }
     }
 
+    /// Tests that removing a file allows recreating it with new content.
+    #[test]
+    fn remove_and_recreate(
+        name in filename_strategy(),
+        data1 in data_strategy(),
+        data2 in data_strategy()
+    ) {
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+
+        // Create file and write initial data
+        let fd = lfs.open_file(&name).expect("Failed to open file");
+        if !data1.is_empty() {
+            let _ = lfs.write(fd, &data1); // May fail with NoSpace, that's ok
+        }
+        lfs.close(fd).expect("Failed to close");
+
+        // Remove the file
+        let _ = lfs.remove(&name); // May fail if file wasn't created
+
+        // Recreate file with new data
+        let fd = lfs.open_file(&name).expect("Failed to recreate file");
+        if !data2.is_empty() {
+            let _ = lfs.write(fd, &data2); // May fail with NoSpace
+        }
+        lfs.seek(fd, 0).expect("Failed to seek");
+
+        // Read back and verify
+        let size = lfs.file_size(fd).expect("Failed to get size");
+        let mut buf = vec![0u8; size as usize];
+        let n = lfs.read(fd, &mut buf).expect("Failed to read");
+
+        // File should contain data2 (or be empty if write failed)
+        if n > 0 {
+            prop_assert_eq!(&buf[..n], &data2[..n], "Data mismatch after remove and recreate");
+        }
+
+        lfs.close(fd).expect("Failed to close");
+    }
+
+    /// Tests UNIX unlink semantics: file remains accessible via open FD after remove.
+    #[test]
+    fn remove_while_open_then_write_read(
+        name in filename_strategy(),
+        data1 in data_strategy(),
+        data2 in prop::collection::vec(any::<u8>(), 1..1000)
+    ) {
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+
+        // Create file and write initial data
+        let fd = lfs.open_file(&name).expect("Failed to open file");
+        let wrote_initial = if !data1.is_empty() {
+            lfs.write(fd, &data1).is_ok()
+        } else {
+            true
+        };
+
+        // Remove the file while it's still open
+        let _ = lfs.remove(&name);
+
+        if wrote_initial {
+            // Should still be able to read via the open FD
+            lfs.seek(fd, 0).expect("Failed to seek");
+            let mut buf = vec![0u8; data1.len()];
+            let n = lfs.read(fd, &mut buf).expect("Failed to read from unlinked file");
+            if n > 0 && !data1.is_empty() {
+                prop_assert_eq!(&buf[..n], &data1[..n], "Data mismatch after unlink");
+            }
+
+            // Should still be able to write via the open FD
+            let write_result = lfs.write(fd, &data2);
+            if write_result.is_ok() {
+                // Verify the write
+                lfs.seek(fd, data1.len() as u64).expect("Failed to seek");
+                let mut buf2 = vec![0u8; data2.len()];
+                let n2 = lfs.read(fd, &mut buf2).expect("Failed to read after write");
+                if n2 > 0 {
+                    prop_assert_eq!(&buf2[..n2], &data2[..n2], "Data mismatch after write to unlinked");
+                }
+            }
+        }
+
+        lfs.close(fd).expect("Failed to close");
+    }
+
+    /// Tests that multiple FDs to a removed file all continue to work.
+    #[test]
+    fn remove_with_multiple_open_fds(
+        name in filename_strategy(),
+        data1 in prop::collection::vec(any::<u8>(), 1..1000),
+        data2 in prop::collection::vec(any::<u8>(), 1..1000)
+    ) {
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+
+        // Open file twice
+        let fd1 = lfs.open_file(&name).expect("Failed to open file first time");
+        let fd2 = lfs.open_file(&name).expect("Failed to open file second time");
+
+        // Write via first FD
+        let wrote = lfs.write(fd1, &data1).is_ok();
+
+        // Remove the file
+        lfs.remove(&name).expect("Failed to remove file");
+
+        if wrote {
+            // Both FDs should still be able to read
+            lfs.seek(fd1, 0).expect("Failed to seek fd1");
+            let mut buf1 = vec![0u8; data1.len()];
+            let n1 = lfs.read(fd1, &mut buf1).expect("Failed to read via fd1");
+            prop_assert_eq!(&buf1[..n1], &data1[..n1], "Data mismatch via fd1");
+
+            lfs.seek(fd2, 0).expect("Failed to seek fd2");
+            let mut buf2 = vec![0u8; data1.len()];
+            let n2 = lfs.read(fd2, &mut buf2).expect("Failed to read via fd2");
+            prop_assert_eq!(&buf2[..n2], &data1[..n2], "Data mismatch via fd2");
+
+            // Write via second FD, read via first
+            if lfs.write(fd2, &data2).is_ok() {
+                lfs.seek(fd1, data1.len() as u64).expect("Failed to seek fd1");
+                let mut buf3 = vec![0u8; data2.len()];
+                let n3 = lfs.read(fd1, &mut buf3).expect("Failed to read new data via fd1");
+                if n3 > 0 {
+                    prop_assert_eq!(&buf3[..n3], &data2[..n3], "Cross-FD data mismatch");
+                }
+            }
+        }
+
+        // Close first FD, second should still work
+        lfs.close(fd1).expect("Failed to close fd1");
+
+        if wrote {
+            lfs.seek(fd2, 0).expect("Failed to seek fd2 after fd1 close");
+            let mut buf = vec![0u8; data1.len()];
+            let n = lfs.read(fd2, &mut buf).expect("Failed to read after fd1 close");
+            prop_assert_eq!(&buf[..n], &data1[..n], "Data mismatch after closing fd1");
+        }
+
+        lfs.close(fd2).expect("Failed to close fd2");
+    }
+
+    /// Tests remove followed by immediate recreation with writes.
+    #[test]
+    fn remove_recreate_write_persists(
+        name in filename_strategy(),
+        data1 in prop::collection::vec(any::<u8>(), 1..500),
+        data2 in prop::collection::vec(any::<u8>(), 1..500)
+    ) {
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+
+        // Create and write initial data
+        let fd = lfs.open_file(&name).expect("Failed to open file");
+        let _ = lfs.write(fd, &data1);
+        lfs.close(fd).expect("Failed to close");
+
+        // Remove file
+        let _ = lfs.remove(&name);
+
+        // Recreate and write new data
+        let fd = lfs.open_file(&name).expect("Failed to recreate file");
+        let wrote = lfs.write(fd, &data2).is_ok();
+        lfs.close(fd).expect("Failed to close");
+
+        // Persist and restore
+        let raw_data = lfs.into_device().into_inner().into_inner();
+        let mut lfs2 = Lfs::open_vec(raw_data).expect("Failed to restore LFS");
+
+        // Verify the file has the new data (not the old)
+        let fd = lfs2.open_file(&name).expect("Failed to open after restore");
+        let size = lfs2.file_size(fd).expect("Failed to get size");
+        let mut buf = vec![0u8; size as usize];
+        let n = lfs2.read(fd, &mut buf).expect("Failed to read");
+
+        if wrote && n > 0 {
+            prop_assert_eq!(&buf[..n], &data2[..n], "Data should be new content after remove/recreate");
+        }
+
+        lfs2.close(fd).expect("Failed to close");
+    }
+
+    /// Tests that removing a file and then writing to other files works correctly.
+    #[test]
+    fn remove_then_write_other_files(
+        name1 in filename_strategy(),
+        name2 in "[b-z]{1,8}\\.txt",  // Different pattern to avoid collision
+        data1 in prop::collection::vec(any::<u8>(), 1..500),
+        data2 in prop::collection::vec(any::<u8>(), 1..500)
+    ) {
+        prop_assume!(name1 != name2);
+
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+
+        // Create first file
+        let fd1 = lfs.open_file(&name1).expect("Failed to open file1");
+        let _ = lfs.write(fd1, &data1);
+        lfs.close(fd1).expect("Failed to close file1");
+
+        // Create second file
+        let fd2 = lfs.open_file(&name2).expect("Failed to open file2");
+        let wrote2 = lfs.write(fd2, &data2).is_ok();
+        lfs.close(fd2).expect("Failed to close file2");
+
+        // Remove first file
+        let _ = lfs.remove(&name1);
+
+        // Second file should still be intact
+        let fd2 = lfs.open_file(&name2).expect("Failed to reopen file2");
+        lfs.seek(fd2, 0).expect("Failed to seek");
+        let mut buf = vec![0u8; data2.len()];
+        let n = lfs.read(fd2, &mut buf).expect("Failed to read file2");
+
+        if wrote2 && n > 0 {
+            prop_assert_eq!(&buf[..n], &data2[..n], "File2 data corrupted after removing file1");
+        }
+
+        lfs.close(fd2).expect("Failed to close");
+    }
+
+    /// Tests sequence: write, remove, write to same filename, read.
+    #[test]
+    fn write_remove_write_read_same_file(
+        name in filename_strategy(),
+        data1 in prop::collection::vec(any::<u8>(), 100..500),
+        data2 in prop::collection::vec(any::<u8>(), 100..500),
+        data3 in prop::collection::vec(any::<u8>(), 100..500)
+    ) {
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mem_device = MemoryBlockDevice::new(data);
+        let log_start = BlockAddress::new(1);
+        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+        let mut lfs = Lfs::new(seq_device, TEST_FS_BLOCKS as u64).expect("Failed to create LFS");
+
+        // First write
+        let fd = lfs.open_file(&name).expect("Failed to open");
+        let _ = lfs.write(fd, &data1);
+        lfs.close(fd).expect("Failed to close");
+
+        // Remove
+        let _ = lfs.remove(&name);
+
+        // Second write (to recreated file)
+        let fd = lfs.open_file(&name).expect("Failed to reopen");
+        let wrote2 = lfs.write(fd, &data2).is_ok();
+        lfs.close(fd).expect("Failed to close");
+
+        // Third write (append)
+        let fd = lfs.open_file(&name).expect("Failed to open again");
+        lfs.seek(fd, data2.len() as u64).expect("Failed to seek");
+        let wrote3 = lfs.write(fd, &data3).is_ok();
+        lfs.close(fd).expect("Failed to close");
+
+        // Read and verify
+        let fd = lfs.open_file(&name).expect("Failed to open for read");
+        let size = lfs.file_size(fd).expect("Failed to get size");
+        let mut buf = vec![0u8; size as usize];
+        let n = lfs.read(fd, &mut buf).expect("Failed to read");
+
+        if wrote2 && wrote3 {
+            // Should have data2 + data3, NOT data1
+            let expected_size = data2.len() + data3.len();
+            prop_assert_eq!(n, expected_size, "Size mismatch");
+            prop_assert_eq!(&buf[..data2.len()], &data2[..], "First part should be data2");
+            prop_assert_eq!(&buf[data2.len()..n], &data3[..], "Second part should be data3");
+        }
+
+        lfs.close(fd).expect("Failed to close");
+    }
+
     #[test]
     fn deterministic_replay(ops in ops_strategy()) {
         let (lfs1, _) = run_ops(&ops);

@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 
 [dev-dependencies]
+guacamole = "0.14.0"
 proptest = "1.4"
