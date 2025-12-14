@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
+use crate::{
+    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, io_error_message,
+};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -336,21 +338,6 @@ fn is_dot_or_dotdot(path: &str) -> bool {
 /// Check if an error is "not found".
 fn is_not_found(e: &Error) -> bool {
     matches!(e, Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
-}
-
-/// Extract a user-friendly message from an Error.
-fn io_error_message(e: &Error) -> String {
-    match e {
-        Error::Io(io_err) => match io_err.kind() {
-            std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
-            std::io::ErrorKind::DirectoryNotEmpty => "Directory not empty".to_string(),
-            std::io::ErrorKind::NotADirectory => "Not a directory".to_string(),
-            std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
-            std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
-            _ => io_err.to_string(),
-        },
-        _ => "Unknown error".to_string(),
-    }
 }
 
 #[cfg(test)]

@@ -2035,6 +2035,62 @@ pub fn format_human_size_with_base(size: u64, base: u64) -> String {
     }
 }
 
+/// Extract a user-friendly message from an Error.
+///
+/// Converts common I/O error kinds to human-readable strings like
+/// "No such file or directory" instead of the default Rust error messages.
+pub fn io_error_message(e: &Error) -> String {
+    match e {
+        Error::Io(io_err) => match io_err.kind() {
+            std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
+            std::io::ErrorKind::DirectoryNotEmpty => "Directory not empty".to_string(),
+            std::io::ErrorKind::NotADirectory => "Not a directory".to_string(),
+            std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
+            std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
+            std::io::ErrorKind::AlreadyExists => "File exists".to_string(),
+            _ => io_err.to_string(),
+        },
+        Error::Shvar(e) => format!("{:?}", e),
+        Error::EmptyCommand => "empty command".to_string(),
+        Error::UnknownBinary(b) => format!("unknown binary: {}", b),
+    }
+}
+
+/// Parse a size string that may include suffixes (b, k, m, g).
+///
+/// Supported suffixes (case-insensitive):
+/// - `b`: 512-byte blocks
+/// - `k`: kilobytes (1024 bytes)
+/// - `m`: megabytes (1024*1024 bytes)
+/// - `g`: gigabytes (1024*1024*1024 bytes)
+///
+/// Returns `None` if the string is empty, contains invalid characters,
+/// or would overflow when multiplied by the suffix.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (num_str, multiplier) =
+        if let Some(prefix) = s.strip_suffix(|c: char| c.is_ascii_alphabetic()) {
+            let suffix = s.chars().last()?;
+            let mult = match suffix.to_ascii_lowercase() {
+                'b' => 512,
+                'k' => 1024,
+                'm' => 1024 * 1024,
+                'g' => 1024 * 1024 * 1024,
+                _ => return None,
+            };
+            (prefix, mult)
+        } else {
+            (s, 1)
+        };
+
+    let num: u64 = num_str.parse().ok()?;
+    num.checked_mul(multiplier)
+}
+
 /// Test utilities for creating mock environments.
 #[cfg(test)]
 pub mod test_utils {

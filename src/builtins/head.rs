@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout, parse_size};
 
 /// Options for the head command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -39,32 +39,6 @@ fn build_options() -> Options {
     opts.optflag("", "silent", "Same as -q.");
     opts.optflag("v", "verbose", "Prepend each file with a header.");
     opts
-}
-
-/// Parse a size string that may include suffixes (k, m, g, etc.).
-fn parse_size(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    let (num_str, multiplier) =
-        if let Some(prefix) = s.strip_suffix(|c: char| c.is_ascii_alphabetic()) {
-            let suffix = s.chars().last()?;
-            let mult = match suffix.to_ascii_lowercase() {
-                'b' => 512,
-                'k' => 1024,
-                'm' => 1024 * 1024,
-                'g' => 1024 * 1024 * 1024,
-                _ => return None,
-            };
-            (prefix, mult)
-        } else {
-            (s, 1)
-        };
-
-    let num: u64 = num_str.parse().ok()?;
-    num.checked_mul(multiplier)
 }
 
 /// The head builtin: display first lines of a file.
@@ -264,6 +238,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse_size;
     use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================

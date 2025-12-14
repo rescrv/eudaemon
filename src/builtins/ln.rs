@@ -2,17 +2,9 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
-
-/// Convert an Error to a human-readable message.
-fn error_message(err: &Error) -> String {
-    match err {
-        Error::Io(io_err) => io_err.to_string(),
-        Error::Shvar(e) => format!("{:?}", e),
-        Error::EmptyCommand => "empty command".to_string(),
-        Error::UnknownBinary(b) => format!("unknown binary: {}", b),
-    }
-}
+use crate::{
+    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, io_error_message,
+};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -218,13 +210,13 @@ where
                     env.stderr.write_line(&format!(
                         "ln: {}: {}",
                         target_path,
-                        error_message(&e)
+                        io_error_message(&e)
                     ))?;
                     return Ok(ExitCode::from(1));
                 }
             } else if let Err(e) = env.fs.unlink(&target_path) {
                 env.stderr
-                    .write_line(&format!("ln: {}: {}", target_path, error_message(&e)))?;
+                    .write_line(&format!("ln: {}: {}", target_path, io_error_message(&e)))?;
                 return Ok(ExitCode::from(1));
             }
         } else {
@@ -243,7 +235,7 @@ where
 
     if let Err(e) = result {
         env.stderr
-            .write_line(&format!("ln: {}: {}", target_path, error_message(&e)))?;
+            .write_line(&format!("ln: {}: {}", target_path, io_error_message(&e)))?;
         return Ok(ExitCode::from(1));
     }
 
