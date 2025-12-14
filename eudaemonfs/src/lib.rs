@@ -209,6 +209,103 @@ impl<D: BlockDevice> BlockDevice for SequentialBlockDevice<D> {
     }
 }
 
+/////////////////////////////////////////// FileBlockDevice ////////////////////////////////////////////
+
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Mutex;
+
+/// A block device backed by a file on disk.
+///
+/// This implementation uses interior mutability via `Mutex` to allow the
+/// `read_block` method to work with `&self` while still performing file I/O.
+pub struct FileBlockDevice {
+    file: Mutex<File>,
+    total_blocks: u64,
+}
+
+impl FileBlockDevice {
+    /// Creates a new file block device, opening an existing file.
+    ///
+    /// The file must already exist. The total number of blocks is computed
+    /// from the file size.
+    pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let metadata = file.metadata()?;
+        let total_blocks = metadata.len() / BLOCK_SIZE as u64;
+        Ok(Self {
+            file: Mutex::new(file),
+            total_blocks,
+        })
+    }
+
+    /// Creates a new file block device, creating the file if it doesn't exist.
+    ///
+    /// If the file doesn't exist, it is created with the specified size.
+    /// If the file exists, it is opened and the size parameter is ignored.
+    pub fn create<P: AsRef<Path>>(path: P, total_blocks: u64) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        if path.exists() {
+            Self::open(path)
+        } else {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)?;
+            let size = total_blocks * BLOCK_SIZE as u64;
+            file.set_len(size)?;
+            Ok(Self {
+                file: Mutex::new(file),
+                total_blocks,
+            })
+        }
+    }
+
+    /// Returns the total number of blocks in the device.
+    pub fn total_blocks(&self) -> u64 {
+        self.total_blocks
+    }
+
+    /// Syncs all pending writes to disk.
+    pub fn sync(&self) -> std::io::Result<()> {
+        let file = self.file.lock().unwrap();
+        file.sync_all()
+    }
+}
+
+impl BlockDevice for FileBlockDevice {
+    fn read_block(&self, block: BlockAddress, buf: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        if block.as_u64() >= self.total_blocks {
+            return Err(Error::InvalidOffset);
+        }
+        let offset = block.byte_offset() as u64;
+        let mut file = self.file.lock().unwrap();
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|_| Error::CorruptFilesystem)?;
+        file.read_exact(buf).map_err(|_| Error::CorruptFilesystem)?;
+        Ok(())
+    }
+
+    fn write_block(&mut self, block: BlockAddress, buf: &[u8; BLOCK_SIZE]) -> Result<()> {
+        if block.as_u64() >= self.total_blocks {
+            return Err(Error::InvalidOffset);
+        }
+        let offset = block.byte_offset() as u64;
+        let mut file = self.file.lock().unwrap();
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|_| Error::CorruptFilesystem)?;
+        file.write_all(buf).map_err(|_| Error::CorruptFilesystem)?;
+        Ok(())
+    }
+}
+
 /////////////////////////////////////////////// InodeType //////////////////////////////////////////////
 
 /// The type of an inode (file, directory, or symlink).
@@ -5594,5 +5691,193 @@ mod tests {
             msg
         );
         println!("Error message preserved in conversion: {}", msg);
+    }
+
+    #[test]
+    fn file_block_device_create_and_write() {
+        let test_file = format!("test_file_block_device_{}.dat", std::process::id());
+        let total_blocks = 64;
+
+        // Create a new file block device
+        let mut device =
+            FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+        assert_eq!(device.total_blocks(), total_blocks);
+        println!(
+            "Created FileBlockDevice with {} blocks",
+            device.total_blocks()
+        );
+
+        // Write some data
+        let mut write_buf = [0u8; BLOCK_SIZE];
+        write_buf[0..5].copy_from_slice(b"Hello");
+        device
+            .write_block(BlockAddress::new(1), &write_buf)
+            .expect("write block");
+        println!("Wrote block to file block device");
+
+        // Read it back
+        let mut read_buf = [0u8; BLOCK_SIZE];
+        device
+            .read_block(BlockAddress::new(1), &mut read_buf)
+            .expect("read block");
+        assert_eq!(&read_buf[0..5], b"Hello");
+        println!("Read back data from file block device");
+
+        // Sync to ensure it's on disk
+        device.sync().expect("sync");
+        println!("Synced file block device");
+
+        // Clean up
+        std::fs::remove_file(&test_file).expect("remove test file");
+        println!("File block device test passed");
+    }
+
+    #[test]
+    fn file_block_device_open_existing() {
+        let test_file = format!("test_file_block_device_open_{}.dat", std::process::id());
+        let total_blocks = 32;
+
+        // First, create a device and write some data
+        {
+            let mut device =
+                FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+            let mut write_buf = [0u8; BLOCK_SIZE];
+            write_buf[0..7].copy_from_slice(b"Persist");
+            device
+                .write_block(BlockAddress::new(5), &write_buf)
+                .expect("write block");
+            device.sync().expect("sync");
+        }
+
+        // Now open the existing file
+        let device = FileBlockDevice::open(&test_file).expect("open existing file");
+        assert_eq!(device.total_blocks(), total_blocks);
+        println!("Opened existing FileBlockDevice");
+
+        // Read back the data
+        let mut read_buf = [0u8; BLOCK_SIZE];
+        device
+            .read_block(BlockAddress::new(5), &mut read_buf)
+            .expect("read block");
+        assert_eq!(&read_buf[0..7], b"Persist");
+        println!("Data persisted across open");
+
+        // Clean up
+        std::fs::remove_file(&test_file).expect("remove test file");
+        println!("File block device open test passed");
+    }
+
+    #[test]
+    fn file_block_device_invalid_offset() {
+        let test_file = format!("test_file_block_device_invalid_{}.dat", std::process::id());
+        let total_blocks = 16;
+
+        let mut device =
+            FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+
+        // Try to read beyond the end
+        let mut buf = [0u8; BLOCK_SIZE];
+        let result = device.read_block(BlockAddress::new(total_blocks), &mut buf);
+        assert_eq!(result, Err(Error::InvalidOffset));
+        println!("Read beyond end correctly rejected");
+
+        // Try to write beyond the end
+        let result = device.write_block(BlockAddress::new(total_blocks + 1), &buf);
+        assert_eq!(result, Err(Error::InvalidOffset));
+        println!("Write beyond end correctly rejected");
+
+        // Clean up
+        std::fs::remove_file(&test_file).expect("remove test file");
+        println!("File block device invalid offset test passed");
+    }
+
+    #[test]
+    fn file_block_device_with_lfs() {
+        let test_file = format!("test_lfs_file_device_{}.dat", std::process::id());
+        let total_blocks = 64;
+
+        // Create filesystem on file block device
+        {
+            let device =
+                FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+            let mut lfs = Lfs::new(
+                device,
+                total_blocks,
+                DeviceId::new(42),
+                zero_time as fn() -> i64,
+            )
+            .expect("create filesystem");
+
+            let fd = lfs.open_file("hello.txt").expect("create file");
+            lfs.write(fd, b"Hello from FileBlockDevice!")
+                .expect("write");
+            lfs.close(fd).expect("close");
+
+            lfs.device().sync().expect("sync");
+            println!("Created filesystem and wrote file on FileBlockDevice");
+        }
+
+        // Reopen and verify
+        {
+            let device = FileBlockDevice::open(&test_file).expect("open file device");
+            let mut lfs = Lfs::open(
+                device,
+                total_blocks,
+                DeviceId::new(42),
+                zero_time as fn() -> i64,
+            )
+            .expect("open filesystem");
+
+            let fd = lfs.open_file("hello.txt").expect("open file");
+            let mut buf = vec![0u8; 27];
+            lfs.read(fd, &mut buf).expect("read");
+            assert_eq!(&buf, b"Hello from FileBlockDevice!");
+            lfs.close(fd).expect("close");
+            println!("Reopened filesystem and verified data");
+        }
+
+        // Clean up
+        std::fs::remove_file(&test_file).expect("remove test file");
+        println!("LFS with FileBlockDevice test passed");
+    }
+
+    #[test]
+    fn file_block_device_create_opens_existing() {
+        let test_file = format!(
+            "test_file_block_device_create_open_{}.dat",
+            std::process::id()
+        );
+
+        // First, create a device and write some data
+        {
+            let mut device = FileBlockDevice::create(&test_file, 32).expect("create file device");
+            let mut write_buf = [0u8; BLOCK_SIZE];
+            write_buf[0..4].copy_from_slice(b"Test");
+            device
+                .write_block(BlockAddress::new(0), &write_buf)
+                .expect("write block");
+            device.sync().expect("sync");
+        }
+
+        // Call create again - should open existing file (not truncate)
+        let device = FileBlockDevice::create(&test_file, 64).expect("create on existing");
+        assert_eq!(
+            device.total_blocks(),
+            32,
+            "Should use existing file's size, not requested size"
+        );
+        println!("Create on existing file opens it without truncation");
+
+        // Verify data is still there
+        let mut read_buf = [0u8; BLOCK_SIZE];
+        device
+            .read_block(BlockAddress::new(0), &mut read_buf)
+            .expect("read block");
+        assert_eq!(&read_buf[0..4], b"Test");
+        println!("Existing data preserved when create opens existing file");
+
+        // Clean up
+        std::fs::remove_file(&test_file).expect("remove test file");
+        println!("File block device create opens existing test passed");
     }
 }
