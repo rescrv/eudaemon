@@ -35,6 +35,7 @@ mod test;
 mod touch;
 mod tr;
 mod truncate;
+mod uname;
 mod unexpand;
 mod uniq;
 mod wc;
@@ -90,6 +91,7 @@ where
         "sh" | "/bin/sh" => Ok(sh::bin),
         "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
+        "uname" | "/usr/bin/uname" => Ok(uname::bin),
         "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "unlink" | "/bin/unlink" => Ok(rm::bin),
