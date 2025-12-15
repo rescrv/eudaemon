@@ -216,6 +216,7 @@ fn emit_tabs_and_spaces(output: &mut String, ocol: &mut usize, dcol: usize, tab_
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestFilesystemExt;
     use crate::test_utils::make_test_env_with_stdin;
 
     // ========================================================================

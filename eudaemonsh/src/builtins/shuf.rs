@@ -306,6 +306,7 @@ fn generate_output(lines: &[String], opts: &ShufOptions) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestFilesystemExt;
     use crate::test_utils::make_test_env_with_stdin;
     use std::collections::HashSet;
 

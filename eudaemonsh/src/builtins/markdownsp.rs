@@ -10,6 +10,7 @@ use lispdown::{Parser, Vm, register_markdown_builtins};
 
 use crate::FileType;
 use crate::Filesystem as EuFilesystem;
+
 use crate::{DirEntry, Environment, Error, ExitCode, FsError, Stderr, Stdin, Stdout, resolve_path};
 
 fn build_options() -> Options {
@@ -495,6 +496,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestFilesystemExt;
     use crate::test_utils::make_test_env;
 
     #[test]

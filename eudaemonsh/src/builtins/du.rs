@@ -363,6 +363,7 @@ fn parse_block_size(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestFilesystemExt;
     use crate::test_utils::make_test_env;
 
     #[test]

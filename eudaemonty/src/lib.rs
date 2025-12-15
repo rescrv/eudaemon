@@ -357,6 +357,246 @@ pub trait Filesystem {
     fn list_markdown_files(&self) -> Result<Vec<String>, Error>;
 }
 
+///////////////////////////////////////// MutFilesystem ////////////////////////////////////////////
+
+/// A trait for filesystem operations that require mutable access.
+///
+/// This trait mirrors [`Filesystem`] but uses `&mut self` instead of `&self`,
+/// making it suitable for filesystems that need interior mutability without
+/// synchronization primitives. Use [`Filesystem`] for thread-safe access patterns.
+pub trait MutFilesystem {
+    /// Returns the root directory path (for display purposes).
+    fn root(&self) -> Path<'_>;
+    /// Read a file and return its contents as a string.
+    fn read_to_string(&mut self, path: &str) -> Result<String, Error>;
+    /// Check if a file exists.
+    fn exists(&self, path: &str) -> bool;
+    /// Get metadata about a file.
+    fn metadata(&self, path: &str) -> Result<FileMetadata, Error>;
+    /// Truncate or extend a file to the specified size.
+    /// Creates the file if it does not exist.
+    fn truncate(&mut self, path: &str, size: u64) -> Result<(), Error>;
+    /// Truncate or extend a file to the specified size, but only if it exists.
+    /// Returns Ok(false) if the file does not exist, Ok(true) if successful.
+    fn truncate_existing(&mut self, path: &str, size: u64) -> Result<bool, Error>;
+    /// Punch a hole in a file by writing NUL bytes at the given offset for the given length.
+    /// The file must exist. If offset + length exceeds file size, extends the file.
+    fn punch_hole(&mut self, path: &str, offset: u64, length: u64) -> Result<(), Error>;
+    /// Write a string to a file, creating or overwriting as needed.
+    fn write_string(&mut self, path: &str, contents: &str) -> Result<(), Error>;
+    /// Append a string to a file, creating if it does not exist.
+    fn append_string(&mut self, path: &str, contents: &str) -> Result<(), Error>;
+    /// Create a directory. Returns an error if the directory already exists
+    /// or if the parent directory does not exist.
+    fn mkdir(&mut self, path: &str) -> Result<(), Error>;
+    /// Create a directory and all parent directories as needed.
+    /// Returns Ok(()) if the directory already exists.
+    fn mkdir_all(&mut self, path: &str) -> Result<(), Error>;
+    /// Check if a path is a directory.
+    fn is_dir(&self, path: &str) -> bool;
+    /// Read the contents of a directory.
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error>;
+    /// Get detailed information about a file or directory.
+    fn stat(&self, path: &str) -> Result<DirEntry, Error>;
+    /// Get detailed information about a file or directory without following symlinks.
+    fn lstat(&self, path: &str) -> Result<DirEntry, Error>;
+    /// Create a symbolic link at linkpath pointing to target.
+    fn symlink(&mut self, target: &str, linkpath: &str) -> Result<(), Error>;
+    /// Create a hard link at dst pointing to src.
+    fn link(&mut self, src: &str, dst: &str) -> Result<(), Error>;
+    /// Remove a file or symbolic link.
+    fn unlink(&mut self, path: &str) -> Result<(), Error>;
+    /// Remove an empty directory.
+    fn rmdir(&mut self, path: &str) -> Result<(), Error>;
+    /// Read the target of a symbolic link.
+    fn readlink(&self, path: &str) -> Result<String, Error>;
+    /// Set the access and modification times of a file.
+    /// TimeSpec::Now sets to current time, TimeSpec::Omit leaves unchanged.
+    fn set_times(&mut self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error>;
+    /// Set the access and modification times of a file without following symlinks.
+    fn lset_times(&mut self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error>;
+    /// Create an empty file if it does not exist, without changing times if it does.
+    /// Returns true if the file was created, false if it already existed.
+    fn create_file(&mut self, path: &str) -> Result<bool, Error>;
+    /// Rename a file or directory from src to dst.
+    fn rename(&mut self, src: &str, dst: &str) -> Result<(), Error>;
+    /// Create a unique temporary file using a template (Xs are replaced).
+    /// Returns the actual path created.
+    fn mkstemp(&mut self, template: &str) -> Result<String, Error>;
+    /// Create a unique temporary directory using a template (Xs are replaced).
+    /// Returns the actual path created.
+    fn mkdtemp(&mut self, template: &str) -> Result<String, Error>;
+    /// Lists markdown files, returns paths relative to root.
+    fn list_markdown_files(&self) -> Result<Vec<String>, Error>;
+}
+
+/////////////////////////////////////// SyncMutFilesystem //////////////////////////////////////////
+
+use std::sync::Arc;
+use std::sync::Mutex;
+
+/// A wrapper that provides [`Filesystem`] (thread-safe, `&self`) access to a [`MutFilesystem`].
+///
+/// This type wraps a `MutFilesystem` in `Arc<Mutex<_>>` to provide interior mutability
+/// with synchronization, allowing the wrapped filesystem to implement the `Filesystem` trait.
+pub struct SyncMutFilesystem<F: MutFilesystem> {
+    inner: Arc<Mutex<F>>,
+}
+
+impl<F: MutFilesystem> SyncMutFilesystem<F> {
+    /// Creates a new `SyncMutFilesystem` wrapping the given filesystem.
+    pub fn new(fs: F) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(fs)),
+        }
+    }
+
+    /// Creates a new `SyncMutFilesystem` from an existing `Arc<Mutex<F>>`.
+    pub fn from_arc(inner: Arc<Mutex<F>>) -> Self {
+        Self { inner }
+    }
+
+    /// Returns a clone of the inner `Arc<Mutex<F>>`.
+    pub fn inner(&self) -> Arc<Mutex<F>> {
+        Arc::clone(&self.inner)
+    }
+
+    /// Consumes the wrapper and returns the inner filesystem, if this is the last reference.
+    ///
+    /// Returns `Err(self)` if there are other references to the inner `Arc`.
+    pub fn try_into_inner(self) -> Result<F, Self> {
+        match Arc::try_unwrap(self.inner) {
+            Ok(mutex) => Ok(mutex.into_inner().expect("mutex poisoned")),
+            Err(arc) => Err(Self { inner: arc }),
+        }
+    }
+}
+
+impl<F: MutFilesystem> Clone for SyncMutFilesystem<F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+/// The root path for SyncMutFilesystem.
+static SYNC_MUT_FS_ROOT: &str = "/";
+
+impl<F: MutFilesystem> Filesystem for SyncMutFilesystem<F> {
+    fn root(&self) -> Path<'_> {
+        Path::new(SYNC_MUT_FS_ROOT)
+    }
+
+    fn dup(&self) -> Self {
+        self.clone()
+    }
+
+    fn read_to_string(&self, path: &str) -> Result<String, Error> {
+        self.inner.lock().unwrap().read_to_string(path)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.inner.lock().unwrap().exists(path)
+    }
+
+    fn metadata(&self, path: &str) -> Result<FileMetadata, Error> {
+        self.inner.lock().unwrap().metadata(path)
+    }
+
+    fn truncate(&self, path: &str, size: u64) -> Result<(), Error> {
+        self.inner.lock().unwrap().truncate(path, size)
+    }
+
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
+        self.inner.lock().unwrap().truncate_existing(path, size)
+    }
+
+    fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
+        self.inner.lock().unwrap().punch_hole(path, offset, length)
+    }
+
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().write_string(path, contents)
+    }
+
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().append_string(path, contents)
+    }
+
+    fn mkdir(&self, path: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().mkdir(path)
+    }
+
+    fn mkdir_all(&self, path: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().mkdir_all(path)
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        self.inner.lock().unwrap().is_dir(path)
+    }
+
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error> {
+        self.inner.lock().unwrap().read_dir(path)
+    }
+
+    fn stat(&self, path: &str) -> Result<DirEntry, Error> {
+        self.inner.lock().unwrap().stat(path)
+    }
+
+    fn lstat(&self, path: &str) -> Result<DirEntry, Error> {
+        self.inner.lock().unwrap().lstat(path)
+    }
+
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().symlink(target, linkpath)
+    }
+
+    fn link(&self, src: &str, dst: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().link(src, dst)
+    }
+
+    fn unlink(&self, path: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().unlink(path)
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().rmdir(path)
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, Error> {
+        self.inner.lock().unwrap().readlink(path)
+    }
+
+    fn set_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        self.inner.lock().unwrap().set_times(path, atime, mtime)
+    }
+
+    fn lset_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        self.inner.lock().unwrap().lset_times(path, atime, mtime)
+    }
+
+    fn create_file(&self, path: &str) -> Result<bool, Error> {
+        self.inner.lock().unwrap().create_file(path)
+    }
+
+    fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
+        self.inner.lock().unwrap().rename(src, dst)
+    }
+
+    fn mkstemp(&self, template: &str) -> Result<String, Error> {
+        self.inner.lock().unwrap().mkstemp(template)
+    }
+
+    fn mkdtemp(&self, template: &str) -> Result<String, Error> {
+        self.inner.lock().unwrap().mkdtemp(template)
+    }
+
+    fn list_markdown_files(&self) -> Result<Vec<String>, Error> {
+        self.inner.lock().unwrap().list_markdown_files()
+    }
+}
+
 ///////////////////////////////////////// RealFilesystem ///////////////////////////////////////////
 
 /// A real filesystem that reads from disk.

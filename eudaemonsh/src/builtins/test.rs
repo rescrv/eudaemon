@@ -608,8 +608,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestFilesystemExt;
     use crate::test_utils::{TestFilesystem, make_test_env};
-    use crate::{StringStderr, StringStdin, StringStdout};
+    use crate::{MemoryLfsExt, StringStderr, StringStdin, StringStdout};
 
     use eudaemonfs::DeviceId;
 
@@ -618,8 +619,12 @@ mod tests {
     }
 
     fn make_fs() -> TestFilesystem {
-        crate::EudaemonFilesystem::new(256 * 4096, DeviceId::new(1), zero_time as fn() -> i64)
-            .expect("failed to create test filesystem")
+        crate::EudaemonFilesystem::new_memory(
+            256 * 4096,
+            DeviceId::new(1),
+            zero_time as fn() -> i64,
+        )
+        .expect("failed to create test filesystem")
     }
 
     fn make_env_with_fs(

@@ -29,6 +29,7 @@ use std::collections::BTreeSet;
 pub mod lisp;
 
 pub use eudaemonty::FileType;
+pub use eudaemonty::SyncMutFilesystem;
 pub use eudaemonty::TimeSpec;
 
 /// Block size in bytes.
@@ -4021,6 +4022,777 @@ impl<T: Fn() -> i64> LoggingFilesystem<MemoryBlockDevice, T> {
         self.inner.data()
     }
 }
+
+//////////////////////////////////////// MutFilesystem impls ///////////////////////////////////////
+
+use eudaemonty::DirEntry as TyDirEntry;
+use eudaemonty::Error as TyError;
+use eudaemonty::FileMetadata;
+use eudaemonty::MutFilesystem;
+
+/// Result type alias for MutFilesystem implementations.
+type TyResult<T> = std::result::Result<T, TyError>;
+
+/// Converts an LFS FileType to a eudaemonty FileType.
+fn convert_file_type(ft: FileType) -> eudaemonty::FileType {
+    match ft {
+        FileType::RegularFile => eudaemonty::FileType::RegularFile,
+        FileType::Directory => eudaemonty::FileType::Directory,
+        FileType::Symlink => eudaemonty::FileType::Symlink,
+        FileType::Other => eudaemonty::FileType::Other,
+    }
+}
+
+/// Converts an eudaemonty TimeSpec to an LFS TimeSpec.
+fn convert_timespec(ts: eudaemonty::TimeSpec) -> TimeSpec {
+    match ts {
+        eudaemonty::TimeSpec::Now => TimeSpec::Now,
+        eudaemonty::TimeSpec::Omit => TimeSpec::Omit,
+        eudaemonty::TimeSpec::Time(t) => TimeSpec::Time(t),
+    }
+}
+
+/// Converts an LFS StatInfo to an eudaemonty DirEntry.
+fn stat_to_dir_entry(stat: &StatInfo) -> TyDirEntry {
+    TyDirEntry {
+        file_type: convert_file_type(stat.file_type),
+        size: stat.size,
+        atime_ms: stat.atime_ms,
+        mtime_ms: stat.mtime_ms,
+        dev: stat.dev,
+        ino: stat.ino,
+    }
+}
+
+/// Converts an LFS Error to a eudaemonty Error.
+fn convert_error(e: Error) -> TyError {
+    TyError::Io(e.into())
+}
+
+impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for Lfs<D, T> {
+    fn root(&self) -> Path<'_> {
+        Path::new("/")
+    }
+
+    fn read_to_string(&mut self, path: &str) -> TyResult<String> {
+        let bytes = self.read_file(path).map_err(convert_error)?;
+        String::from_utf8(bytes).map_err(|e| {
+            TyError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        Lfs::exists(self, path)
+    }
+
+    fn metadata(&self, path: &str) -> TyResult<FileMetadata> {
+        let stat = self.stat(path).map_err(convert_error)?;
+        Ok(FileMetadata { size: stat.size })
+    }
+
+    fn truncate(&mut self, path: &str, size: u64) -> TyResult<()> {
+        self.truncate_path(path, size).map_err(convert_error)
+    }
+
+    fn truncate_existing(&mut self, path: &str, size: u64) -> TyResult<bool> {
+        Lfs::truncate_existing(self, path, size).map_err(convert_error)
+    }
+
+    fn punch_hole(&mut self, path: &str, offset: u64, length: u64) -> TyResult<()> {
+        Lfs::punch_hole(self, path, offset, length).map_err(convert_error)
+    }
+
+    fn write_string(&mut self, path: &str, contents: &str) -> TyResult<()> {
+        self.write_file(path, contents.as_bytes())
+            .map_err(convert_error)
+    }
+
+    fn append_string(&mut self, path: &str, contents: &str) -> TyResult<()> {
+        self.append_file(path, contents.as_bytes())
+            .map_err(convert_error)
+    }
+
+    fn mkdir(&mut self, path: &str) -> TyResult<()> {
+        Lfs::mkdir(self, path).map_err(convert_error)
+    }
+
+    fn mkdir_all(&mut self, path: &str) -> TyResult<()> {
+        Lfs::mkdir_all(self, path).map_err(convert_error)
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        Lfs::is_dir(self, path)
+    }
+
+    fn read_dir(&self, path: &str) -> TyResult<Vec<(String, TyDirEntry)>> {
+        let entries = Lfs::read_dir(self, path).map_err(convert_error)?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, stat)| (name, stat_to_dir_entry(&stat)))
+            .collect())
+    }
+
+    fn stat(&self, path: &str) -> TyResult<TyDirEntry> {
+        let stat = Lfs::stat(self, path).map_err(convert_error)?;
+        Ok(stat_to_dir_entry(&stat))
+    }
+
+    fn lstat(&self, path: &str) -> TyResult<TyDirEntry> {
+        let stat = Lfs::lstat(self, path).map_err(convert_error)?;
+        Ok(stat_to_dir_entry(&stat))
+    }
+
+    fn symlink(&mut self, target: &str, linkpath: &str) -> TyResult<()> {
+        Lfs::symlink(self, target, linkpath).map_err(convert_error)
+    }
+
+    fn link(&mut self, src: &str, dst: &str) -> TyResult<()> {
+        Lfs::link(self, src, dst).map_err(convert_error)
+    }
+
+    fn unlink(&mut self, path: &str) -> TyResult<()> {
+        self.remove(path).map_err(convert_error)
+    }
+
+    fn rmdir(&mut self, path: &str) -> TyResult<()> {
+        Lfs::rmdir(self, path).map_err(convert_error)
+    }
+
+    fn readlink(&self, path: &str) -> TyResult<String> {
+        Lfs::readlink(self, path).map_err(convert_error)
+    }
+
+    fn set_times(
+        &mut self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> TyResult<()> {
+        Lfs::set_times(self, path, convert_timespec(atime), convert_timespec(mtime))
+            .map_err(convert_error)
+    }
+
+    fn lset_times(
+        &mut self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> TyResult<()> {
+        Lfs::lset_times(self, path, convert_timespec(atime), convert_timespec(mtime))
+            .map_err(convert_error)
+    }
+
+    fn create_file(&mut self, path: &str) -> TyResult<bool> {
+        Lfs::create_file(self, path).map_err(convert_error)
+    }
+
+    fn rename(&mut self, src: &str, dst: &str) -> TyResult<()> {
+        Lfs::rename(self, src, dst).map_err(convert_error)
+    }
+
+    fn mkstemp(&mut self, template: &str) -> TyResult<String> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            match Lfs::create_file(self, &path) {
+                Ok(true) => return Ok(path),
+                Ok(false) => continue,
+                Err(Error::AlreadyExists) => continue,
+                Err(e) => return Err(convert_error(e)),
+            }
+        }
+
+        Err(TyError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary file",
+        )))
+    }
+
+    fn mkdtemp(&mut self, template: &str) -> TyResult<String> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            match Lfs::mkdir(self, &path) {
+                Ok(()) => return Ok(path),
+                Err(Error::AlreadyExists) => continue,
+                Err(e) => return Err(convert_error(e)),
+            }
+        }
+
+        Err(TyError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary directory",
+        )))
+    }
+
+    fn list_markdown_files(&self) -> TyResult<Vec<String>> {
+        fn find_md_files<D: BlockDevice, T: Fn() -> i64>(
+            lfs: &Lfs<D, T>,
+            path: &str,
+            base: &str,
+            results: &mut Vec<String>,
+        ) -> TyResult<()> {
+            let entries = Lfs::read_dir(lfs, path).map_err(convert_error)?;
+            for (name, stat) in entries {
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
+                if stat.file_type == FileType::Directory {
+                    find_md_files(lfs, &full_path, base, results)?;
+                } else if name.ends_with(".md") || name.ends_with(".MD") {
+                    let rel_path = full_path
+                        .strip_prefix(base)
+                        .unwrap_or(&full_path)
+                        .trim_start_matches('/');
+                    results.push(rel_path.to_string());
+                }
+            }
+            Ok(())
+        }
+
+        let mut files = Vec::new();
+        find_md_files(self, "/", "/", &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+}
+
+impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for LoggingFilesystem<D, T> {
+    fn root(&self) -> Path<'_> {
+        Path::new("/")
+    }
+
+    fn read_to_string(&mut self, path: &str) -> TyResult<String> {
+        let bytes = self.read_file(path).map_err(convert_error)?;
+        String::from_utf8(bytes).map_err(|e| {
+            TyError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        LoggingFilesystem::exists(self, path)
+    }
+
+    fn metadata(&self, path: &str) -> TyResult<FileMetadata> {
+        let stat = LoggingFilesystem::stat(self, path).map_err(convert_error)?;
+        Ok(FileMetadata { size: stat.size })
+    }
+
+    fn truncate(&mut self, path: &str, size: u64) -> TyResult<()> {
+        self.truncate_path(path, size).map_err(convert_error)
+    }
+
+    fn truncate_existing(&mut self, path: &str, size: u64) -> TyResult<bool> {
+        self.inner
+            .truncate_existing(path, size)
+            .map_err(convert_error)
+    }
+
+    fn punch_hole(&mut self, path: &str, offset: u64, length: u64) -> TyResult<()> {
+        self.inner
+            .punch_hole(path, offset, length)
+            .map_err(convert_error)
+    }
+
+    fn write_string(&mut self, path: &str, contents: &str) -> TyResult<()> {
+        self.write_file(path, contents.as_bytes())
+            .map_err(convert_error)
+    }
+
+    fn append_string(&mut self, path: &str, contents: &str) -> TyResult<()> {
+        self.append_file(path, contents.as_bytes())
+            .map_err(convert_error)
+    }
+
+    fn mkdir(&mut self, path: &str) -> TyResult<()> {
+        LoggingFilesystem::mkdir(self, path).map_err(convert_error)
+    }
+
+    fn mkdir_all(&mut self, path: &str) -> TyResult<()> {
+        LoggingFilesystem::mkdir_all(self, path).map_err(convert_error)
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        LoggingFilesystem::is_dir(self, path)
+    }
+
+    fn read_dir(&self, path: &str) -> TyResult<Vec<(String, TyDirEntry)>> {
+        let entries = LoggingFilesystem::read_dir(self, path).map_err(convert_error)?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, stat)| (name, stat_to_dir_entry(&stat)))
+            .collect())
+    }
+
+    fn stat(&self, path: &str) -> TyResult<TyDirEntry> {
+        let stat = LoggingFilesystem::stat(self, path).map_err(convert_error)?;
+        Ok(stat_to_dir_entry(&stat))
+    }
+
+    fn lstat(&self, path: &str) -> TyResult<TyDirEntry> {
+        let stat = LoggingFilesystem::lstat(self, path).map_err(convert_error)?;
+        Ok(stat_to_dir_entry(&stat))
+    }
+
+    fn symlink(&mut self, target: &str, linkpath: &str) -> TyResult<()> {
+        LoggingFilesystem::symlink(self, target, linkpath).map_err(convert_error)
+    }
+
+    fn link(&mut self, src: &str, dst: &str) -> TyResult<()> {
+        LoggingFilesystem::link(self, src, dst).map_err(convert_error)
+    }
+
+    fn unlink(&mut self, path: &str) -> TyResult<()> {
+        self.remove(path).map_err(convert_error)
+    }
+
+    fn rmdir(&mut self, path: &str) -> TyResult<()> {
+        LoggingFilesystem::rmdir(self, path).map_err(convert_error)
+    }
+
+    fn readlink(&self, path: &str) -> TyResult<String> {
+        LoggingFilesystem::readlink(self, path).map_err(convert_error)
+    }
+
+    fn set_times(
+        &mut self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> TyResult<()> {
+        LoggingFilesystem::set_times(self, path, convert_timespec(atime), convert_timespec(mtime))
+            .map_err(convert_error)
+    }
+
+    fn lset_times(
+        &mut self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> TyResult<()> {
+        self.inner
+            .lset_times(path, convert_timespec(atime), convert_timespec(mtime))
+            .map_err(convert_error)
+    }
+
+    fn create_file(&mut self, path: &str) -> TyResult<bool> {
+        LoggingFilesystem::create_file(self, path).map_err(convert_error)
+    }
+
+    fn rename(&mut self, src: &str, dst: &str) -> TyResult<()> {
+        LoggingFilesystem::rename(self, src, dst).map_err(convert_error)
+    }
+
+    fn mkstemp(&mut self, template: &str) -> TyResult<String> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            match LoggingFilesystem::create_file(self, &path) {
+                Ok(true) => return Ok(path),
+                Ok(false) => continue,
+                Err(Error::AlreadyExists) => continue,
+                Err(e) => return Err(convert_error(e)),
+            }
+        }
+
+        Err(TyError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary file",
+        )))
+    }
+
+    fn mkdtemp(&mut self, template: &str) -> TyResult<String> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            match LoggingFilesystem::mkdir(self, &path) {
+                Ok(()) => return Ok(path),
+                Err(Error::AlreadyExists) => continue,
+                Err(e) => return Err(convert_error(e)),
+            }
+        }
+
+        Err(TyError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary directory",
+        )))
+    }
+
+    fn list_markdown_files(&self) -> TyResult<Vec<String>> {
+        fn find_md_files<D: BlockDevice, T: Fn() -> i64>(
+            lfs: &LoggingFilesystem<D, T>,
+            path: &str,
+            base: &str,
+            results: &mut Vec<String>,
+        ) -> TyResult<()> {
+            let entries = LoggingFilesystem::read_dir(lfs, path).map_err(convert_error)?;
+            for (name, stat) in entries {
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
+                if stat.file_type == FileType::Directory {
+                    find_md_files(lfs, &full_path, base, results)?;
+                } else if name.ends_with(".md") || name.ends_with(".MD") {
+                    let rel_path = full_path
+                        .strip_prefix(base)
+                        .unwrap_or(&full_path)
+                        .trim_start_matches('/');
+                    results.push(rel_path.to_string());
+                }
+            }
+            Ok(())
+        }
+
+        let mut files = Vec::new();
+        find_md_files(self, "/", "/", &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+}
+
+////////////////////////////////////// LfsExt trait ////////////////////////////////////
+
+/// Extension trait providing LFS-specific operations on `SyncMutFilesystem<Lfs<D, T>>`.
+pub trait LfsExt {
+    /// Returns the number of free blocks available.
+    fn free_blocks(&self) -> u64;
+
+    /// Returns the current usage percentage of the filesystem (0-100).
+    fn usage_percent(&self) -> u64;
+
+    /// Performs log cleaning (garbage collection).
+    ///
+    /// Returns the number of blocks reclaimed.
+    fn clean(&self) -> TyResult<usize>;
+}
+
+impl<D: BlockDevice, T: Fn() -> i64 + Clone + Send + 'static> LfsExt
+    for SyncMutFilesystem<Lfs<D, T>>
+{
+    fn free_blocks(&self) -> u64 {
+        self.inner().lock().unwrap().free_blocks()
+    }
+
+    fn usage_percent(&self) -> u64 {
+        self.inner().lock().unwrap().usage_percent()
+    }
+
+    fn clean(&self) -> TyResult<usize> {
+        self.inner()
+            .lock()
+            .unwrap()
+            .clean()
+            .map_err(|e| TyError::Io(e.into()))
+    }
+}
+
+/// Extension trait for memory-backed LFS filesystems.
+pub trait MemoryLfsExt<T: Fn() -> i64 + Clone + Send + 'static>: Sized {
+    /// Creates a new in-memory filesystem with the given size in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the size is too small (less than 64KB).
+    fn new_memory(size: usize, dev: DeviceId, time_source: T) -> TyResult<Self>;
+
+    /// Opens an existing in-memory filesystem from a byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer does not contain a valid filesystem.
+    fn open_memory(data: Vec<u8>, dev: DeviceId, time_source: T) -> TyResult<Self>;
+
+    /// Consumes the filesystem and returns the underlying data buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there are multiple references to the filesystem.
+    fn into_data(self) -> TyResult<Vec<u8>>;
+}
+
+impl<T: Fn() -> i64 + Clone + Send + 'static> MemoryLfsExt<T>
+    for SyncMutFilesystem<Lfs<MemoryBlockDevice, T>>
+{
+    fn new_memory(size: usize, dev: DeviceId, time_source: T) -> TyResult<Self> {
+        let data = vec![0u8; size];
+        let lfs = Lfs::from_vec(data, dev, time_source).map_err(|e| TyError::Io(e.into()))?;
+        Ok(Self::new(lfs))
+    }
+
+    fn open_memory(data: Vec<u8>, dev: DeviceId, time_source: T) -> TyResult<Self> {
+        let lfs = Lfs::open_vec(data, dev, time_source).map_err(|e| TyError::Io(e.into()))?;
+        Ok(Self::new(lfs))
+    }
+
+    fn into_data(self) -> TyResult<Vec<u8>> {
+        let lfs = self.try_into_inner().map_err(|_| {
+            TyError::Io(std::io::Error::other("filesystem has multiple references"))
+        })?;
+        Ok(lfs.into_inner())
+    }
+}
+
+/// Extension trait for file-backed LFS filesystems.
+pub trait FileLfsExt<T: Fn() -> i64 + Clone + Send + 'static>: Sized {
+    /// Opens or creates a file-backed filesystem at the given path.
+    ///
+    /// If the file exists, opens it as an existing filesystem.
+    /// If the file does not exist, creates a new filesystem with a default size of 16MB (4096 blocks).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail or the filesystem is corrupt.
+    fn open_or_create_file(
+        path: utf8path::Path<'_>,
+        dev: DeviceId,
+        time_source: T,
+    ) -> TyResult<Self>;
+
+    /// Creates a new file-backed filesystem at the given path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the filesystem image file.
+    /// * `total_blocks` - Number of 4KB blocks for the filesystem.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file creation fails or the block count is too small.
+    fn create_file_fs(
+        path: utf8path::Path<'_>,
+        total_blocks: u64,
+        dev: DeviceId,
+        time_source: T,
+    ) -> TyResult<Self>;
+
+    /// Opens an existing file-backed filesystem at the given path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the filesystem image file.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file does not exist or is not a valid filesystem.
+    fn open_file(path: utf8path::Path<'_>, dev: DeviceId, time_source: T) -> TyResult<Self>;
+
+    /// Syncs all pending writes to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sync operation fails.
+    fn sync(&self) -> TyResult<()>;
+}
+
+impl<T: Fn() -> i64 + Clone + Send + 'static> FileLfsExt<T>
+    for SyncMutFilesystem<Lfs<FileBlockDevice, T>>
+{
+    fn open_or_create_file(
+        path: utf8path::Path<'_>,
+        dev: DeviceId,
+        time_source: T,
+    ) -> TyResult<Self> {
+        const DEFAULT_BLOCKS: u64 = 4096;
+        if path.exists() {
+            Self::open_file(path, dev, time_source)
+        } else {
+            Self::create_file_fs(path, DEFAULT_BLOCKS, dev, time_source)
+        }
+    }
+
+    fn create_file_fs(
+        path: utf8path::Path<'_>,
+        total_blocks: u64,
+        dev: DeviceId,
+        time_source: T,
+    ) -> TyResult<Self> {
+        let device = FileBlockDevice::create(path, total_blocks).map_err(TyError::Io)?;
+        let lfs =
+            Lfs::new(device, total_blocks, dev, time_source).map_err(|e| TyError::Io(e.into()))?;
+        Ok(Self::new(lfs))
+    }
+
+    fn open_file(path: utf8path::Path<'_>, dev: DeviceId, time_source: T) -> TyResult<Self> {
+        let device = FileBlockDevice::open(path).map_err(TyError::Io)?;
+        let total_blocks = device.total_blocks();
+        let lfs =
+            Lfs::open(device, total_blocks, dev, time_source).map_err(|e| TyError::Io(e.into()))?;
+        Ok(Self::new(lfs))
+    }
+
+    fn sync(&self) -> TyResult<()> {
+        self.inner()
+            .lock()
+            .unwrap()
+            .device()
+            .sync()
+            .map_err(TyError::Io)
+    }
+}
+
+/// Extension trait providing test helper methods for filesystems.
+///
+/// These methods are convenience wrappers for common test setup operations.
+pub trait TestFilesystemExt: eudaemonty::Filesystem {
+    /// Add a file to the filesystem (test helper).
+    ///
+    /// Creates a file at the given path with the given contents.
+    fn add_file(&self, path: &str, contents: &str) {
+        self.write_string(path, contents)
+            .expect("failed to add file in test setup");
+    }
+
+    /// Add a file with specific timestamps (test helper).
+    ///
+    /// Creates a file at the given path with the given contents and timestamps.
+    fn add_file_with_times(&self, path: &str, contents: &str, atime_ms: i64, mtime_ms: i64) {
+        self.write_string(path, contents)
+            .expect("failed to add file in test setup");
+        self.set_times(
+            path,
+            eudaemonty::TimeSpec::Time(atime_ms),
+            eudaemonty::TimeSpec::Time(mtime_ms),
+        )
+        .expect("failed to set times in test setup");
+    }
+
+    /// Add a directory to the filesystem (test helper).
+    ///
+    /// Creates a directory at the given path.
+    fn add_directory(&self, path: &str) {
+        if path == "/" {
+            return;
+        }
+        self.mkdir(path)
+            .expect("failed to add directory in test setup");
+    }
+
+    /// Add a symbolic link to the filesystem (test helper).
+    ///
+    /// Creates a symbolic link at linkpath pointing to target.
+    fn add_symlink(&self, linkpath: &str, target: &str) {
+        self.symlink(target, linkpath)
+            .expect("failed to add symlink in test setup");
+    }
+}
+
+impl<F: eudaemonty::Filesystem> TestFilesystemExt for F {}
 
 #[cfg(test)]
 mod tests {

@@ -354,6 +354,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestFilesystemExt;
     use crate::test_utils::make_test_env;
 
     #[test]

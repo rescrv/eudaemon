@@ -3,13 +3,21 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use eudaemonfs::Lfs;
+use eudaemonfs::MemoryBlockDevice;
+use eudaemonty::SyncMutFilesystem;
 use utf8path::Path;
 
 mod builtins;
-mod filesystem;
 
 pub use builtins::lookup_bin;
 pub use builtins::sh;
+pub use eudaemonfs::DeviceId;
+pub use eudaemonfs::FileBlockDevice;
+pub use eudaemonfs::FileLfsExt;
+pub use eudaemonfs::LfsExt;
+pub use eudaemonfs::MemoryLfsExt;
+pub use eudaemonfs::TestFilesystemExt;
 pub use eudaemonty::DirEntry;
 pub use eudaemonty::FileMetadata;
 pub use eudaemonty::FileType;
@@ -22,8 +30,12 @@ pub use eudaemonty::StringStderr;
 pub use eudaemonty::StringStdin;
 pub use eudaemonty::StringStdout;
 pub use eudaemonty::TimeSpec;
-pub use filesystem::EudaemonFilesystem;
-pub use filesystem::FileBackedEudaemonFilesystem;
+
+/// A filesystem backed by eudaemonfs using in-memory storage.
+pub type EudaemonFilesystem<T> = SyncMutFilesystem<Lfs<MemoryBlockDevice, T>>;
+
+/// A filesystem backed by eudaemonfs using file-backed storage.
+pub type FileBackedEudaemonFilesystem<T> = SyncMutFilesystem<Lfs<FileBlockDevice, T>>;
 
 /// Alias for filesystem errors from eudaemonty.
 pub use eudaemonty::Error as FsError;
@@ -349,10 +361,15 @@ pub mod test_utils {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
-    use eudaemonfs::DeviceId;
     use utf8path::Path;
 
-    use crate::{Environment, EudaemonFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::DeviceId;
+    use crate::Environment;
+    use crate::EudaemonFilesystem;
+    use crate::MemoryLfsExt;
+    use crate::StringStderr;
+    use crate::StringStdin;
+    use crate::StringStdout;
 
     /// Time source function that always returns zero (for deterministic tests).
     fn zero_time() -> i64 {
@@ -434,7 +451,7 @@ pub mod test_utils {
 
         /// Build the test environment.
         pub fn build(self) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
-            let fs = EudaemonFilesystem::new(
+            let fs = EudaemonFilesystem::new_memory(
                 self.fs_size_blocks * 4096,
                 DeviceId::new(1),
                 zero_time as fn() -> i64,

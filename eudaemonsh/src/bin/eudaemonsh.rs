@@ -21,6 +21,7 @@ use utf8path::Path;
 
 use eudaemonsh::Environment;
 use eudaemonsh::FileBackedEudaemonFilesystem;
+use eudaemonsh::FileLfsExt;
 use eudaemonsh::sh;
 
 /// Returns the current time in milliseconds since UNIX epoch.
@@ -39,7 +40,7 @@ fn main() {
     }
 
     let image_path = &args[1];
-    let fs = match FileBackedEudaemonFilesystem::open_or_create(
+    let fs = match FileBackedEudaemonFilesystem::open_or_create_file(
         Path::new(image_path),
         DeviceId::new(1),
         current_time_ms,
