@@ -157,15 +157,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TestEnvBuilder;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestEnvBuilder, TestFilesystem};
+    use crate::{StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
         let env = TestEnvBuilder::new()
             .args(args)
-            .with_root_dir()
             .env_var("TMPDIR", "/tmp")
             .build();
         env.fs.add_directory("/tmp");
@@ -175,8 +174,8 @@ mod tests {
     fn make_env_with_tmpdir(
         args: Vec<&str>,
         tmpdir: Option<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        let mut builder = TestEnvBuilder::new().args(args).with_root_dir();
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+        let mut builder = TestEnvBuilder::new().args(args);
         if let Some(dir) = tmpdir {
             builder = builder.env_var("TMPDIR", dir);
         }

@@ -15,7 +15,8 @@ mod filesystem;
 pub use builtins::lookup_bin;
 pub use builtins::sh;
 pub use filesystem::{
-    DirEntry, EudaemonFilesystem, FileType, Filesystem, MockFilesystem, RealFilesystem, TimeSpec,
+    DirEntry, EudaemonFilesystem, FileBackedEudaemonFilesystem, FileType, Filesystem,
+    RealFilesystem, TimeSpec,
 };
 
 /// Errors that can occur during shell operations.
@@ -497,24 +498,36 @@ pub fn parse_size(s: &str) -> Option<u64> {
     num.checked_mul(multiplier)
 }
 
-/// Test utilities for creating mock environments.
+/// Test utilities for creating test environments with EudaemonFilesystem.
 #[cfg(test)]
 pub mod test_utils {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
+    use eudaemonfs::DeviceId;
     use utf8path::Path;
 
-    use crate::{Environment, MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::{Environment, EudaemonFilesystem, StringStderr, StringStdin, StringStdout};
 
-    /// A builder for creating test environments with mock I/O.
+    /// Time source function that always returns zero (for deterministic tests).
+    fn zero_time() -> i64 {
+        0
+    }
+
+    /// Type alias for the EudaemonFilesystem with a zero time source used in tests.
+    pub type TestFilesystem = EudaemonFilesystem<fn() -> i64>;
+
+    /// A builder for creating test environments with EudaemonFilesystem.
+    ///
+    /// This builder creates environments backed by a real log-structured filesystem
+    /// on an in-memory block device.
     pub struct TestEnvBuilder {
         args: Vec<String>,
         stdin: String,
         env_vars: HashMap<String, String>,
         cwd: String,
-        setup_root_dir: bool,
+        fs_size_blocks: usize,
     }
 
     impl Default for TestEnvBuilder {
@@ -525,13 +538,15 @@ pub mod test_utils {
 
     impl TestEnvBuilder {
         /// Create a new test environment builder with default settings.
+        ///
+        /// The default filesystem size is 256 blocks (1MB).
         pub fn new() -> Self {
             Self {
                 args: Vec::new(),
                 stdin: String::new(),
                 env_vars: HashMap::new(),
                 cwd: "/".to_string(),
-                setup_root_dir: false,
+                fs_size_blocks: 256,
             }
         }
 
@@ -565,18 +580,23 @@ pub mod test_utils {
             self
         }
 
-        /// Automatically add the root directory to the mock filesystem.
-        pub fn with_root_dir(mut self) -> Self {
-            self.setup_root_dir = true;
+        /// Set the filesystem size in 4KB blocks.
+        ///
+        /// Default is 256 blocks (1MB). Minimum is 16 blocks (64KB).
+        pub fn fs_size_blocks(mut self, blocks: usize) -> Self {
+            self.fs_size_blocks = blocks.max(16);
             self
         }
 
         /// Build the test environment.
-        pub fn build(self) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-            let fs = MockFilesystem::new();
-            if self.setup_root_dir {
-                fs.add_directory("/");
-            }
+        pub fn build(self) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+            let fs = EudaemonFilesystem::new(
+                self.fs_size_blocks * 4096,
+                DeviceId::new(1),
+                zero_time as fn() -> i64,
+            )
+            .expect("failed to create EudaemonFilesystem for test");
+
             Environment {
                 stdin: StringStdin::new(&self.stdin),
                 stdout: StringStdout::new(),
@@ -596,7 +616,7 @@ pub mod test_utils {
     /// a test environment with only command-line arguments.
     pub fn make_test_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
         TestEnvBuilder::new().args(args).build()
     }
 
@@ -606,7 +626,7 @@ pub mod test_utils {
     pub fn make_test_env_with_stdin(
         args: Vec<&str>,
         stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
         TestEnvBuilder::new().args(args).stdin(stdin).build()
     }
 }

@@ -373,7 +373,9 @@ mod tests {
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
         println!("stdout: {:?}", stdout);
-        assert!(stdout.contains("0\t."));
+        // In eudaemonfs, root directory has "." and ".." entries (size=2 entries),
+        // which rounds up to 1 block when computing disk usage.
+        assert!(stdout.contains("1\t."));
     }
 
     #[test]

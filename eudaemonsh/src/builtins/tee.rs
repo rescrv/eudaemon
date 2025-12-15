@@ -251,9 +251,10 @@ mod tests {
     fn empty_filename() {
         let env = make_test_env_with_stdin(vec!["tee", ""], "data");
         let result = bin(&env).unwrap();
-        // Empty filename writes to a file named ""
-        assert_eq!(0, result.code());
+        // Empty filename is an invalid path, so tee reports an error but still outputs to stdout
+        assert_eq!(1, result.code());
         assert_eq!("data\n", env.stdout.into_string());
+        println!("stderr: {}", env.stderr.into_string());
     }
 
     #[test]

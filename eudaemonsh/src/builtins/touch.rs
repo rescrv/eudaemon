@@ -1,6 +1,8 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout, TimeSpec};
+use crate::{
+    Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout, TimeSpec, resolve_path,
+};
 
 /// Parse a time offset string of the form "[-][[hh]mm]SS" and return seconds.
 fn parse_time_offset(arg: &str) -> Result<i64, String> {
@@ -458,7 +460,8 @@ where
 
     // -r uses reference file times
     let ref_times: Option<(i64, i64)> = if let Some(ref rfile) = ref_file {
-        match env.fs.stat(rfile) {
+        let resolved_rfile = resolve_path(env.cwd.as_str(), rfile);
+        match env.fs.stat(&resolved_rfile) {
             Ok(entry) => {
                 timeset = true;
                 Some((entry.atime_ms, entry.mtime_ms))
@@ -503,11 +506,12 @@ where
     let mut exit_code: i8 = 0;
 
     for file in &args {
+        let file = resolve_path(env.cwd.as_str(), file);
         // Check if file exists
-        let file_exists = env.fs.exists(file);
+        let file_exists = env.fs.exists(&file);
         let is_symlink = if file_exists {
             env.fs
-                .lstat(file)
+                .lstat(&file)
                 .map(|e| e.file_type == crate::FileType::Symlink)
                 .unwrap_or(false)
         } else {
@@ -520,7 +524,7 @@ where
                 continue;
             }
             // Create the file
-            match env.fs.create_file(file) {
+            match env.fs.create_file(&file) {
                 Ok(_) => {
                     // If not setting a specific time, we're done (file created with current time)
                     if !timeset && offset_secs.is_none() {
@@ -566,9 +570,9 @@ where
             } else {
                 // Offset from file's current times
                 let current = if hflag {
-                    env.fs.lstat(file)
+                    env.fs.lstat(&file)
                 } else {
-                    env.fs.stat(file)
+                    env.fs.stat(&file)
                 };
                 match current {
                     Ok(entry) => {
@@ -606,9 +610,9 @@ where
 
         // Set the times
         let result = if hflag && is_symlink {
-            env.fs.lset_times(file, atime_spec, mtime_spec)
+            env.fs.lset_times(&file, atime_spec, mtime_spec)
         } else {
-            env.fs.set_times(file, atime_spec, mtime_spec)
+            env.fs.set_times(&file, atime_spec, mtime_spec)
         };
 
         if let Err(Error::Io(e)) = result {
@@ -787,10 +791,10 @@ mod tests {
     #[test]
     fn creates_new_file() {
         let env = make_test_env(vec!["touch", "newfile.txt"]);
-        assert!(!env.fs.exists("newfile.txt"));
+        assert!(!env.fs.exists("/newfile.txt"));
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(env.fs.exists("newfile.txt"));
+        assert!(env.fs.exists("/newfile.txt"));
     }
 
     #[test]
@@ -798,9 +802,9 @@ mod tests {
         let env = make_test_env(vec!["touch", "a.txt", "b.txt", "c.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(env.fs.exists("a.txt"));
-        assert!(env.fs.exists("b.txt"));
-        assert!(env.fs.exists("c.txt"));
+        assert!(env.fs.exists("/a.txt"));
+        assert!(env.fs.exists("/b.txt"));
+        assert!(env.fs.exists("/c.txt"));
     }
 
     #[test]
@@ -808,17 +812,17 @@ mod tests {
         let env = make_test_env(vec!["touch", "-c", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(!env.fs.exists("nonexistent.txt"));
+        assert!(!env.fs.exists("/nonexistent.txt"));
     }
 
     #[test]
     fn c_flag_updates_existing() {
         let env = make_test_env(vec!["touch", "-c", "existing.txt"]);
         env.fs
-            .add_file_with_times("existing.txt", "content", 1000, 2000);
+            .add_file_with_times("/existing.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("existing.txt").unwrap();
+        let stat = env.fs.stat("/existing.txt").unwrap();
         // Times should be updated to "now" (which in tests will be some recent time)
         assert!(stat.atime_ms > 2000);
         assert!(stat.mtime_ms > 2000);
@@ -832,10 +836,10 @@ mod tests {
     fn a_flag_only_changes_atime() {
         let env = make_test_env(vec!["touch", "-a", "file.txt"]);
         env.fs
-            .add_file_with_times("file.txt", "content", 1000, 2000);
+            .add_file_with_times("/file.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         println!("atime_ms: {}, mtime_ms: {}", stat.atime_ms, stat.mtime_ms);
         assert!(stat.atime_ms > 1000); // atime updated
         assert_eq!(stat.mtime_ms, 2000); // mtime unchanged
@@ -845,10 +849,10 @@ mod tests {
     fn m_flag_only_changes_mtime() {
         let env = make_test_env(vec!["touch", "-m", "file.txt"]);
         env.fs
-            .add_file_with_times("file.txt", "content", 1000, 2000);
+            .add_file_with_times("/file.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         println!("atime_ms: {}, mtime_ms: {}", stat.atime_ms, stat.mtime_ms);
         assert_eq!(stat.atime_ms, 1000); // atime unchanged
         assert!(stat.mtime_ms > 2000); // mtime updated
@@ -858,10 +862,10 @@ mod tests {
     fn am_flags_change_both() {
         let env = make_test_env(vec!["touch", "-a", "-m", "file.txt"]);
         env.fs
-            .add_file_with_times("file.txt", "content", 1000, 2000);
+            .add_file_with_times("/file.txt", "content", 1000, 2000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         assert!(stat.atime_ms > 1000);
         assert!(stat.mtime_ms > 2000);
     }
@@ -874,12 +878,12 @@ mod tests {
     fn r_flag_copies_times_from_reference() {
         let env = make_test_env(vec!["touch", "-r", "ref.txt", "target.txt"]);
         env.fs
-            .add_file_with_times("ref.txt", "reference", 5000000, 6000000);
+            .add_file_with_times("/ref.txt", "reference", 5000000, 6000000);
         env.fs
-            .add_file_with_times("target.txt", "target", 1000, 2000);
+            .add_file_with_times("/target.txt", "target", 1000, 2000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("target.txt").unwrap();
+        let stat = env.fs.stat("/target.txt").unwrap();
         assert_eq!(stat.atime_ms, 5000000);
         assert_eq!(stat.mtime_ms, 6000000);
     }
@@ -888,11 +892,11 @@ mod tests {
     fn r_flag_creates_file_with_ref_times() {
         let env = make_test_env(vec!["touch", "-r", "ref.txt", "newfile.txt"]);
         env.fs
-            .add_file_with_times("ref.txt", "reference", 5000000, 6000000);
+            .add_file_with_times("/ref.txt", "reference", 5000000, 6000000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(env.fs.exists("newfile.txt"));
-        let stat = env.fs.stat("newfile.txt").unwrap();
+        assert!(env.fs.exists("/newfile.txt"));
+        let stat = env.fs.stat("/newfile.txt").unwrap();
         assert_eq!(stat.atime_ms, 5000000);
         assert_eq!(stat.mtime_ms, 6000000);
     }
@@ -916,7 +920,7 @@ mod tests {
         let env = make_test_env(vec!["touch", "-t", "202001011200", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         // 2020-01-01 12:00:00 UTC
         let expected_ms = datetime_to_ms(2020, 1, 1, 12, 0, 0);
         assert_eq!(stat.atime_ms, expected_ms);
@@ -928,7 +932,7 @@ mod tests {
         let env = make_test_env(vec!["touch", "-t", "202001011200.30", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         let expected_ms = datetime_to_ms(2020, 1, 1, 12, 0, 30);
         assert_eq!(stat.atime_ms, expected_ms);
         assert_eq!(stat.mtime_ms, expected_ms);
@@ -943,7 +947,7 @@ mod tests {
         let env = make_test_env(vec!["touch", "-d", "2020-01-01T12:00:00", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         let expected_ms = datetime_to_ms(2020, 1, 1, 12, 0, 0);
         assert_eq!(stat.atime_ms, expected_ms);
         assert_eq!(stat.mtime_ms, expected_ms);
@@ -954,7 +958,7 @@ mod tests {
         let env = make_test_env(vec!["touch", "-d", "2020-01-01T12:00:00.500", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         let expected_ms = datetime_to_ms(2020, 1, 1, 12, 0, 0) + 500;
         assert_eq!(stat.atime_ms, expected_ms);
         assert_eq!(stat.mtime_ms, expected_ms);
@@ -968,10 +972,10 @@ mod tests {
     fn a_offset_adjusts_times() {
         let env = make_test_env(vec!["touch", "-A", "0100", "file.txt"]);
         env.fs
-            .add_file_with_times("file.txt", "content", 1000000, 2000000);
+            .add_file_with_times("/file.txt", "content", 1000000, 2000000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         // 1 minute = 60 seconds = 60000 ms
         assert_eq!(stat.atime_ms, 1000000 + 60000);
         assert_eq!(stat.mtime_ms, 2000000 + 60000);
@@ -981,10 +985,10 @@ mod tests {
     fn a_offset_negative() {
         let env = make_test_env(vec!["touch", "-A", "-0100", "file.txt"]);
         env.fs
-            .add_file_with_times("file.txt", "content", 1000000, 2000000);
+            .add_file_with_times("/file.txt", "content", 1000000, 2000000);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         assert_eq!(stat.atime_ms, 1000000 - 60000);
         assert_eq!(stat.mtime_ms, 2000000 - 60000);
     }
@@ -994,7 +998,7 @@ mod tests {
         let env = make_test_env(vec!["touch", "-A", "0100", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(!env.fs.exists("nonexistent.txt")); // -A implies -c
+        assert!(!env.fs.exists("/nonexistent.txt")); // -A implies -c
     }
 
     // ========================================================================
@@ -1006,17 +1010,17 @@ mod tests {
         let env = make_test_env(vec!["touch", "-h", "nonexistent.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(!env.fs.exists("nonexistent.txt"));
+        assert!(!env.fs.exists("/nonexistent.txt"));
     }
 
     #[test]
     fn h_flag_changes_symlink_times() {
         let env = make_test_env(vec!["touch", "-h", "-t", "202001011200", "link"]);
-        env.fs.add_file("target.txt", "content");
-        env.fs.add_symlink("link", "target.txt");
+        env.fs.add_file("/target.txt", "content");
+        env.fs.add_symlink("/link", "/target.txt");
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        let link_stat = env.fs.lstat("link").unwrap();
+        let link_stat = env.fs.lstat("/link").unwrap();
         let expected_ms = datetime_to_ms(2020, 1, 1, 12, 0, 0);
         assert_eq!(link_stat.atime_ms, expected_ms);
         assert_eq!(link_stat.mtime_ms, expected_ms);
@@ -1032,9 +1036,9 @@ mod tests {
         let env = make_test_env(vec!["touch", "01011200", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(env.fs.exists("file.txt"));
+        assert!(env.fs.exists("/file.txt"));
         // The first arg is interpreted as time, so file.txt should be created
-        let stat = env.fs.stat("file.txt").unwrap();
+        let stat = env.fs.stat("/file.txt").unwrap();
         println!("stat: {:?}", stat);
         // Should be Jan 1, 12:00 of some year
     }
@@ -1045,8 +1049,8 @@ mod tests {
         let env = make_test_env(vec!["touch", "0101120024", "file.txt"]);
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
-        assert!(env.fs.exists("file.txt"));
-        let stat = env.fs.stat("file.txt").unwrap();
+        assert!(env.fs.exists("/file.txt"));
+        let stat = env.fs.stat("/file.txt").unwrap();
         println!("stat: {:?}", stat);
         // Should be Jan 1, 2024 12:00
     }
@@ -1083,5 +1087,32 @@ mod tests {
         let stderr = env.stderr.into_string();
         println!("stderr: {:?}", stderr);
         assert!(stderr.contains("Invalid offset"));
+    }
+
+    // ========================================================================
+    // path resolution tests
+    // ========================================================================
+
+    #[test]
+    fn touch_relative_path_creates_in_cwd() {
+        use crate::test_utils::TestEnvBuilder;
+        let env = TestEnvBuilder::new()
+            .args(vec!["touch", "newfile.txt"])
+            .cwd("/home")
+            .build();
+        env.fs.add_directory("/");
+        env.fs.add_directory("/home");
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        // The file should be created at /home/newfile.txt, not at newfile.txt
+        assert!(
+            env.fs.exists("/home/newfile.txt"),
+            "Expected file at /home/newfile.txt"
+        );
+        println!(
+            "exists /home/newfile.txt: {}",
+            env.fs.exists("/home/newfile.txt")
+        );
+        println!("exists newfile.txt: {}", env.fs.exists("newfile.txt"));
     }
 }

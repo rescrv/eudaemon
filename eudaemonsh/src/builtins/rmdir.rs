@@ -120,13 +120,13 @@ fn io_error_message(e: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TestEnvBuilder;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestEnvBuilder, TestFilesystem};
+    use crate::{StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        TestEnvBuilder::new().args(args).with_root_dir().build()
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+        TestEnvBuilder::new().args(args).build()
     }
 
     // ========================================================================

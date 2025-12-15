@@ -186,13 +186,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TestEnvBuilder;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestEnvBuilder, TestFilesystem};
+    use crate::{StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        TestEnvBuilder::new().args(args).cwd("/home/user").build()
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+        let env = TestEnvBuilder::new().args(args).cwd("/home/user").build();
+        env.fs.add_directory("/home");
+        env.fs.add_directory("/home/user");
+        env
     }
 
     #[test]
@@ -208,8 +211,7 @@ mod tests {
     #[test]
     fn relative_symlink_target() {
         let env = make_env(vec!["readlink", "/home/link"]);
-        env.fs.add_directory("/home");
-        env.fs.add_directory("/home/user");
+        // Note: make_env() already creates /home and /home/user
         env.fs.symlink("user", "/home/link").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -283,8 +285,7 @@ mod tests {
     #[test]
     fn canonicalize_relative_symlink() {
         let env = make_env(vec!["readlink", "-f", "/home/link"]);
-        env.fs.add_directory("/home");
-        env.fs.add_directory("/home/user");
+        // Note: make_env() already creates /home and /home/user
         env.fs.symlink("user", "/home/link").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -361,8 +362,7 @@ mod tests {
     #[test]
     fn relative_path_input() {
         let env = make_env(vec!["readlink", "link"]);
-        env.fs.add_directory("/home");
-        env.fs.add_directory("/home/user");
+        // Note: make_env() already creates /home and /home/user
         env.fs.add_directory("/target");
         env.fs.symlink("/target", "/home/user/link").unwrap();
         let result = bin(&env).unwrap();

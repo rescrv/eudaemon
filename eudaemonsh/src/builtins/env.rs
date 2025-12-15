@@ -131,12 +131,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TestEnvBuilder;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestEnvBuilder, TestFilesystem};
+    use crate::{StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
         TestEnvBuilder::new()
             .args(args)
             .env_var("PATH", "/usr/bin:/bin")
@@ -148,7 +148,7 @@ mod tests {
     fn make_env_with_vars(
         args: Vec<&str>,
         vars: HashMap<String, String>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
         TestEnvBuilder::new().args(args).env_vars(vars).build()
     }
 

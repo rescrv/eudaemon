@@ -237,6 +237,9 @@ where
             })?;
 
             for (name, _child_entry) in children {
+                if name == "." || name == ".." {
+                    continue;
+                }
                 let child_path = if path == "/" {
                     format!("/{}", name)
                 } else {
@@ -343,13 +346,13 @@ fn is_not_found(e: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TestEnvBuilder;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestEnvBuilder, TestFilesystem};
+    use crate::{StringStderr, StringStdin, StringStdout};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
-        TestEnvBuilder::new().args(args).with_root_dir().build()
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+        TestEnvBuilder::new().args(args).build()
     }
 
     // ========================================================================

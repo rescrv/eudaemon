@@ -1,9 +1,11 @@
 //! Eudaemonfs implementation of the Filesystem trait.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use eudaemonfs::DeviceId;
+use eudaemonfs::FileBlockDevice;
 use eudaemonfs::Lfs;
 use eudaemonfs::MemoryBlockDevice;
 
@@ -15,7 +17,7 @@ use super::FileType;
 use super::Filesystem;
 use super::TimeSpec;
 
-/// A filesystem backed by eudaemonfs.
+/// A filesystem backed by eudaemonfs using in-memory storage.
 #[derive(Clone)]
 pub struct EudaemonFilesystem<T: Fn() -> i64 + Clone + Send + 'static> {
     inner: Arc<Mutex<Lfs<MemoryBlockDevice, T>>>,
@@ -54,6 +56,167 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> EudaemonFilesystem<T> {
             .into_inner()
             .map_err(|_| Error::Io(std::io::Error::other("filesystem mutex poisoned")))?;
         Ok(lfs.into_inner())
+    }
+
+    /// Returns the number of free blocks available.
+    pub fn free_blocks(&self) -> u64 {
+        self.inner.lock().unwrap().free_blocks()
+    }
+
+    /// Returns the current usage percentage of the filesystem (0-100).
+    pub fn usage_percent(&self) -> u64 {
+        self.inner.lock().unwrap().usage_percent()
+    }
+
+    /// Performs log cleaning (garbage collection).
+    ///
+    /// Returns the number of blocks reclaimed.
+    pub fn clean(&self) -> Result<usize, Error> {
+        self.inner
+            .lock()
+            .unwrap()
+            .clean()
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    /// Add a file to the filesystem (test helper).
+    ///
+    /// Creates a file at the given path with the given contents.
+    /// This is equivalent to calling `write_string` but mirrors the `MockFilesystem` API.
+    #[cfg(test)]
+    pub fn add_file(&self, path: &str, contents: &str) {
+        self.write_string(path, contents)
+            .expect("failed to add file in test setup");
+    }
+
+    /// Add a file with specific timestamps (test helper).
+    ///
+    /// Creates a file at the given path with the given contents and timestamps.
+    #[cfg(test)]
+    pub fn add_file_with_times(&self, path: &str, contents: &str, atime_ms: i64, mtime_ms: i64) {
+        self.write_string(path, contents)
+            .expect("failed to add file in test setup");
+        self.set_times(path, TimeSpec::Time(atime_ms), TimeSpec::Time(mtime_ms))
+            .expect("failed to set times in test setup");
+    }
+
+    /// Add a directory to the filesystem (test helper).
+    ///
+    /// Creates a directory at the given path.
+    /// This is equivalent to calling `mkdir` but mirrors the `MockFilesystem` API.
+    #[cfg(test)]
+    pub fn add_directory(&self, path: &str) {
+        // Root directory already exists in eudaemonfs
+        if path == "/" {
+            return;
+        }
+        self.mkdir(path)
+            .expect("failed to add directory in test setup");
+    }
+
+    /// Add a symbolic link to the filesystem (test helper).
+    ///
+    /// Creates a symbolic link at linkpath pointing to target.
+    /// This is equivalent to calling `symlink` but mirrors the `MockFilesystem` API.
+    #[cfg(test)]
+    pub fn add_symlink(&self, linkpath: &str, target: &str) {
+        self.symlink(target, linkpath)
+            .expect("failed to add symlink in test setup");
+    }
+}
+
+/// A filesystem backed by eudaemonfs using file-backed storage.
+///
+/// This variant persists data to a file on disk.
+#[derive(Clone)]
+pub struct FileBackedEudaemonFilesystem<T: Fn() -> i64 + Clone + Send + 'static> {
+    inner: Arc<Mutex<Lfs<FileBlockDevice, T>>>,
+}
+
+/// Default filesystem size in blocks (16MB).
+const DEFAULT_BLOCKS: u64 = 4096;
+
+impl<T: Fn() -> i64 + Clone + Send + 'static> FileBackedEudaemonFilesystem<T> {
+    /// Opens or creates a file-backed eudaemonfs at the given path.
+    ///
+    /// If the file exists, opens it as an existing filesystem.
+    /// If the file does not exist, creates a new filesystem with a default size of 16MB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail or the filesystem is corrupt.
+    pub fn open_or_create<P: AsRef<Path>>(
+        path: P,
+        dev: DeviceId,
+        time_source: T,
+    ) -> Result<Self, Error> {
+        let path = path.as_ref();
+        if path.exists() {
+            Self::open(path, dev, time_source)
+        } else {
+            Self::create(path, DEFAULT_BLOCKS, dev, time_source)
+        }
+    }
+
+    /// Creates a new file-backed eudaemonfs at the given path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the filesystem image file.
+    /// * `total_blocks` - Number of 4KB blocks for the filesystem.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file creation fails or the block count is too small.
+    pub fn create<P: AsRef<Path>>(
+        path: P,
+        total_blocks: u64,
+        dev: DeviceId,
+        time_source: T,
+    ) -> Result<Self, Error> {
+        let device = FileBlockDevice::create(path, total_blocks).map_err(Error::Io)?;
+        let lfs =
+            Lfs::new(device, total_blocks, dev, time_source).map_err(|e| Error::Io(e.into()))?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(lfs)),
+        })
+    }
+
+    /// Opens an existing file-backed eudaemonfs at the given path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the filesystem image file.
+    /// * `dev` - Device ID for this filesystem instance.
+    /// * `time_source` - Function returning current time in milliseconds since UNIX epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file does not exist or is not a valid filesystem.
+    pub fn open<P: AsRef<Path>>(path: P, dev: DeviceId, time_source: T) -> Result<Self, Error> {
+        let device = FileBlockDevice::open(&path).map_err(Error::Io)?;
+        let total_blocks = device.total_blocks();
+        let lfs =
+            Lfs::open(device, total_blocks, dev, time_source).map_err(|e| Error::Io(e.into()))?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(lfs)),
+        })
+    }
+
+    /// Syncs all pending writes to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sync operation fails.
+    pub fn sync(&self) -> Result<(), Error> {
+        self.inner
+            .lock()
+            .unwrap()
+            .device()
+            .sync()
+            .map_err(Error::Io)
     }
 
     /// Returns the number of free blocks available.
@@ -354,6 +517,263 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> Filesystem for EudaemonFilesystem<
     }
 }
 
+impl<T: Fn() -> i64 + Clone + Send + 'static> Filesystem for FileBackedEudaemonFilesystem<T> {
+    fn dup(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    fn read_to_string(&self, path: &str) -> Result<String, Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        let bytes = lfs.read_file(path).map_err(|e| Error::Io(e.into()))?;
+        String::from_utf8(bytes).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.inner.lock().unwrap().exists(path)
+    }
+
+    fn metadata(&self, path: &str) -> Result<FileMetadata, Error> {
+        let lfs = self.inner.lock().unwrap();
+        let stat = lfs.stat(path).map_err(|e| Error::Io(e.into()))?;
+        Ok(FileMetadata { size: stat.size })
+    }
+
+    fn truncate(&self, path: &str, size: u64) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.truncate_path(path, size)
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.truncate_existing(path, size)
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.punch_hole(path, offset, length)
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.write_file(path, contents.as_bytes())
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.append_file(path, contents.as_bytes())
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn mkdir(&self, path: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.mkdir(path).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn mkdir_all(&self, path: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.mkdir_all(path).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        self.inner.lock().unwrap().is_dir(path)
+    }
+
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, Error> {
+        let lfs = self.inner.lock().unwrap();
+        let entries = lfs.read_dir(path).map_err(|e| Error::Io(e.into()))?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, stat)| {
+                (
+                    name,
+                    DirEntry {
+                        file_type: convert_file_type(stat.file_type),
+                        size: stat.size,
+                        atime_ms: stat.atime_ms,
+                        mtime_ms: stat.mtime_ms,
+                        dev: stat.dev,
+                        ino: stat.ino,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    fn stat(&self, path: &str) -> Result<DirEntry, Error> {
+        let lfs = self.inner.lock().unwrap();
+        let stat = lfs.stat(path).map_err(|e| Error::Io(e.into()))?;
+        Ok(DirEntry {
+            file_type: convert_file_type(stat.file_type),
+            size: stat.size,
+            atime_ms: stat.atime_ms,
+            mtime_ms: stat.mtime_ms,
+            dev: stat.dev,
+            ino: stat.ino,
+        })
+    }
+
+    fn lstat(&self, path: &str) -> Result<DirEntry, Error> {
+        let lfs = self.inner.lock().unwrap();
+        let stat = lfs.lstat(path).map_err(|e| Error::Io(e.into()))?;
+        Ok(DirEntry {
+            file_type: convert_file_type(stat.file_type),
+            size: stat.size,
+            atime_ms: stat.atime_ms,
+            mtime_ms: stat.mtime_ms,
+            dev: stat.dev,
+            ino: stat.ino,
+        })
+    }
+
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.symlink(target, linkpath)
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn link(&self, src: &str, dst: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.link(src, dst).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn unlink(&self, path: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.remove(path).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.rmdir(path).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, Error> {
+        let lfs = self.inner.lock().unwrap();
+        lfs.readlink(path).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn set_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.set_times(path, convert_timespec(atime), convert_timespec(mtime))
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn lset_times(&self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.lset_times(path, convert_timespec(atime), convert_timespec(mtime))
+            .map_err(|e| Error::Io(e.into()))
+    }
+
+    fn create_file(&self, path: &str) -> Result<bool, Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.create_file(path).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn rename(&self, src: &str, dst: &str) -> Result<(), Error> {
+        let mut lfs = self.inner.lock().unwrap();
+        lfs.rename(src, dst).map_err(|e| Error::Io(e.into()))
+    }
+
+    fn mkstemp(&self, template: &str) -> Result<String, Error> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            let mut lfs = self.inner.lock().unwrap();
+            match lfs.create_file(&path) {
+                Ok(true) => return Ok(path),
+                Ok(false) => continue,
+                Err(eudaemonfs::Error::AlreadyExists) => continue,
+                Err(e) => return Err(Error::Io(e.into())),
+            }
+        }
+
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary file",
+        )))
+    }
+
+    fn mkdtemp(&self, template: &str) -> Result<String, Error> {
+        use std::time::SystemTime;
+        use std::time::UNIX_EPOCH;
+
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64);
+
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            let mut lfs = self.inner.lock().unwrap();
+            match lfs.mkdir(&path) {
+                Ok(()) => return Ok(path),
+                Err(eudaemonfs::Error::AlreadyExists) => continue,
+                Err(e) => return Err(Error::Io(e.into())),
+            }
+        }
+
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary directory",
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,8 +812,12 @@ mod tests {
             .expect("Failed to write");
 
         let entries = fs.read_dir("/testdir").expect("Failed to read_dir");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "file.txt");
+        // Entries include ".", "..", and "file.txt"
+        assert_eq!(entries.len(), 3);
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"."));
+        assert!(names.contains(&".."));
+        assert!(names.contains(&"file.txt"));
         println!("Directory entries: {:?}", entries);
     }
 

@@ -608,13 +608,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::make_test_env;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestFilesystem, make_test_env};
+    use crate::{StringStderr, StringStdin, StringStdout};
+
+    use eudaemonfs::DeviceId;
+
+    fn zero_time() -> i64 {
+        0
+    }
+
+    fn make_fs() -> TestFilesystem {
+        crate::EudaemonFilesystem::new(256 * 4096, DeviceId::new(1), zero_time as fn() -> i64)
+            .expect("failed to create test filesystem")
+    }
 
     fn make_env_with_fs(
         args: Vec<&str>,
-        fs: MockFilesystem,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, MockFilesystem> {
+        fs: TestFilesystem,
+    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
         Environment {
             stdin: StringStdin::new(""),
             stdout: StringStdout::new(),
@@ -929,7 +940,8 @@ mod tests {
 
     #[test]
     fn file_exists_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-e", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -947,7 +959,8 @@ mod tests {
 
     #[test]
     fn file_regular_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-f", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -957,7 +970,8 @@ mod tests {
 
     #[test]
     fn file_regular_false_directory() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_directory("/tmp/testdir");
         let env = make_env_with_fs(vec!["test", "-f", "/tmp/testdir"], fs);
         let result = bin(&env).unwrap();
@@ -970,7 +984,8 @@ mod tests {
 
     #[test]
     fn file_directory_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_directory("/tmp/testdir");
         let env = make_env_with_fs(vec!["test", "-d", "/tmp/testdir"], fs);
         let result = bin(&env).unwrap();
@@ -980,7 +995,8 @@ mod tests {
 
     #[test]
     fn file_directory_false() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-d", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -990,7 +1006,8 @@ mod tests {
 
     #[test]
     fn file_size_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-s", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -1000,7 +1017,8 @@ mod tests {
 
     #[test]
     fn file_size_false_empty() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "");
         let env = make_env_with_fs(vec!["test", "-s", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -1010,7 +1028,8 @@ mod tests {
 
     #[test]
     fn file_readable_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-r", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -1393,7 +1412,8 @@ mod tests {
 
     #[test]
     fn file_writable_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-w", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -1411,7 +1431,8 @@ mod tests {
 
     #[test]
     fn file_executable_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-x", "/tmp/testfile"], fs);
         let result = bin(&env).unwrap();
@@ -1474,7 +1495,8 @@ mod tests {
 
     #[test]
     fn file_same_true() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/file", "content");
         let env = make_env_with_fs(vec!["test", "/tmp/file", "-ef", "/tmp/file"], fs);
         let result = bin(&env).unwrap();
@@ -1484,7 +1506,8 @@ mod tests {
 
     #[test]
     fn file_same_false_different_paths() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/file1", "content");
         fs.add_file("/tmp/file2", "content");
         let env = make_env_with_fs(vec!["test", "/tmp/file1", "-ef", "/tmp/file2"], fs);
@@ -1794,7 +1817,8 @@ mod tests {
 
     #[test]
     fn file_exists_and_string_nonempty() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_file("/tmp/testfile", "content");
         let env = make_env_with_fs(vec!["test", "-e", "/tmp/testfile", "-a", "-n", "hello"], fs);
         let result = bin(&env).unwrap();
@@ -1826,7 +1850,8 @@ mod tests {
 
     #[test]
     fn file_directory_and_file_regular() {
-        let fs = MockFilesystem::new();
+        let fs = make_fs();
+        fs.add_directory("/tmp");
         fs.add_directory("/tmp/testdir");
         let env = make_env_with_fs(
             vec!["test", "-d", "/tmp/testdir", "-a", "-f", "/tmp/testdir"],

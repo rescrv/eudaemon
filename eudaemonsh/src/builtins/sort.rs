@@ -1856,14 +1856,15 @@ mod tests {
 
     #[test]
     fn output_file_error() {
-        // MockFilesystem always succeeds on write, so we just verify the path is used
         let env = make_test_env_with_stdin(vec!["sort", "-o", "/some/path/output.txt"], "b\na\n");
+        env.fs.mkdir_all("/some/path").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!(
             "a\nb\n",
             env.fs.read_to_string("/some/path/output.txt").unwrap()
         );
+        println!("Wrote sorted output to /some/path/output.txt");
     }
 
     // ========================================================================

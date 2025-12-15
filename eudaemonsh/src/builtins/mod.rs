@@ -139,8 +139,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::make_test_env;
-    use crate::{MockFilesystem, StringStderr, StringStdin, StringStdout};
+    use crate::test_utils::{TestFilesystem, make_test_env};
+    use crate::{StringStderr, StringStdin, StringStdout};
 
     // ========================================================================
     // exit builtin tests
@@ -241,7 +241,7 @@ mod tests {
     fn true_returns_zero() {
         let env = make_test_env(vec!["true"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("true").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
@@ -250,7 +250,7 @@ mod tests {
     fn true_with_args_returns_zero() {
         let env = make_test_env(vec!["true", "ignored", "arguments"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("true").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
     }
@@ -259,7 +259,7 @@ mod tests {
     fn true_via_path_returns_zero() {
         let env = make_test_env(vec!["/bin/true"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("/bin/true")
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("/bin/true")
                 .unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
@@ -269,7 +269,7 @@ mod tests {
     fn true_produces_no_output() {
         let env = make_test_env(vec!["true"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true").unwrap();
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("true").unwrap();
         let _ = bin(&env).unwrap();
         assert_eq!("", env.stdout.into_string());
         assert_eq!("", env.stderr.into_string());
@@ -283,7 +283,7 @@ mod tests {
     fn false_returns_one() {
         let env = make_test_env(vec!["false"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("false").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
@@ -292,7 +292,7 @@ mod tests {
     fn false_with_args_returns_one() {
         let env = make_test_env(vec!["false", "ignored", "arguments"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("false").unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
     }
@@ -301,7 +301,7 @@ mod tests {
     fn false_via_path_returns_one() {
         let env = make_test_env(vec!["/bin/false"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("/bin/false")
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("/bin/false")
                 .unwrap();
         let result = bin(&env).unwrap();
         assert_eq!(1, result.code());
@@ -311,7 +311,7 @@ mod tests {
     fn false_produces_no_output() {
         let env = make_test_env(vec!["false"]);
         let bin =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false").unwrap();
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("false").unwrap();
         let _ = bin(&env).unwrap();
         assert_eq!("", env.stdout.into_string());
         assert_eq!("", env.stderr.into_string());
@@ -323,26 +323,26 @@ mod tests {
 
     #[test]
     fn lookup_exit() {
-        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("exit");
+        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("exit");
         assert!(result.is_ok());
     }
 
     #[test]
     fn lookup_true() {
-        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("true");
+        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("true");
         assert!(result.is_ok());
     }
 
     #[test]
     fn lookup_false() {
-        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("false");
+        let result = lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("false");
         assert!(result.is_ok());
     }
 
     #[test]
     fn lookup_unknown_returns_error() {
         let result =
-            lookup_bin::<StringStdin, StringStdout, StringStderr, MockFilesystem>("nonexistent");
+            lookup_bin::<StringStdin, StringStdout, StringStderr, TestFilesystem>("nonexistent");
         assert!(matches!(result, Err(Error::UnknownBinary(_))));
     }
 }
