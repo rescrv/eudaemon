@@ -430,10 +430,10 @@ impl Repl {
         rl.set_edit_mode(EditMode::Vi);
 
         // Load history from file if it exists
-        let history_path = self.working_dir.join(".agentkb_history");
+        let history_path = self.working_dir.join(".lispdown_history");
         let _ = rl.load_history(&history_path);
 
-        println!("agentkb REPL (vim mode)");
+        println!("lispdown REPL (vim mode)");
         println!("Working directory: {}", self.working_dir.display());
         println!("Type :help for commands, :quit to exit\n");
 

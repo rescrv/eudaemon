@@ -4,7 +4,7 @@
 
 use std::io::{self, Read, Write};
 
-use agentkb::{SError, markdown_to_sexpr};
+use lispdown::{SError, markdown_to_sexpr};
 
 fn main() {
     let mut stdin = io::stdin();

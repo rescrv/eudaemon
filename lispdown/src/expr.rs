@@ -10,7 +10,7 @@ use crate::error::{SError, SResult};
 /// # Examples
 ///
 /// ```
-/// use agentkb::SExpr;
+/// use lispdown::SExpr;
 ///
 /// // An atom representing a symbol
 /// let symbol = SExpr::Atom("hello".to_string());
@@ -58,7 +58,7 @@ impl std::fmt::Display for SExpr {
 /// # Examples
 ///
 /// ```
-/// use agentkb::Parser;
+/// use lispdown::Parser;
 ///
 /// let mut parser = Parser::new("(doc (h1 \"Hello\"))");
 /// let expr = parser.parse().unwrap();

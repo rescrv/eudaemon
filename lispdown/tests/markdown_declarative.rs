@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use agentkb::run_test_directory;
+use lispdown::run_test_directory;
 
 #[test]
 fn run_all_markdown_tests() {

@@ -1,6 +1,6 @@
 //! A toolkit for transforming markdown documents using S-expressions.
 //!
-//! `agentkb` provides a bidirectional transformation layer between markdown and
+//! `lispdown` provides a bidirectional transformation layer between markdown and
 //! S-expressions, enabling programmatic manipulation of markdown content through
 //! a Lisp-like representation.  The crate is designed for building knowledge bases
 //! where documents need to be queried, transformed, and curated by automated agents.
@@ -35,7 +35,7 @@
 //! # Example
 //!
 //! ```rust
-//! use agentkb::{markdown_to_sexpr, sexpr_to_markdown, Parser, Vm};
+//! use lispdown::{markdown_to_sexpr, sexpr_to_markdown, Parser, Vm};
 //!
 //! // Parse markdown to S-expression
 //! let doc = markdown_to_sexpr("# Hello\n\nWorld!").unwrap();

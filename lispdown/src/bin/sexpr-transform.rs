@@ -8,7 +8,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use agentkb::{Parser, SError, SExpr, Vm, register_markdown_builtins};
+use lispdown::{Parser, SError, SExpr, Vm, register_markdown_builtins};
 
 fn setup_vm() -> Vm {
     let mut vm = Vm::new();

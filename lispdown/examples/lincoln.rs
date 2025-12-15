@@ -1,6 +1,6 @@
 //! Refactor a markdown document into a directory hierarchy based on header structure.
 //!
-//! This example demonstrates agentkb by running a Lisp program that:
+//! This example demonstrates lispdown by running a Lisp program that:
 //! 1. Loads lincoln.md
 //! 2. Extracts sections based on header hierarchy  
 //! 3. Writes each section to its own file in a directory tree
@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use agentkb::{register_markdown_builtins, DirectoryFilesystem, Parser, Vm, VmState};
+use lispdown::{register_markdown_builtins, DirectoryFilesystem, Parser, Vm, VmState};
 
 /// The Lisp program that does the actual work.
 ///

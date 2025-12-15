@@ -2,7 +2,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use agentkb::{SError, json_to_sexpr};
+use lispdown::{SError, json_to_sexpr};
 
 fn main() {
     let stdin = io::stdin();

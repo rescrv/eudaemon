@@ -1,4 +1,4 @@
-//! Agent-accessible documentation for the agentkb Lisp dialect.
+//! Agent-accessible documentation for the lispdown Lisp dialect.
 //!
 //! This module provides compile-time embedded documentation files that can be overlaid
 //! onto a user's knowledge base using virtual file systems.  An agent consulting these
