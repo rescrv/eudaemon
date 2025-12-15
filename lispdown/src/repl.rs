@@ -26,7 +26,6 @@ use rustyline::{Context, Editor, Helper};
 
 use super::error::{SError, SResult};
 use super::expr::{Parser, SExpr};
-use super::filesystem::DirectoryFilesystem;
 use super::markdown::curation::{
     LinkInfo, extract_sections, find_undefined_references, generate_toc, get_external_links,
     get_image_links, get_internal_links, link_info_to_sexpr, mark_deprecated, normalize_headers,
@@ -47,6 +46,7 @@ use super::nodeid::{
 };
 use super::util::{extract_string, find_markdown_files, string_atom};
 use super::vm::{Restart, Vm, VmState};
+use eudaemonty::DirectoryFilesystem;
 
 // NOTE: All builtin functions take `_vm: &Vm` as the first parameter but don't use it.
 // This is because the BuiltinFn signature requires it for filesystem access in other builtins.
@@ -212,7 +212,11 @@ impl Repl {
     /// file operations via builtins like `load`, `save`, `list-files`, etc.
     fn create_vm_with_filesystem(&self) -> SResult<Vm> {
         let mut vm = self.create_vm();
-        let fs = DirectoryFilesystem::new(&self.working_dir)?;
+        let fs = DirectoryFilesystem::new(&self.working_dir).map_err(|e| {
+            SError::new("filesystem")
+                .with_code("init-error")
+                .with_message(&e.to_string())
+        })?;
         vm.set_filesystem(Box::new(fs));
         Ok(vm)
     }

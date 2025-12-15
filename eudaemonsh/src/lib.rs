@@ -10,7 +10,6 @@ mod filesystem;
 
 pub use builtins::lookup_bin;
 pub use builtins::sh;
-pub use eudaemonty::DebugReplConfig;
 pub use eudaemonty::DirEntry;
 pub use eudaemonty::FileMetadata;
 pub use eudaemonty::FileType;
@@ -182,7 +181,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     /// Create a new command from a binary name and environment.
     pub fn new(bin: &str, env: Environment<SI, SO, SE, FS>) -> Result<Self, Error> {

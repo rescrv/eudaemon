@@ -881,21 +881,425 @@ impl<D: BlockDevice, T: Fn() -> i64> LfsSyncFilesystem<D, T> {
     }
 }
 
+/// Convert an LFS error to an eudaemonty Error.
+fn lfs_error_to_eudaemonty_error(err: crate::Error) -> eudaemonty::Error {
+    eudaemonty::Error::Io(std::io::Error::other(format!("{:?}", err)))
+}
+
+/// Convert LFS StatInfo to eudaemonty DirEntry.
+fn stat_info_to_dir_entry(info: &StatInfo) -> eudaemonty::DirEntry {
+    eudaemonty::DirEntry {
+        file_type: info.file_type,
+        size: info.size,
+        atime_ms: info.atime_ms,
+        mtime_ms: info.mtime_ms,
+        dev: info.dev,
+        ino: info.ino,
+    }
+}
+
+/// The root path string for LfsSyncFilesystem.
+static LFS_ROOT: &str = "/";
+
 impl<D: BlockDevice + Send, T: Fn() -> i64 + Send> Filesystem for LfsSyncFilesystem<D, T> {
-    fn root(&self) -> &Path {
-        Path::new("/")
+    fn root(&self) -> utf8path::Path<'_> {
+        utf8path::Path::new(LFS_ROOT)
     }
 
-    fn list_markdown_files(&self) -> SResult<Vec<String>> {
+    fn dup(&self) -> Self {
+        Self {
+            lfs: Arc::clone(&self.lfs),
+        }
+    }
+
+    fn read_to_string(&self, path: &str) -> Result<String, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        let bytes = lfs
+            .read_file(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)?;
+        String::from_utf8(bytes).map_err(|e| {
+            eudaemonty::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid UTF-8: {}", e),
+            ))
+        })
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        lfs.exists(&full_path)
+    }
+
+    fn metadata(&self, path: &str) -> Result<eudaemonty::FileMetadata, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        let info = lfs
+            .stat(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)?;
+        Ok(eudaemonty::FileMetadata { size: info.size })
+    }
+
+    fn truncate(&self, path: &str, size: u64) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.truncate_path(&full_path, size)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.truncate_existing(&full_path, size)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn punch_hole(&self, _path: &str, _offset: u64, _length: u64) -> Result<(), eudaemonty::Error> {
+        Err(eudaemonty::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "punch_hole not supported on LFS",
+        )))
+    }
+
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+
+        let mut lfs = self.lfs.lock().unwrap();
+
+        // Ensure parent directory exists
+        if let Some(parent) = std::path::Path::new(&full_path).parent() {
+            let parent_str = parent.to_string_lossy();
+            if parent_str != "/" && !parent_str.is_empty() {
+                let _ = lfs.mkdir_all(&parent_str);
+            }
+        }
+
+        lfs.write_file(&full_path, contents.as_bytes())
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.append_file(&full_path, contents.as_bytes())
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn mkdir(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.mkdir(&full_path).map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn mkdir_all(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.mkdir_all(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        lfs.is_dir(&full_path)
+    }
+
+    fn read_dir(
+        &self,
+        path: &str,
+    ) -> Result<Vec<(String, eudaemonty::DirEntry)>, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        let entries = lfs
+            .read_dir(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, info)| (name, stat_info_to_dir_entry(&info)))
+            .collect())
+    }
+
+    fn stat(&self, path: &str) -> Result<eudaemonty::DirEntry, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        let info = lfs
+            .stat(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)?;
+        Ok(stat_info_to_dir_entry(&info))
+    }
+
+    fn lstat(&self, path: &str) -> Result<eudaemonty::DirEntry, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        let info = lfs
+            .lstat(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)?;
+        Ok(stat_info_to_dir_entry(&info))
+    }
+
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), eudaemonty::Error> {
+        let full_linkpath = if linkpath.starts_with('/') {
+            linkpath.to_string()
+        } else {
+            format!("/{}", linkpath)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.symlink(target, &full_linkpath)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn link(&self, src: &str, dst: &str) -> Result<(), eudaemonty::Error> {
+        let full_src = if src.starts_with('/') {
+            src.to_string()
+        } else {
+            format!("/{}", src)
+        };
+        let full_dst = if dst.starts_with('/') {
+            dst.to_string()
+        } else {
+            format!("/{}", dst)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.link(&full_src, &full_dst)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn unlink(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.remove(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.rmdir(&full_path).map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let lfs = self.lfs.lock().unwrap();
+        lfs.readlink(&full_path)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn set_times(
+        &self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.set_times(&full_path, atime, mtime)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn lset_times(
+        &self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> Result<(), eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.lset_times(&full_path, atime, mtime)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn create_file(&self, path: &str) -> Result<bool, eudaemonty::Error> {
+        let full_path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        if lfs.exists(&full_path) {
+            return Ok(false);
+        }
+        lfs.write_file(&full_path, &[])
+            .map_err(lfs_error_to_eudaemonty_error)?;
+        Ok(true)
+    }
+
+    fn rename(&self, src: &str, dst: &str) -> Result<(), eudaemonty::Error> {
+        let full_src = if src.starts_with('/') {
+            src.to_string()
+        } else {
+            format!("/{}", src)
+        };
+        let full_dst = if dst.starts_with('/') {
+            dst.to_string()
+        } else {
+            format!("/{}", dst)
+        };
+        let mut lfs = self.lfs.lock().unwrap();
+        lfs.rename(&full_src, &full_dst)
+            .map_err(lfs_error_to_eudaemonty_error)
+    }
+
+    fn mkstemp(&self, template: &str) -> Result<String, eudaemonty::Error> {
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut lfs = self.lfs.lock().unwrap();
+        let seed = (lfs.time_source)() as u64 ^ (std::process::id() as u64);
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            let full_path = if path.starts_with('/') {
+                path.clone()
+            } else {
+                format!("/{}", path)
+            };
+
+            if !lfs.exists(&full_path) && lfs.write_file(&full_path, &[]).is_ok() {
+                return Ok(path);
+            }
+        }
+
+        Err(eudaemonty::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary file",
+        )))
+    }
+
+    fn mkdtemp(&self, template: &str) -> Result<String, eudaemonty::Error> {
+        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut lfs = self.lfs.lock().unwrap();
+        let seed = (lfs.time_source)() as u64 ^ (std::process::id() as u64);
+        let mut state = seed;
+
+        for attempt in 0..100u64 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(attempt);
+
+            let mut path = String::new();
+            let mut s = state;
+            for c in template.chars() {
+                if c == 'X' {
+                    path.push(chars[(s % 62) as usize] as char);
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                } else {
+                    path.push(c);
+                }
+            }
+
+            let full_path = if path.starts_with('/') {
+                path.clone()
+            } else {
+                format!("/{}", path)
+            };
+
+            if !lfs.exists(&full_path) && lfs.mkdir(&full_path).is_ok() {
+                return Ok(path);
+            }
+        }
+
+        Err(eudaemonty::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create unique temporary directory",
+        )))
+    }
+
+    fn list_markdown_files(&self) -> Result<Vec<String>, eudaemonty::Error> {
         let lfs = self.lfs.lock().unwrap();
 
-        // Recursively find all .md files
         fn find_md_files<D: BlockDevice, T: Fn() -> i64>(
             lfs: &Lfs<D, T>,
             path: &str,
             results: &mut Vec<String>,
-        ) -> SResult<()> {
-            let entries = lfs.read_dir(path).map_err(lfs_error_to_serror)?;
+        ) -> Result<(), eudaemonty::Error> {
+            let entries = lfs.read_dir(path).map_err(lfs_error_to_eudaemonty_error)?;
             for (name, info) in entries {
                 if name == "." || name == ".." {
                     continue;
@@ -911,7 +1315,6 @@ impl<D: BlockDevice + Send, T: Fn() -> i64 + Send> Filesystem for LfsSyncFilesys
                     }
                     FileType::RegularFile => {
                         if name.ends_with(".md") || name.ends_with(".MD") {
-                            // Return path without leading slash for compatibility
                             results.push(full_path.trim_start_matches('/').to_string());
                         }
                     }
@@ -925,54 +1328,6 @@ impl<D: BlockDevice + Send, T: Fn() -> i64 + Send> Filesystem for LfsSyncFilesys
         find_md_files(&lfs, "/", &mut results)?;
         results.sort();
         Ok(results)
-    }
-
-    fn read(&self, path: &str) -> SResult<String> {
-        let full_path = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        };
-        let mut lfs = self.lfs.lock().unwrap();
-        let bytes = lfs.read_file(&full_path).map_err(lfs_error_to_serror)?;
-        String::from_utf8(bytes).map_err(|e| {
-            SError::new("lfs")
-                .with_code("invalid-utf8")
-                .with_message("File contains invalid UTF-8")
-                .with_string_field("error", &e.to_string())
-        })
-    }
-
-    fn write(&self, path: &str, content: &str) -> SResult<()> {
-        let full_path = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        };
-
-        let mut lfs = self.lfs.lock().unwrap();
-
-        // Ensure parent directory exists
-        if let Some(parent) = Path::new(&full_path).parent() {
-            let parent_str = parent.to_string_lossy();
-            if parent_str != "/" && !parent_str.is_empty() {
-                // Ignore error if directory already exists
-                let _ = lfs.mkdir_all(&parent_str);
-            }
-        }
-
-        lfs.write_file(&full_path, content.as_bytes())
-            .map_err(lfs_error_to_serror)
-    }
-
-    fn exists(&self, path: &str) -> bool {
-        let full_path = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        };
-        let lfs = self.lfs.lock().unwrap();
-        lfs.exists(&full_path)
     }
 }
 

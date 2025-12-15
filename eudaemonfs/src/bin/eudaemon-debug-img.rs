@@ -42,6 +42,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrrg::CommandLine;
 use arrrg_derive::CommandLine;
+use utf8path::Path;
 
 use eudaemonfs::lisp::{DebugImgRepl, DebugImgReplConfig, LfsLisp, parse_size};
 use eudaemonfs::{DeviceId, FileBlockDevice, Lfs};
@@ -143,7 +144,7 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let device = match FileBlockDevice::create(path, total_blocks) {
+            let device = match FileBlockDevice::create(Path::new(path), total_blocks) {
                 Ok(dev) => dev,
                 Err(e) => {
                     eprintln!("Error creating file {}: {}", path, e);
@@ -180,7 +181,7 @@ fn main() {
             repl.run();
         } else {
             // Open existing filesystem
-            let device = match FileBlockDevice::open(path) {
+            let device = match FileBlockDevice::open(Path::new(path)) {
                 Ok(dev) => dev,
                 Err(e) => {
                     eprintln!("Error opening file {}: {}", path, e);

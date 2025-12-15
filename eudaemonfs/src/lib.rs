@@ -28,6 +28,9 @@ use std::collections::BTreeSet;
 
 pub mod lisp;
 
+pub use eudaemonty::FileType;
+pub use eudaemonty::TimeSpec;
+
 /// Block size in bytes.
 const BLOCK_SIZE: usize = 4096;
 
@@ -219,8 +222,8 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Mutex;
+use utf8path::Path;
 
 /// A block device backed by a file on disk.
 ///
@@ -236,8 +239,8 @@ impl FileBlockDevice {
     ///
     /// The file must already exist. The total number of blocks is computed
     /// from the file size.
-    pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+    pub fn open(path: Path<'_>) -> std::io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let metadata = file.metadata()?;
         let total_blocks = metadata.len() / BLOCK_SIZE as u64;
         Ok(Self {
@@ -250,8 +253,7 @@ impl FileBlockDevice {
     ///
     /// If the file doesn't exist, it is created with the specified size.
     /// If the file exists, it is opened and the size parameter is ignored.
-    pub fn create<P: AsRef<Path>>(path: P, total_blocks: u64) -> std::io::Result<Self> {
-        let path = path.as_ref();
+    pub fn create(path: Path<'_>, total_blocks: u64) -> std::io::Result<Self> {
         if path.exists() {
             Self::open(path)
         } else {
@@ -260,7 +262,7 @@ impl FileBlockDevice {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(path)?;
+                .open(&path)?;
             let size = total_blocks * BLOCK_SIZE as u64;
             file.set_len(size)?;
             Ok(Self {
@@ -332,21 +334,6 @@ impl InodeType {
     }
 }
 
-/////////////////////////////////////////////// FileType ////////////////////////////////////////////////
-
-/// The type of a file system entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileType {
-    /// A regular file.
-    RegularFile,
-    /// A directory.
-    Directory,
-    /// A symbolic link.
-    Symlink,
-    /// Other file type.
-    Other,
-}
-
 impl From<InodeType> for FileType {
     fn from(inode_type: InodeType) -> Self {
         match inode_type {
@@ -376,19 +363,6 @@ pub struct StatInfo {
     pub ino: u64,
     /// Number of hard links.
     pub link_count: u32,
-}
-
-/////////////////////////////////////////////// TimeSpec ////////////////////////////////////////////////
-
-/// Specification for setting file timestamps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeSpec {
-    /// Set to current time.
-    Now,
-    /// Leave unchanged.
-    Omit,
-    /// Set to specific milliseconds since UNIX epoch.
-    Time(i64),
 }
 
 ////////////////////////////////////////////// InodeNumber /////////////////////////////////////////////
@@ -471,12 +445,12 @@ impl DebugLog {
     }
 
     /// Creates a debug log that writes to a file.
-    pub fn to_file<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    pub fn to_file(path: Path<'_>) -> std::io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(path)?;
+            .open(&path)?;
         Ok(Self::new(Box::new(file)))
     }
 
@@ -6668,8 +6642,8 @@ mod tests {
         let total_blocks = 64;
 
         // Create a new file block device
-        let mut device =
-            FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+        let mut device = FileBlockDevice::create(Path::new(&test_file), total_blocks)
+            .expect("create file device");
         assert_eq!(device.total_blocks(), total_blocks);
         println!(
             "Created FileBlockDevice with {} blocks",
@@ -6708,8 +6682,8 @@ mod tests {
 
         // First, create a device and write some data
         {
-            let mut device =
-                FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+            let mut device = FileBlockDevice::create(Path::new(&test_file), total_blocks)
+                .expect("create file device");
             let mut write_buf = [0u8; BLOCK_SIZE];
             write_buf[0..7].copy_from_slice(b"Persist");
             device
@@ -6719,7 +6693,7 @@ mod tests {
         }
 
         // Now open the existing file
-        let device = FileBlockDevice::open(&test_file).expect("open existing file");
+        let device = FileBlockDevice::open(Path::new(&test_file)).expect("open existing file");
         assert_eq!(device.total_blocks(), total_blocks);
         println!("Opened existing FileBlockDevice");
 
@@ -6741,8 +6715,8 @@ mod tests {
         let test_file = format!("test_file_block_device_invalid_{}.dat", std::process::id());
         let total_blocks = 16;
 
-        let mut device =
-            FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+        let mut device = FileBlockDevice::create(Path::new(&test_file), total_blocks)
+            .expect("create file device");
 
         // Try to read beyond the end
         let mut buf = [0u8; BLOCK_SIZE];
@@ -6767,8 +6741,8 @@ mod tests {
 
         // Create filesystem on file block device
         {
-            let device =
-                FileBlockDevice::create(&test_file, total_blocks).expect("create file device");
+            let device = FileBlockDevice::create(Path::new(&test_file), total_blocks)
+                .expect("create file device");
             let mut lfs = Lfs::new(
                 device,
                 total_blocks,
@@ -6788,7 +6762,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let device = FileBlockDevice::open(&test_file).expect("open file device");
+            let device = FileBlockDevice::open(Path::new(&test_file)).expect("open file device");
             let mut lfs = Lfs::open(
                 device,
                 total_blocks,
@@ -6819,7 +6793,8 @@ mod tests {
 
         // First, create a device and write some data
         {
-            let mut device = FileBlockDevice::create(&test_file, 32).expect("create file device");
+            let mut device =
+                FileBlockDevice::create(Path::new(&test_file), 32).expect("create file device");
             let mut write_buf = [0u8; BLOCK_SIZE];
             write_buf[0..4].copy_from_slice(b"Test");
             device
@@ -6829,7 +6804,8 @@ mod tests {
         }
 
         // Call create again - should open existing file (not truncate)
-        let device = FileBlockDevice::create(&test_file, 64).expect("create on existing");
+        let device =
+            FileBlockDevice::create(Path::new(&test_file), 64).expect("create on existing");
         assert_eq!(
             device.total_blocks(),
             32,

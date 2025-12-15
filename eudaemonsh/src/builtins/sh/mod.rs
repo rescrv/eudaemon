@@ -10,7 +10,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     let args = &env.args;
 
@@ -48,7 +48,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     let contents = match env.fs.read_to_string(path) {
         Ok(c) => c,
@@ -70,7 +70,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     let mut last_exit = ExitCode::from(0);
     for line in script.lines() {
@@ -96,7 +96,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     let args = shvar::split(&command)?;
     if args.is_empty() || args[0].is_empty() {

@@ -19,7 +19,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     let opts_def = build_options();
 

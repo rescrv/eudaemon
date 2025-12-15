@@ -3,17 +3,14 @@
 //! This builtin launches an interactive S-expression REPL that allows
 //! parsing, querying, and manipulating markdown documents in the current directory.
 
-#![allow(dead_code)]
-
-use std::path::Path;
-
 use getopts::Options;
+use utf8path::Path;
 
-use lispdown::{Parser, SError, SExpr, SResult, Vm, register_markdown_builtins};
+use lispdown::{Parser, Vm, register_markdown_builtins};
 
 use crate::FileType;
 use crate::Filesystem as EuFilesystem;
-use crate::{Environment, Error, ExitCode, FsError, Stderr, Stdin, Stdout, resolve_path};
+use crate::{DirEntry, Environment, Error, ExitCode, FsError, Stderr, Stdin, Stdout, resolve_path};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -42,7 +39,7 @@ fn print_usage<W: Stderr>(out: &W) -> Result<(), Error> {
     out.write_line("")?;
     out.write_line("Markdown Functions:")?;
     out.write_line("  (load \"file.md\")              Load and parse markdown file")?;
-    out.write_line("  (save \"file.md\" doc)          Save document to file")?;
+    out.write_line("  (save doc \"file.md\")          Save document to file")?;
     out.write_line("  (markdown-to-sexpr str)        Parse markdown string")?;
     out.write_line("  (sexpr-to-markdown doc)        Convert to markdown")?;
     out.write_line("  (get-by-path doc \"1.2\")       Get node by path")?;
@@ -59,7 +56,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: EuFilesystem + Clone + Send + Sync + 'static,
+    FS: EuFilesystem + 'static,
 {
     let opts_def = build_options();
 
@@ -83,12 +80,12 @@ where
         env.cwd.as_str().to_string()
     };
 
-    // Create the filesystem adapter
+    // Create the filesystem adapter with path resolution
     let adapter = FilesystemAdapter::new(env.fs.dup(), working_dir.clone());
 
     // If -e is provided, evaluate and exit
     if let Some(expr_str) = matches.opt_str("e") {
-        let mut vm = create_vm(&adapter);
+        let mut vm = create_vm(adapter);
 
         match evaluate_expr(&mut vm, &expr_str) {
             Ok(result) => {
@@ -111,6 +108,8 @@ where
         .write_line("Type :help for commands, :quit to exit")?;
     env.stdout.write_line("")?;
 
+    // For interactive mode, we need a fresh adapter for each command
+    // since handle_command needs to borrow the adapter
     loop {
         env.stdout.write_str("λ> ")?;
 
@@ -126,7 +125,7 @@ where
 
         // Handle REPL commands
         if input.starts_with(':') {
-            match handle_command(env, &adapter, input) {
+            match handle_command(env, &working_dir, input) {
                 Ok(true) => continue,
                 Ok(false) => break,
                 Err(e) => {
@@ -136,8 +135,9 @@ where
             }
         }
 
-        // Create fresh VM for each evaluation
-        let mut vm = create_vm(&adapter);
+        // Create fresh VM and adapter for each evaluation
+        let adapter = FilesystemAdapter::new(env.fs.dup(), working_dir.clone());
+        let mut vm = create_vm(adapter);
 
         match evaluate_expr(&mut vm, input) {
             Ok(result) => {
@@ -153,37 +153,27 @@ where
 }
 
 /// Create a VM with all markdown and filesystem builtins registered.
-fn create_vm<FS: EuFilesystem + Send + Sync + 'static>(adapter: &FilesystemAdapter<FS>) -> Vm {
+fn create_vm<FS: EuFilesystem + 'static>(adapter: FilesystemAdapter<FS>) -> Vm {
     let mut vm = Vm::new();
     vm.register_builtins();
     vm.register_json_builtins();
     register_markdown_builtins(&mut vm);
 
-    // Set up thread-local storage for our builtins
-    set_thread_local_adapter(Box::new(ThreadLocalAdapter {
-        fs: Box::new(adapter.fs.dup()),
-        cwd: adapter.cwd.clone(),
-    }));
-
-    // Register our filesystem-backed builtins
-    vm.def_fn("load", builtin_load);
-    vm.def_fn("save", builtin_save);
-    vm.def_fn("list-files", builtin_list_files);
-    vm.def_fn("read-file", builtin_read_file);
-    vm.def_fn("write-file", builtin_write_file);
-    vm.def_fn("file-exists?", builtin_file_exists);
+    // Set the filesystem on the VM - lispdown's filesystem builtins will use this
+    vm.set_filesystem(Box::new(adapter));
+    vm.register_filesystem_builtins();
 
     vm
 }
 
 /// Evaluate an S-expression string and return the result.
-fn evaluate_expr(vm: &mut Vm, input: &str) -> Result<SExpr, String> {
+fn evaluate_expr(vm: &mut Vm, input: &str) -> Result<lispdown::SExpr, String> {
     let mut parser = Parser::new(input);
     let expr = parser.parse().map_err(|e| e.to_string())?;
     vm.eval(&expr).map_err(|e| e.to_string())
 }
 
-/// Adapter from eudaemonsh Filesystem to lispdown Filesystem.
+/// Adapter that wraps an EuFilesystem and resolves paths relative to a working directory.
 #[derive(Clone)]
 struct FilesystemAdapter<FS: EuFilesystem> {
     fs: FS,
@@ -200,39 +190,160 @@ impl<FS: EuFilesystem> FilesystemAdapter<FS> {
     }
 }
 
-impl<FS: EuFilesystem + Send + Sync> lispdown::Filesystem for FilesystemAdapter<FS> {
-    fn root(&self) -> &Path {
+impl<FS: EuFilesystem> lispdown::Filesystem for FilesystemAdapter<FS> {
+    fn dup(&self) -> Self {
+        Self {
+            fs: self.fs.dup(),
+            cwd: self.cwd.clone(),
+        }
+    }
+
+    fn root(&self) -> Path<'_> {
         Path::new(&self.cwd)
     }
 
-    fn list_markdown_files(&self) -> SResult<Vec<String>> {
+    fn list_markdown_files(&self) -> Result<Vec<String>, eudaemonty::Error> {
         let mut files = Vec::new();
         find_markdown_recursive(&self.fs, &self.cwd, &self.cwd, &mut files)?;
         files.sort();
         Ok(files)
     }
 
-    fn read(&self, path: &str) -> SResult<String> {
+    fn read_to_string(&self, path: &str) -> Result<String, eudaemonty::Error> {
         let resolved = self.resolve(path);
-        self.fs.read_to_string(&resolved).map_err(|e| {
-            SError::new("read")
-                .with_code("io-error")
-                .with_message(&format!("{:?}", e))
-        })
-    }
-
-    fn write(&self, path: &str, content: &str) -> SResult<()> {
-        let resolved = self.resolve(path);
-        self.fs.write_string(&resolved, content).map_err(|e| {
-            SError::new("write")
-                .with_code("io-error")
-                .with_message(&format!("{:?}", e))
-        })
+        self.fs.read_to_string(&resolved)
     }
 
     fn exists(&self, path: &str) -> bool {
         let resolved = self.resolve(path);
         self.fs.exists(&resolved)
+    }
+
+    fn metadata(&self, path: &str) -> Result<eudaemonty::FileMetadata, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.metadata(&resolved)
+    }
+
+    fn truncate(&self, path: &str, size: u64) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.truncate(&resolved, size)
+    }
+
+    fn truncate_existing(&self, path: &str, size: u64) -> Result<bool, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.truncate_existing(&resolved, size)
+    }
+
+    fn punch_hole(&self, path: &str, offset: u64, length: u64) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.punch_hole(&resolved, offset, length)
+    }
+
+    fn write_string(&self, path: &str, contents: &str) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.write_string(&resolved, contents)
+    }
+
+    fn append_string(&self, path: &str, contents: &str) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.append_string(&resolved, contents)
+    }
+
+    fn mkdir(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.mkdir(&resolved)
+    }
+
+    fn mkdir_all(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.mkdir_all(&resolved)
+    }
+
+    fn is_dir(&self, path: &str) -> bool {
+        let resolved = self.resolve(path);
+        self.fs.is_dir(&resolved)
+    }
+
+    fn read_dir(&self, path: &str) -> Result<Vec<(String, DirEntry)>, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.read_dir(&resolved)
+    }
+
+    fn stat(&self, path: &str) -> Result<DirEntry, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.stat(&resolved)
+    }
+
+    fn lstat(&self, path: &str) -> Result<DirEntry, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.lstat(&resolved)
+    }
+
+    fn symlink(&self, target: &str, linkpath: &str) -> Result<(), eudaemonty::Error> {
+        let resolved_linkpath = self.resolve(linkpath);
+        self.fs.symlink(target, &resolved_linkpath)
+    }
+
+    fn link(&self, src: &str, dst: &str) -> Result<(), eudaemonty::Error> {
+        let resolved_src = self.resolve(src);
+        let resolved_dst = self.resolve(dst);
+        self.fs.link(&resolved_src, &resolved_dst)
+    }
+
+    fn unlink(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.unlink(&resolved)
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.rmdir(&resolved)
+    }
+
+    fn readlink(&self, path: &str) -> Result<String, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.readlink(&resolved)
+    }
+
+    fn set_times(
+        &self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.set_times(&resolved, atime, mtime)
+    }
+
+    fn lset_times(
+        &self,
+        path: &str,
+        atime: eudaemonty::TimeSpec,
+        mtime: eudaemonty::TimeSpec,
+    ) -> Result<(), eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.lset_times(&resolved, atime, mtime)
+    }
+
+    fn create_file(&self, path: &str) -> Result<bool, eudaemonty::Error> {
+        let resolved = self.resolve(path);
+        self.fs.create_file(&resolved)
+    }
+
+    fn rename(&self, src: &str, dst: &str) -> Result<(), eudaemonty::Error> {
+        let resolved_src = self.resolve(src);
+        let resolved_dst = self.resolve(dst);
+        self.fs.rename(&resolved_src, &resolved_dst)
+    }
+
+    fn mkstemp(&self, template: &str) -> Result<String, eudaemonty::Error> {
+        let resolved = self.resolve(template);
+        self.fs.mkstemp(&resolved)
+    }
+
+    fn mkdtemp(&self, template: &str) -> Result<String, eudaemonty::Error> {
+        let resolved = self.resolve(template);
+        self.fs.mkdtemp(&resolved)
     }
 }
 
@@ -241,12 +352,8 @@ fn find_markdown_recursive<FS: EuFilesystem>(
     base: &str,
     path: &str,
     results: &mut Vec<String>,
-) -> SResult<()> {
-    let entries = fs.read_dir(path).map_err(|e| {
-        SError::new("list")
-            .with_code("io-error")
-            .with_message(&format!("{:?}", e))
-    })?;
+) -> Result<(), eudaemonty::Error> {
+    let entries = fs.read_dir(path)?;
 
     for (name, entry) in entries {
         if name == "." || name == ".." {
@@ -271,7 +378,7 @@ fn find_markdown_recursive<FS: EuFilesystem>(
 /// Returns Ok(true) to continue, Ok(false) to quit.
 fn handle_command<SI, SO, SE, FS>(
     env: &Environment<SI, SO, SE, FS>,
-    adapter: &FilesystemAdapter<FS>,
+    working_dir: &str,
     input: &str,
 ) -> Result<bool, Error>
 where
@@ -294,8 +401,8 @@ where
 
         ":ls" | ":list" => {
             let mut files = Vec::new();
-            find_markdown_recursive(&env.fs, &adapter.cwd, &adapter.cwd, &mut files)
-                .map_err(|e| FsError::Io(std::io::Error::other(e.to_string())))?;
+            find_markdown_recursive(&env.fs, working_dir, working_dir, &mut files)
+                .map_err(|e| FsError::Io(std::io::Error::other(format!("{:?}", e))))?;
             if files.is_empty() {
                 env.stdout.write_line("No markdown files in directory")?;
             } else {
@@ -311,7 +418,7 @@ where
                 return Ok(true);
             }
             let filename = parts[1];
-            let path = adapter.resolve(filename);
+            let path = resolve_path(working_dir, filename);
             match env.fs.read_to_string(&path) {
                 Ok(content) => match lispdown::markdown_to_sexpr(&content) {
                     Ok(doc) => {
@@ -334,7 +441,7 @@ where
                 return Ok(true);
             }
             let filename = parts[1];
-            let path = adapter.resolve(filename);
+            let path = resolve_path(working_dir, filename);
             match env.fs.read_to_string(&path) {
                 Ok(content) => {
                     env.stdout.write_line(&content)?;
@@ -352,7 +459,7 @@ where
                 return Ok(true);
             }
             let filename = parts[1];
-            let path = adapter.resolve(filename);
+            let path = resolve_path(working_dir, filename);
             match env.fs.read_to_string(&path) {
                 Ok(content) => match lispdown::markdown_to_sexpr(&content) {
                     Ok(doc) => {
@@ -371,7 +478,7 @@ where
         }
 
         ":pwd" => {
-            env.stdout.write_line(&adapter.cwd)?;
+            env.stdout.write_line(working_dir)?;
         }
 
         _ => {
@@ -383,239 +490,6 @@ where
     }
 
     Ok(true)
-}
-
-// ============================================================================
-// Thread-local storage for filesystem access from builtins
-// ============================================================================
-
-thread_local! {
-    static THREAD_ADAPTER: std::cell::RefCell<Option<Box<ThreadLocalAdapter>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Type-erased filesystem adapter for thread-local storage.
-struct ThreadLocalAdapter {
-    fs: Box<dyn ThreadLocalFs>,
-    cwd: String,
-}
-
-/// Trait for type-erased filesystem operations.
-trait ThreadLocalFs: Send {
-    fn read_to_string(&self, path: &str) -> Result<String, Error>;
-    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error>;
-    fn exists(&self, path: &str) -> bool;
-    fn read_dir(&self, path: &str) -> Result<Vec<(String, crate::DirEntry)>, Error>;
-}
-
-impl<FS: EuFilesystem + Send> ThreadLocalFs for FS {
-    fn read_to_string(&self, path: &str) -> Result<String, Error> {
-        Ok(EuFilesystem::read_to_string(self, path)?)
-    }
-
-    fn write_string(&self, path: &str, contents: &str) -> Result<(), Error> {
-        Ok(EuFilesystem::write_string(self, path, contents)?)
-    }
-
-    fn exists(&self, path: &str) -> bool {
-        EuFilesystem::exists(self, path)
-    }
-
-    fn read_dir(&self, path: &str) -> Result<Vec<(String, crate::DirEntry)>, Error> {
-        Ok(EuFilesystem::read_dir(self, path)?)
-    }
-}
-
-fn set_thread_local_adapter(adapter: Box<ThreadLocalAdapter>) {
-    THREAD_ADAPTER.with(|cell| {
-        *cell.borrow_mut() = Some(adapter);
-    });
-}
-
-fn with_adapter<F, R>(f: F) -> SResult<R>
-where
-    F: FnOnce(&ThreadLocalAdapter) -> SResult<R>,
-{
-    THREAD_ADAPTER.with(|cell| {
-        let borrow = cell.borrow();
-        match &*borrow {
-            Some(adapter) => f(adapter),
-            None => Err(SError::new("markdownsp")
-                .with_code("no-filesystem")
-                .with_message("No filesystem adapter registered")),
-        }
-    })
-}
-
-/// Extract a string from an S-expression, handling both quoted strings and atoms.
-fn extract_string(expr: &SExpr) -> String {
-    match expr {
-        SExpr::Atom(s) => {
-            if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                s[1..s.len() - 1].to_string()
-            } else {
-                s.clone()
-            }
-        }
-        SExpr::List(_) => String::new(),
-    }
-}
-
-// ============================================================================
-// Builtin functions
-// ============================================================================
-
-fn builtin_load(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.is_empty() {
-        return Err(SError::new("load")
-            .with_code("missing-argument")
-            .with_message("load requires a filename argument"));
-    }
-
-    with_adapter(|adapter| {
-        let filename = extract_string(&args[0]);
-        let path = resolve_path(&adapter.cwd, &filename);
-
-        let content = adapter.fs.read_to_string(&path).map_err(|e| {
-            SError::new("load")
-                .with_code("io-error")
-                .with_message(&format!("Failed to read {}: {:?}", filename, e))
-        })?;
-
-        lispdown::markdown_to_sexpr(&content)
-    })
-}
-
-fn builtin_save(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.len() < 2 {
-        return Err(SError::new("save")
-            .with_code("missing-argument")
-            .with_message("save requires filename and document arguments"));
-    }
-
-    with_adapter(|adapter| {
-        let filename = extract_string(&args[0]);
-        let doc = &args[1];
-        let path = resolve_path(&adapter.cwd, &filename);
-
-        let markdown = lispdown::sexpr_to_markdown(doc)?;
-        adapter.fs.write_string(&path, &markdown).map_err(|e| {
-            SError::new("save")
-                .with_code("io-error")
-                .with_message(&format!("Failed to write {}: {:?}", filename, e))
-        })?;
-
-        Ok(SExpr::Atom("t".to_string()))
-    })
-}
-
-fn builtin_list_files(_vm: &Vm, _args: &[SExpr]) -> SResult<SExpr> {
-    with_adapter(|adapter| {
-        let mut files = Vec::new();
-        find_markdown_files_tl(&*adapter.fs, &adapter.cwd, &adapter.cwd, &mut files)?;
-        let items: Vec<SExpr> = files
-            .into_iter()
-            .map(|f| SExpr::Atom(format!("\"{}\"", f)))
-            .collect();
-        Ok(SExpr::List(items))
-    })
-}
-
-fn find_markdown_files_tl(
-    fs: &dyn ThreadLocalFs,
-    base: &str,
-    path: &str,
-    results: &mut Vec<String>,
-) -> SResult<()> {
-    let entries = fs.read_dir(path).map_err(|e| {
-        SError::new("list-files")
-            .with_code("io-error")
-            .with_message(&format!("{:?}", e))
-    })?;
-
-    for (name, entry) in entries {
-        if name == "." || name == ".." {
-            continue;
-        }
-        let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
-
-        if entry.file_type == FileType::Directory {
-            find_markdown_files_tl(fs, base, &full_path, results)?;
-        } else if name.ends_with(".md") || name.ends_with(".MD") {
-            let rel_path = full_path
-                .strip_prefix(base)
-                .unwrap_or(&full_path)
-                .trim_start_matches('/');
-            results.push(rel_path.to_string());
-        }
-    }
-    Ok(())
-}
-
-fn builtin_read_file(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.is_empty() {
-        return Err(SError::new("read-file")
-            .with_code("missing-argument")
-            .with_message("read-file requires a filename argument"));
-    }
-
-    with_adapter(|adapter| {
-        let filename = extract_string(&args[0]);
-        let path = resolve_path(&adapter.cwd, &filename);
-
-        let content = adapter.fs.read_to_string(&path).map_err(|e| {
-            SError::new("read-file")
-                .with_code("io-error")
-                .with_message(&format!("Failed to read {}: {:?}", filename, e))
-        })?;
-
-        let escaped = content
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t");
-        Ok(SExpr::Atom(format!("\"{}\"", escaped)))
-    })
-}
-
-fn builtin_write_file(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.len() < 2 {
-        return Err(SError::new("write-file")
-            .with_code("missing-argument")
-            .with_message("write-file requires filename and content arguments"));
-    }
-
-    with_adapter(|adapter| {
-        let filename = extract_string(&args[0]);
-        let content = extract_string(&args[1]);
-        let path = resolve_path(&adapter.cwd, &filename);
-
-        adapter.fs.write_string(&path, &content).map_err(|e| {
-            SError::new("write-file")
-                .with_code("io-error")
-                .with_message(&format!("Failed to write {}: {:?}", filename, e))
-        })?;
-
-        Ok(SExpr::Atom("t".to_string()))
-    })
-}
-
-fn builtin_file_exists(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.is_empty() {
-        return Err(SError::new("file-exists?")
-            .with_code("missing-argument")
-            .with_message("file-exists? requires a filename argument"));
-    }
-
-    with_adapter(|adapter| {
-        let filename = extract_string(&args[0]);
-        let path = resolve_path(&adapter.cwd, &filename);
-
-        Ok(SExpr::Atom(
-            if adapter.fs.exists(&path) { "t" } else { "nil" }.to_string(),
-        ))
-    })
 }
 
 #[cfg(test)]
@@ -699,7 +573,7 @@ mod tests {
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
         println!("stdout: {:?}", stdout);
-        assert!(stdout.contains("t"));
+        assert!(stdout.contains("#t"));
     }
 
     #[test]
@@ -714,7 +588,7 @@ mod tests {
         assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
         println!("stdout: {:?}", stdout);
-        assert!(stdout.contains("nil"));
+        assert!(stdout.contains("#f"));
     }
 
     #[test]
@@ -722,14 +596,17 @@ mod tests {
         let env = make_test_env(vec![
             "markdownsp",
             "-e",
-            "(save \"output.md\" (markdown-to-sexpr \"# New Doc\"))",
+            "(save (markdown-to-sexpr \"# New Doc\") \"output.md\")",
         ]);
         env.fs.add_directory("/");
         let result = bin(&env).unwrap();
-        assert_eq!(0, result.code());
         let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
-        assert!(stdout.contains("t"));
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        // save returns the path as a string
+        assert!(stdout.contains("output.md"));
 
         // Verify file was written
         let content = EuFilesystem::read_to_string(&env.fs, "/output.md").unwrap();

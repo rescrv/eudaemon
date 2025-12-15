@@ -14,10 +14,10 @@ use std::sync::Arc;
 use crate::docs::get_help;
 use crate::error::{SError, SResult};
 use crate::expr::SExpr;
-use crate::filesystem::Filesystem;
 use crate::markdown::{markdown_to_sexpr, sexpr_to_markdown};
 use crate::object::{assoc, dissoc, get, keys, merge, values};
 use crate::util::{extract_string, string_atom};
+use eudaemonty::Filesystem;
 
 /// Unique identifier for a function in the arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1797,7 +1797,11 @@ fn builtin_load(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     }
     let path = extract_string(&args[0]);
     let fs = require_filesystem(vm)?;
-    let content = fs.read(&path)?;
+    let content = fs.read_to_string(&path).map_err(|e| {
+        SError::new("filesystem")
+            .with_code("read-error")
+            .with_message(&e.to_string())
+    })?;
     markdown_to_sexpr(&content)
 }
 
@@ -1814,7 +1818,11 @@ fn builtin_save(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     let path = extract_string(&args[1]);
     let fs = require_filesystem(vm)?;
     let markdown = sexpr_to_markdown(&args[0])?;
-    fs.write(&path, &markdown)?;
+    fs.write_string(&path, &markdown).map_err(|e| {
+        SError::new("filesystem")
+            .with_code("write-error")
+            .with_message(&e.to_string())
+    })?;
     Ok(string_atom(&path))
 }
 
@@ -1829,7 +1837,11 @@ fn builtin_list_files(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
             .with_atom_field("received", args.len()));
     }
     let fs = require_filesystem(vm)?;
-    let files = fs.list_markdown_files()?;
+    let files = fs.list_markdown_files().map_err(|e| {
+        SError::new("filesystem")
+            .with_code("list-error")
+            .with_message(&e.to_string())
+    })?;
     let items: Vec<SExpr> = files.into_iter().map(|f| string_atom(&f)).collect();
     Ok(SExpr::List(items))
 }
@@ -1846,7 +1858,11 @@ fn builtin_read_file(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     }
     let path = extract_string(&args[0]);
     let fs = require_filesystem(vm)?;
-    let content = fs.read(&path)?;
+    let content = fs.read_to_string(&path).map_err(|e| {
+        SError::new("filesystem")
+            .with_code("read-error")
+            .with_message(&e.to_string())
+    })?;
     Ok(string_atom(&content))
 }
 
@@ -1863,7 +1879,11 @@ fn builtin_write_file(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     let path = extract_string(&args[0]);
     let content = extract_string(&args[1]);
     let fs = require_filesystem(vm)?;
-    fs.write(&path, &content)?;
+    fs.write_string(&path, &content).map_err(|e| {
+        SError::new("filesystem")
+            .with_code("write-error")
+            .with_message(&e.to_string())
+    })?;
     Ok(string_atom(&path))
 }
 
@@ -1905,7 +1925,13 @@ fn builtin_splat(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     let prefix = extract_string(&args[1]);
     let fs = require_filesystem(vm)?;
 
-    splat(&args[0], &prefix, |path, content| fs.write(path, content))
+    splat(&args[0], &prefix, |path, content| {
+        fs.write_string(path, content).map_err(|e| {
+            SError::new("filesystem")
+                .with_code("write-error")
+                .with_message(&e.to_string())
+        })
+    })
 }
 
 /// Extract a string key from an atom, handling quoted strings.

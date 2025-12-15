@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-lispdown = { version = "0.1.0", path = "../lispdown" }
+utf8path = "0.9.1"

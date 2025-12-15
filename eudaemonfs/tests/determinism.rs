@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use proptest::prelude::*;
 use proptest::test_runner::Config;
+use utf8path::Path;
 
 use eudaemonfs::BlockAddress;
 use eudaemonfs::DebugLog;
@@ -706,7 +707,8 @@ fn run_ops_traced_with_log(
 ) -> (LfsAdapter, ReferenceFs, ExecutionTrace) {
     // Create log file for this test
     let log_path = format!("{}.sexpr", test_name);
-    let log = Arc::new(DebugLog::to_file(&log_path).unwrap_or_else(|_| DebugLog::to_stderr()));
+    let log =
+        Arc::new(DebugLog::to_file(Path::new(&log_path)).unwrap_or_else(|_| DebugLog::to_stderr()));
 
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
     let mem_device = MemoryBlockDevice::new(data);
@@ -771,7 +773,8 @@ fn run_ops_with_log(ops: &[FsOp], test_name: &str) -> (LfsAdapter, ReferenceFs) 
 /// Returns the logging LFS and the debug log Arc (for keeping it alive).
 fn create_logging_lfs(test_name: &str) -> (LoggingLfs, Arc<DebugLog>) {
     let log_path = format!("{}.sexpr", test_name);
-    let log = Arc::new(DebugLog::to_file(&log_path).unwrap_or_else(|_| DebugLog::to_stderr()));
+    let log =
+        Arc::new(DebugLog::to_file(Path::new(&log_path)).unwrap_or_else(|_| DebugLog::to_stderr()));
 
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
     let mem_device = MemoryBlockDevice::new(data);

@@ -1,8 +1,8 @@
 //! Eudaemonfs implementation of the Filesystem trait.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use utf8path::Path;
 
 use eudaemonfs::DeviceId;
 use eudaemonfs::FileBlockDevice;
@@ -143,12 +143,7 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> FileBackedEudaemonFilesystem<T> {
     /// # Errors
     ///
     /// Returns an error if file operations fail or the filesystem is corrupt.
-    pub fn open_or_create<P: AsRef<Path>>(
-        path: P,
-        dev: DeviceId,
-        time_source: T,
-    ) -> Result<Self, Error> {
-        let path = path.as_ref();
+    pub fn open_or_create(path: Path<'_>, dev: DeviceId, time_source: T) -> Result<Self, Error> {
         if path.exists() {
             Self::open(path, dev, time_source)
         } else {
@@ -168,8 +163,8 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> FileBackedEudaemonFilesystem<T> {
     /// # Errors
     ///
     /// Returns an error if file creation fails or the block count is too small.
-    pub fn create<P: AsRef<Path>>(
-        path: P,
+    pub fn create(
+        path: Path<'_>,
         total_blocks: u64,
         dev: DeviceId,
         time_source: T,
@@ -193,8 +188,8 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> FileBackedEudaemonFilesystem<T> {
     /// # Errors
     ///
     /// Returns an error if the file does not exist or is not a valid filesystem.
-    pub fn open<P: AsRef<Path>>(path: P, dev: DeviceId, time_source: T) -> Result<Self, Error> {
-        let device = FileBlockDevice::open(&path).map_err(Error::Io)?;
+    pub fn open(path: Path<'_>, dev: DeviceId, time_source: T) -> Result<Self, Error> {
+        let device = FileBlockDevice::open(path).map_err(Error::Io)?;
         let total_blocks = device.total_blocks();
         let lfs =
             Lfs::open(device, total_blocks, dev, time_source).map_err(|e| Error::Io(e.into()))?;
@@ -513,6 +508,43 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> Filesystem for EudaemonFilesystem<
             "could not create unique temporary directory",
         )))
     }
+
+    fn root(&self) -> Path<'_> {
+        Path::new("/")
+    }
+
+    fn list_markdown_files(&self) -> Result<Vec<String>, Error> {
+        let mut files = Vec::new();
+        find_markdown_files_recursive(self, "/", "/", &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+}
+
+/// Recursively find markdown files in a filesystem.
+fn find_markdown_files_recursive<FS: Filesystem>(
+    fs: &FS,
+    base: &str,
+    path: &str,
+    results: &mut Vec<String>,
+) -> Result<(), Error> {
+    let entries = fs.read_dir(path)?;
+    for (name, entry) in entries {
+        if name == "." || name == ".." {
+            continue;
+        }
+        let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
+        if entry.file_type == FileType::Directory {
+            find_markdown_files_recursive(fs, base, &full_path, results)?;
+        } else if name.ends_with(".md") || name.ends_with(".MD") {
+            let rel_path = full_path
+                .strip_prefix(base)
+                .unwrap_or(&full_path)
+                .trim_start_matches('/');
+            results.push(rel_path.to_string());
+        }
+    }
+    Ok(())
 }
 
 impl<T: Fn() -> i64 + Clone + Send + 'static> Filesystem for FileBackedEudaemonFilesystem<T> {
@@ -769,6 +801,17 @@ impl<T: Fn() -> i64 + Clone + Send + 'static> Filesystem for FileBackedEudaemonF
             std::io::ErrorKind::AlreadyExists,
             "could not create unique temporary directory",
         )))
+    }
+
+    fn root(&self) -> Path<'_> {
+        Path::new("/")
+    }
+
+    fn list_markdown_files(&self) -> Result<Vec<String>, Error> {
+        let mut files = Vec::new();
+        find_markdown_files_recursive(self, "/", "/", &mut files)?;
+        files.sort();
+        Ok(files)
     }
 }
 

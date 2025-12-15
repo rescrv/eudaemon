@@ -40,7 +40,7 @@ fn main() {
 
     let image_path = &args[1];
     let fs = match FileBackedEudaemonFilesystem::open_or_create(
-        image_path,
+        Path::new(image_path),
         DeviceId::new(1),
         current_time_ms,
     ) {

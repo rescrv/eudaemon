@@ -7,6 +7,7 @@ use std::io::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use getopts::Options;
+use utf8path::Path;
 
 use eudaemonfs::lisp::{DebugImgRepl, DebugImgReplConfig, LfsLisp, parse_size};
 use eudaemonfs::{DeviceId, FileBlockDevice, Lfs};
@@ -163,7 +164,7 @@ where
                 return Ok(ExitCode::from(1));
             }
 
-            let device = match FileBlockDevice::create(path, total_blocks) {
+            let device = match FileBlockDevice::create(Path::new(path), total_blocks) {
                 Ok(dev) => dev,
                 Err(e) => {
                     env.stderr
@@ -200,7 +201,7 @@ where
             repl.run();
         } else {
             // Open existing filesystem
-            let device = match FileBlockDevice::open(path) {
+            let device = match FileBlockDevice::open(Path::new(path)) {
                 Ok(dev) => dev,
                 Err(e) => {
                     env.stderr

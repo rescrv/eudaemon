@@ -12,8 +12,11 @@ use std::io::BufRead;
 use std::io::Write;
 use std::rc::Rc;
 
-use lispdown::Parser;
-use lispdown::Vm;
+use utf8path::Path;
+
+mod directory;
+
+pub use directory::DirectoryFilesystem;
 
 ////////////////////////////////////////////// Error ///////////////////////////////////////////////
 
@@ -281,25 +284,16 @@ pub enum TimeSpec {
     Time(i64),
 }
 
-/////////////////////////////////////// DebugReplConfig ////////////////////////////////////////////
-
-/// Configuration for the debug REPL.
-#[derive(Default)]
-pub struct DebugReplConfig {
-    /// Whether to operate in read-only mode.
-    pub read_only: bool,
-    /// An optional function to call when the user requests a sync.
-    pub sync_fn: Option<Box<dyn Fn()>>,
-    /// An optional banner to display at startup.
-    pub banner: Option<String>,
-}
-
 /////////////////////////////////////////// Filesystem /////////////////////////////////////////////
 
 /// A trait for filesystem operations.
 pub trait Filesystem {
+    /// Returns the root directory path (for display purposes).
+    fn root(&self) -> Path<'_>;
     /// Duplicate the filesystem handle.
-    fn dup(&self) -> Self;
+    fn dup(&self) -> Self
+    where
+        Self: Sized;
     /// Read a file and return its contents as a string.
     fn read_to_string(&self, path: &str) -> Result<String, Error>;
     /// Check if a file exists.
@@ -359,247 +353,8 @@ pub trait Filesystem {
     /// Create a unique temporary directory using a template (Xs are replaced).
     /// Returns the actual path created.
     fn mkdtemp(&self, template: &str) -> Result<String, Error>;
-
-    /// Run an interactive debug REPL for this filesystem.
-    ///
-    /// The REPL provides commands for exploring and manipulating the filesystem
-    /// through a Lisp interface.
-    fn debug_repl<SI: Stdin, SO: Stdout, SE: Stderr>(
-        &self,
-        stdin: SI,
-        stdout: SO,
-        stderr: SE,
-        config: DebugReplConfig,
-    ) -> Result<(), Error>
-    where
-        Self: Sized,
-    {
-        debug_repl_impl(self, stdin, stdout, stderr, config)
-    }
-}
-
-////////////////////////////////////////// debug_repl_impl /////////////////////////////////////////
-
-fn print_help<SO: Stdout>(stdout: &SO) -> Result<(), Error> {
-    stdout.write_line("Commands:")?;
-    stdout.write_line("  :help, :h, :?      Show this help")?;
-    stdout.write_line("  :quit, :q, :exit   Exit the REPL")?;
-    stdout.write_line("  :tree              Show filesystem tree")?;
-    stdout.write_line("  :ls [path]         List directory (default: /)")?;
-    stdout.write_line("  :cat path          Show file contents")?;
-    stdout.write_line("  :stat path         Show file metadata")?;
-    stdout.write_line("  :fns               List available Lisp functions")?;
-    stdout.write_line("")?;
-    stdout.write_line("Lisp evaluation:")?;
-    stdout.write_line("  Type any S-expression to evaluate it.")?;
-    Ok(())
-}
-
-fn print_functions<SO: Stdout>(stdout: &SO) -> Result<(), Error> {
-    stdout.write_line("Filesystem Functions (via Lisp):")?;
-    stdout.write_line("  Core functions: first, rest, cons, append, length, nth, list")?;
-    stdout.write_line("  Predicates: null?, list?, atom?, empty?, eq?")?;
-    stdout.write_line("  Higher-order: map, filter, reduce")?;
-    stdout.write_line("  Control: quote, if, let, begin, ->, ->>")?;
-    Ok(())
-}
-
-fn format_tree<FS: Filesystem>(fs: &FS, path: &str, prefix: &str, is_last: bool) -> String {
-    let mut result = String::new();
-    let name = if path == "/" {
-        "/".to_string()
-    } else {
-        path.rsplit('/').next().unwrap_or(path).to_string()
-    };
-
-    let connector = if path == "/" {
-        ""
-    } else if is_last {
-        "└── "
-    } else {
-        "├── "
-    };
-
-    result.push_str(&format!("{}{}{}\n", prefix, connector, name));
-
-    if fs.is_dir(path)
-        && let Ok(entries) = fs.read_dir(path)
-    {
-        let mut entries: Vec<_> = entries
-            .into_iter()
-            .filter(|(n, _)| n != "." && n != "..")
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let child_prefix = if path == "/" {
-            String::new()
-        } else {
-            format!("{}{}   ", prefix, if is_last { " " } else { "│" })
-        };
-
-        for (i, (name, _)) in entries.iter().enumerate() {
-            let child_path = if path == "/" {
-                format!("/{}", name)
-            } else {
-                format!("{}/{}", path, name)
-            };
-            let is_last_child = i == entries.len() - 1;
-            result.push_str(&format_tree(fs, &child_path, &child_prefix, is_last_child));
-        }
-    }
-
-    result
-}
-
-fn format_ls<FS: Filesystem>(fs: &FS, path: &str) -> String {
-    match fs.read_dir(path) {
-        Ok(entries) => {
-            let mut entries: Vec<_> = entries
-                .into_iter()
-                .filter(|(n, _)| n != "." && n != "..")
-                .collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-            let mut result = String::new();
-            for (name, entry) in entries {
-                let type_char = match entry.file_type {
-                    FileType::Directory => 'd',
-                    FileType::Symlink => 'l',
-                    FileType::RegularFile => '-',
-                    FileType::Other => '?',
-                };
-                result.push_str(&format!("{} {:>8}  {}\n", type_char, entry.size, name));
-            }
-            result
-        }
-        Err(e) => format!("Error: {}\n", e),
-    }
-}
-
-fn format_stat<FS: Filesystem>(fs: &FS, path: &str) -> String {
-    match fs.lstat(path) {
-        Ok(entry) => {
-            let type_str = match entry.file_type {
-                FileType::Directory => "directory",
-                FileType::Symlink => "symlink",
-                FileType::RegularFile => "file",
-                FileType::Other => "other",
-            };
-            format!(
-                "type: {}\nsize: {}\natime_ms: {}\nmtime_ms: {}\ndev: {}\nino: {}\n",
-                type_str, entry.size, entry.atime_ms, entry.mtime_ms, entry.dev, entry.ino
-            )
-        }
-        Err(e) => format!("Error: {}\n", e),
-    }
-}
-
-fn handle_command<FS: Filesystem, SO: Stdout>(
-    fs: &FS,
-    vm: &mut Vm,
-    stdout: &SO,
-    input: &str,
-    _config: &DebugReplConfig,
-) -> Result<Option<bool>, Error> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Ok(None);
-    }
-
-    if input.starts_with(':') {
-        let parts: Vec<&str> = input.split_whitespace().collect();
-        match parts[0] {
-            ":quit" | ":q" | ":exit" => return Ok(Some(false)),
-            ":help" | ":h" | ":?" => print_help(stdout)?,
-            ":fns" | ":functions" => print_functions(stdout)?,
-            ":tree" => stdout.write_str(&format_tree(fs, "/", "", true))?,
-            ":ls" => {
-                let path = if parts.len() > 1 { parts[1] } else { "/" };
-                stdout.write_str(&format_ls(fs, path))?;
-            }
-            ":cat" => {
-                if parts.len() < 2 {
-                    stdout.write_line("Usage: :cat <path>")?;
-                } else {
-                    match fs.read_to_string(parts[1]) {
-                        Ok(content) => stdout.write_str(&content)?,
-                        Err(e) => stdout.write_line(&format!("Error: {}", e))?,
-                    }
-                }
-            }
-            ":stat" => {
-                if parts.len() < 2 {
-                    stdout.write_line("Usage: :stat <path>")?;
-                } else {
-                    stdout.write_str(&format_stat(fs, parts[1]))?;
-                }
-            }
-            _ => stdout.write_line(&format!(
-                "Unknown command: {}. Type :help for commands.",
-                parts[0]
-            ))?,
-        }
-        return Ok(Some(true));
-    }
-
-    // Evaluate S-expression
-    let mut parser = Parser::new(input);
-    match parser.parse() {
-        Ok(expr) => match vm.eval(&expr) {
-            Ok(result) => stdout.write_line(&result.to_string())?,
-            Err(e) => stdout.write_line(&format!("Error: {}", e))?,
-        },
-        Err(e) => stdout.write_line(&format!("Parse error: {}", e))?,
-    }
-
-    Ok(Some(true))
-}
-
-fn debug_repl_impl<FS: Filesystem, SI: Stdin, SO: Stdout, SE: Stderr>(
-    fs: &FS,
-    stdin: SI,
-    stdout: SO,
-    _stderr: SE,
-    config: DebugReplConfig,
-) -> Result<(), Error> {
-    let mut vm = Vm::new();
-    vm.register_builtins();
-    vm.register_json_builtins();
-
-    if let Some(ref banner) = config.banner {
-        stdout.write_line(banner)?;
-    } else {
-        stdout.write_line("eudaemon filesystem debugger")?;
-    }
-    if config.read_only {
-        stdout.write_line("Mode: read-only")?;
-    }
-    stdout.write_line("Type :help for commands, :quit to exit")?;
-    stdout.write_line("")?;
-
-    loop {
-        stdout.write_str("fs> ")?;
-        match stdin.read_line()? {
-            Some(line) => match handle_command(fs, &mut vm, &stdout, &line, &config)? {
-                Some(true) => continue,
-                Some(false) => break,
-                None => continue,
-            },
-            None => {
-                stdout.write_line("^D")?;
-                break;
-            }
-        }
-    }
-
-    if !config.read_only
-        && let Some(sync) = config.sync_fn
-    {
-        sync();
-        stdout.write_line("Changes synced.")?;
-    }
-
-    Ok(())
+    /// Lists markdown files, returns paths relative to root.
+    fn list_markdown_files(&self) -> Result<Vec<String>, Error>;
 }
 
 ///////////////////////////////////////// RealFilesystem ///////////////////////////////////////////
@@ -621,7 +376,14 @@ fn dev_ino_from_metadata(_metadata: &std::fs::Metadata) -> (u64, u64) {
     (0, 0)
 }
 
+/// The root path for RealFilesystem.
+static REAL_FS_ROOT: &str = "/";
+
 impl Filesystem for RealFilesystem {
+    fn root(&self) -> Path<'_> {
+        Path::new(REAL_FS_ROOT)
+    }
+
     fn dup(&self) -> Self {
         *self
     }
@@ -1018,6 +780,32 @@ impl Filesystem for RealFilesystem {
             "could not create unique temporary directory",
         )))
     }
+
+    fn list_markdown_files(&self) -> Result<Vec<String>, Error> {
+        fn find_md_files(dir: &std::path::Path, base: &std::path::Path, results: &mut Vec<String>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        find_md_files(&path, base, results);
+                    } else if path.is_file()
+                        && path
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                        && let Ok(rel_path) = path.strip_prefix(base)
+                    {
+                        results.push(rel_path.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+
+        let cwd = std::env::current_dir().map_err(Error::Io)?;
+        let mut results = Vec::new();
+        find_md_files(&cwd, &cwd, &mut results);
+        results.sort();
+        Ok(results)
+    }
 }
 
 #[cfg(test)]
@@ -1057,36 +845,5 @@ mod tests {
         let stdin = ();
         assert_eq!(stdin.read_line().unwrap(), None);
         println!("DEBUG: unit stdin returns None");
-    }
-
-    #[test]
-    fn debug_repl_quit_command() {
-        let fs = RealFilesystem;
-        let stdin = StringStdin::new(":quit");
-        let stdout = StringStdout::new();
-        let stderr = StringStderr::new();
-        let config = DebugReplConfig::default();
-
-        fs.debug_repl(stdin, stdout.dup(), stderr, config).unwrap();
-
-        let output = stdout.into_string();
-        assert!(output.contains("eudaemon filesystem debugger"));
-        println!("DEBUG: debug_repl handles :quit command");
-    }
-
-    #[test]
-    fn debug_repl_help_command() {
-        let fs = RealFilesystem;
-        let stdin = StringStdin::new(":help\n:quit");
-        let stdout = StringStdout::new();
-        let stderr = StringStderr::new();
-        let config = DebugReplConfig::default();
-
-        fs.debug_repl(stdin, stdout.dup(), stderr, config).unwrap();
-
-        let output = stdout.into_string();
-        assert!(output.contains(":tree"));
-        assert!(output.contains(":ls"));
-        println!("DEBUG: debug_repl handles :help command");
     }
 }

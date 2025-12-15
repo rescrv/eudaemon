@@ -55,7 +55,7 @@ where
     SI: Stdin,
     SO: Stdout,
     SE: Stderr,
-    FS: Filesystem,
+    FS: Filesystem + 'static,
 {
     match bin {
         "base64" | "/usr/bin/base64" => Ok(base64::bin),
@@ -106,6 +106,7 @@ where
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),
         "inspect-fs" => Ok(inspect_fs::bin),
+        "markdownsp" => Ok(markdownsp::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
 }
