@@ -303,6 +303,7 @@ dependencies = [
  "guacamole",
  "lispdown",
  "proptest",
+ "rustyline",
 ]
 
 [[package]]

@@ -9,10 +9,19 @@ arrrg_derive = "0.8.0"
 getopts = "0.2.24"
 guacamole = "0.14.0"
 lispdown = { path = "../lispdown" }
+rustyline = "15"
 
 [dev-dependencies]
 proptest = "1.4"
 
 [[bin]]
-name = "eudaemon-fs-debug"
-path = "src/bin/eudaemon-fs-debug.rs"
+name = "eudaemon-debug-img"
+path = "src/bin/eudaemon-debug-img.rs"
+
+[[bin]]
+name = "eudaemon-fs-debug-log"
+path = "src/bin/eudaemon-fs-debug-log.rs"
+
+[[bin]]
+name = "eudaemon-stress-test"
+path = "src/bin/eudaemon-stress-test.rs"

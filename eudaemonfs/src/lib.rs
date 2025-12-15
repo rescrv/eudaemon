@@ -26,6 +26,8 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+pub mod lisp;
+
 /// Block size in bytes.
 const BLOCK_SIZE: usize = 4096;
 
