@@ -2319,6 +2319,11 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         let now = self.now_ms();
         let root_inode = Inode::new_directory(InodeNumber::ROOT, now);
         self.write_inode(&root_inode)?;
+
+        // Add "." and ".." entries pointing to root itself (standard Unix behavior)
+        self.add_dir_entry(InodeNumber::ROOT, InodeNumber::ROOT, ".")?;
+        self.add_dir_entry(InodeNumber::ROOT, InodeNumber::ROOT, "..")?;
+
         self.persist_inode_map()?;
         Ok(())
     }
@@ -2610,6 +2615,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     ///
     /// For example, "/a/b/c" returns (inode of "/a/b", "c").
     /// For "file.txt" or "/file.txt", returns (ROOT inode, "file.txt").
+    /// For "/" returns (ROOT inode, ".").
     ///
     /// Symlinks in intermediate path components are followed. The final component
     /// is NOT followed (the caller decides whether to follow it).
@@ -2618,107 +2624,19 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     /// is not a directory (after following symlinks), or if too many symlinks
     /// are encountered (loop detection).
     fn resolve_path<'a>(&self, path: &'a str) -> Result<(InodeNumber, &'a str)> {
-        // First try the simple case without symlinks
-        let result = self.resolve_path_simple(path);
-        if result.is_ok() {
-            return result;
-        }
+        let (parent_ino, _) = self.resolve_path_impl(path, 0)?;
 
-        // If simple resolution failed, try with symlink handling
-        // This requires returning owned strings, so we use a different path
-        let (parent_ino, final_name) = self.resolve_path_following_symlinks(path, 0)?;
-
-        // We need to return a &str, but we have an owned String.
-        // The caller expects the final_name to be a slice of the input path.
-        // Extract the final component from the original path.
+        // Extract the final component from the original path to return a &str
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         if components.is_empty() {
-            return Err(Error::InvalidArgument);
+            return Ok((InodeNumber::ROOT, "."));
         }
 
-        // If the final name matches what we found, return the slice from input
-        let original_final = components[components.len() - 1];
-        if original_final == final_name {
-            Ok((parent_ino, original_final))
-        } else {
-            // This shouldn't happen in normal operation since symlinks in the
-            // middle of the path don't change the final component name
-            Ok((parent_ino, original_final))
-        }
+        Ok((parent_ino, components[components.len() - 1]))
     }
 
-    /// Simple path resolution without symlink handling.
-    fn resolve_path_simple<'a>(&self, path: &'a str) -> Result<(InodeNumber, &'a str)> {
-        // Handle empty path
-        if path.is_empty() {
-            return Err(Error::InvalidArgument);
-        }
-
-        // Split path into components, filtering empty ones (handles leading/trailing slashes)
-        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-
-        if components.is_empty() {
-            return Err(Error::InvalidArgument);
-        }
-
-        // The last component is the filename/dirname we're looking for
-        let final_name = components[components.len() - 1];
-
-        // Validate filename length
-        if final_name.len() > MAX_FILENAME_LEN {
-            return Err(Error::FilenameTooLong);
-        }
-
-        // If there's only one component, parent is ROOT
-        if components.len() == 1 {
-            return Ok((InodeNumber::ROOT, final_name));
-        }
-
-        // Walk through intermediate directories
-        let mut current_ino = InodeNumber::ROOT;
-        for &component in &components[..components.len() - 1] {
-            if component.len() > MAX_FILENAME_LEN {
-                return Err(Error::FilenameTooLong);
-            }
-
-            let current_inode = self.read_inode(current_ino)?;
-            if current_inode.is_symlink() {
-                // Found a symlink - need full symlink handling
-                return Err(Error::InvalidArgument);
-            }
-            if !current_inode.is_directory() {
-                return Err(Error::NotADirectory);
-            }
-
-            let next_ino = self
-                .lookup_in_dir(&current_inode, component)?
-                .ok_or(Error::NotFound)?;
-
-            // Check if next component is a symlink
-            let next_inode = self.read_inode(next_ino)?;
-            if next_inode.is_symlink() {
-                // Found a symlink - need full symlink handling
-                return Err(Error::InvalidArgument);
-            }
-
-            current_ino = next_ino;
-        }
-
-        // Verify the parent is actually a directory
-        let parent_inode = self.read_inode(current_ino)?;
-        if !parent_inode.is_directory() {
-            return Err(Error::NotADirectory);
-        }
-
-        Ok((current_ino, final_name))
-    }
-
-    /// Path resolution with full symlink following.
-    fn resolve_path_following_symlinks(
-        &self,
-        path: &str,
-        hops: usize,
-    ) -> Result<(InodeNumber, String)> {
+    /// Path resolution with symlink following.
+    fn resolve_path_impl(&self, path: &str, hops: usize) -> Result<(InodeNumber, String)> {
         if hops > Self::MAX_SYMLINK_HOPS {
             return Err(Error::InvalidArgument); // Too many symlink hops (loop)
         }
@@ -2731,8 +2649,9 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         // Split path into components
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
+        // Special case: "/" means root directory - return (ROOT, ".")
         if components.is_empty() {
-            return Err(Error::InvalidArgument);
+            return Ok((InodeNumber::ROOT, ".".to_string()));
         }
 
         let final_name = components[components.len() - 1].to_string();
@@ -2789,7 +2708,7 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
                     format!("/{}", full_path)
                 };
 
-                return self.resolve_path_following_symlinks(&resolved_path, hops + 1);
+                return self.resolve_path_impl(&resolved_path, hops + 1);
             }
 
             current_ino = next_ino;
@@ -5548,6 +5467,48 @@ mod tests {
         assert_eq!(result, Err(Error::InvalidArgument));
 
         println!("Empty path correctly rejected");
+    }
+
+    #[test]
+    fn stat_root_directory() {
+        let lfs = create_test_fs(64);
+
+        // stat("/") should succeed and return info about the root directory
+        let stat = lfs.stat("/").expect("stat root directory");
+        assert_eq!(stat.file_type, FileType::Directory);
+        assert_eq!(stat.ino, InodeNumber::ROOT.as_u64());
+        println!(
+            "stat('/') succeeded: type={:?}, ino={}",
+            stat.file_type, stat.ino
+        );
+    }
+
+    #[test]
+    fn read_dir_root() {
+        let mut lfs = create_test_fs(64);
+
+        // Create some files in root
+        let fd = lfs.open_file("file1.txt").expect("create file1");
+        lfs.close(fd).expect("close");
+        let fd = lfs.open_file("file2.txt").expect("create file2");
+        lfs.close(fd).expect("close");
+
+        // read_dir("/") should list the contents
+        let entries = lfs.read_dir("/").expect("read_dir root");
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        println!("Root directory contents: {:?}", names);
+
+        // Should contain ".", "..", "file1.txt", "file2.txt"
+        assert!(names.contains(&"."), "root should contain '.'");
+        assert!(names.contains(&".."), "root should contain '..'");
+        assert!(
+            names.contains(&"file1.txt"),
+            "root should contain 'file1.txt'"
+        );
+        assert!(
+            names.contains(&"file2.txt"),
+            "root should contain 'file2.txt'"
+        );
     }
 
     #[test]
