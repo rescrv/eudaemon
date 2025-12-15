@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Separator type for the -D (all-repeated) option.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -157,14 +157,9 @@ where
     } else {
         match env.fs.read_to_string(&free[0]) {
             Ok(contents) => contents,
-            Err(Error::Io(e)) => {
+            Err(FsError::Io(e)) => {
                 env.stderr
                     .write_line(&format!("uniq: {}: {}", free[0], e))?;
-                return Ok(ExitCode::from(1));
-            }
-            Err(e) => {
-                env.stderr
-                    .write_line(&format!("uniq: {}: {:?}", free[0], e))?;
                 return Ok(ExitCode::from(1));
             }
         }

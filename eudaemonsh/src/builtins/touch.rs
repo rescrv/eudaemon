@@ -1,7 +1,8 @@
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout, TimeSpec, resolve_path,
+    Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout, TimeSpec,
+    resolve_path,
 };
 
 /// Parse a time offset string of the form "[-][[hh]mm]SS" and return seconds.
@@ -466,11 +467,10 @@ where
                 timeset = true;
                 Some((entry.atime_ms, entry.mtime_ms))
             }
-            Err(Error::Io(e)) => {
+            Err(FsError::Io(e)) => {
                 env.stderr.write_line(&format!("touch: {}: {}", rfile, e))?;
                 return Ok(ExitCode::from(1));
             }
-            Err(_) => return Ok(ExitCode::from(1)),
         }
     } else {
         None
@@ -531,12 +531,8 @@ where
                         continue;
                     }
                 }
-                Err(Error::Io(e)) => {
+                Err(FsError::Io(e)) => {
                     env.stderr.write_line(&format!("touch: {}: {}", file, e))?;
-                    exit_code = 1;
-                    continue;
-                }
-                Err(_) => {
                     exit_code = 1;
                     continue;
                 }
@@ -583,12 +579,8 @@ where
                             mtime_ms = entry.mtime_ms + offset * 1000;
                         }
                     }
-                    Err(Error::Io(e)) => {
+                    Err(FsError::Io(e)) => {
                         env.stderr.write_line(&format!("touch: {}: {}", file, e))?;
-                        exit_code = 1;
-                        continue;
-                    }
-                    Err(_) => {
                         exit_code = 1;
                         continue;
                     }
@@ -615,7 +607,7 @@ where
             env.fs.set_times(&file, atime_spec, mtime_spec)
         };
 
-        if let Err(Error::Io(e)) = result {
+        if let Err(FsError::Io(e)) = result {
             env.stderr.write_line(&format!("touch: {}: {}", file, e))?;
             exit_code = 1;
         }

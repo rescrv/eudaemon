@@ -312,12 +312,21 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "eudaemonfs",
+ "eudaemonty",
  "getopts",
+ "lispdown",
  "rand",
  "regex",
  "rustyline",
  "shvar",
  "utf8path",
+]
+
+[[package]]
+name = "eudaemonty"
+version = "0.1.0"
+dependencies = [
+ "lispdown",
 ]
 
 [[package]]

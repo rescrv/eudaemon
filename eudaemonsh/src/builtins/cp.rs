@@ -5,7 +5,8 @@ use std::collections::VecDeque;
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, io_error_message,
+    Environment, Error, ExitCode, FileType, Filesystem, FsError, Stderr, Stdin, Stdout,
+    fs_error_message,
 };
 
 fn build_options() -> Options {
@@ -145,7 +146,7 @@ where
         .unwrap_or(false);
     let target_exists = target_stat.is_ok()
         || target_stat.as_ref().is_err_and(
-            |e| matches!(e, Error::Io(io) if io.kind() == std::io::ErrorKind::NotADirectory),
+            |e| matches!(e, FsError::Io(io) if io.kind() == std::io::ErrorKind::NotADirectory),
         );
 
     // If target has trailing slash, it must be a directory
@@ -233,7 +234,7 @@ where
     } else {
         env.fs.lstat(source)
     }
-    .map_err(|e| format!("{}: {}", source, io_error_message(&e)))?;
+    .map_err(|e| format!("{}: {}", source, fs_error_message(&e)))?;
 
     // Can't copy a directory without -R
     if source_entry.file_type == FileType::Directory {
@@ -269,7 +270,7 @@ where
         if config.force {
             env.fs
                 .unlink(target)
-                .map_err(|e| format!("{}: {}", target, io_error_message(&e)))?;
+                .map_err(|e| format!("{}: {}", target, fs_error_message(&e)))?;
         }
     }
 
@@ -306,7 +307,7 @@ where
     } else {
         env.fs.lstat(source)
     }
-    .map_err(|e| format!("{}: {}", source, io_error_message(&e)))?;
+    .map_err(|e| format!("{}: {}", source, fs_error_message(&e)))?;
 
     let source_is_dir = source_entry.file_type == FileType::Directory;
 
@@ -372,7 +373,7 @@ where
         } else {
             env.fs.lstat(&src_path)
         }
-        .map_err(|e| format!("{}: {}", src_path, io_error_message(&e)))?;
+        .map_err(|e| format!("{}: {}", src_path, fs_error_message(&e)))?;
 
         match entry.file_type {
             FileType::Directory => {
@@ -384,7 +385,7 @@ where
                     let dst_entry = env
                         .fs
                         .lstat(&dst_path)
-                        .map_err(|e| format!("{}: {}", dst_path, io_error_message(&e)))?;
+                        .map_err(|e| format!("{}: {}", dst_path, fs_error_message(&e)))?;
                     if dst_entry.file_type != FileType::Directory {
                         let msg = format!("{}: Not a directory", dst_path);
                         env.stderr.write_line(&format!("cp: {}", msg)).ok();
@@ -395,7 +396,7 @@ where
                     // Create the directory
                     env.fs
                         .mkdir(&dst_path)
-                        .map_err(|e| format!("{}: {}", dst_path, io_error_message(&e)))?;
+                        .map_err(|e| format!("{}: {}", dst_path, fs_error_message(&e)))?;
 
                     if config.verbose {
                         env.stdout
@@ -408,7 +409,7 @@ where
                 let children = env
                     .fs
                     .read_dir(&src_path)
-                    .map_err(|e| format!("{}: {}", src_path, io_error_message(&e)))?;
+                    .map_err(|e| format!("{}: {}", src_path, fs_error_message(&e)))?;
 
                 for (name, _) in children {
                     if name == "." || name == ".." {
@@ -430,7 +431,7 @@ where
                 let link_target = env
                     .fs
                     .readlink(&src_path)
-                    .map_err(|e| format!("{}: {}", src_path, io_error_message(&e)))?;
+                    .map_err(|e| format!("{}: {}", src_path, fs_error_message(&e)))?;
 
                 // Handle existing destination
                 let dst_exists = env.fs.lstat(&dst_path).is_ok();
@@ -446,7 +447,7 @@ where
                     if config.force {
                         env.fs
                             .unlink(&dst_path)
-                            .map_err(|e| format!("{}: {}", dst_path, io_error_message(&e)))?;
+                            .map_err(|e| format!("{}: {}", dst_path, fs_error_message(&e)))?;
                     } else {
                         let msg = format!("{}: File exists", dst_path);
                         env.stderr.write_line(&format!("cp: {}", msg)).ok();
@@ -457,7 +458,7 @@ where
 
                 env.fs
                     .symlink(&link_target, &dst_path)
-                    .map_err(|e| format!("{}: {}", dst_path, io_error_message(&e)))?;
+                    .map_err(|e| format!("{}: {}", dst_path, fs_error_message(&e)))?;
 
                 if config.verbose {
                     env.stdout
@@ -495,19 +496,19 @@ where
         // Create hard link
         env.fs
             .link(source, target)
-            .map_err(|e| format!("{}: {}", target, io_error_message(&e)))
+            .map_err(|e| format!("{}: {}", target, fs_error_message(&e)))
     } else if config.symlink {
         // Create symbolic link
         env.fs
             .symlink(source, target)
-            .map_err(|e| format!("{}: {}", target, io_error_message(&e)))
+            .map_err(|e| format!("{}: {}", target, fs_error_message(&e)))
     } else {
         // Actually copy the file contents
         // First check if source is a symlink and we should copy the link itself
         let source_lstat = env
             .fs
             .lstat(source)
-            .map_err(|e| format!("{}: {}", source, io_error_message(&e)))?;
+            .map_err(|e| format!("{}: {}", source, fs_error_message(&e)))?;
 
         if source_lstat.file_type == FileType::Symlink
             && !config.follow_all_symlinks
@@ -517,19 +518,19 @@ where
             let link_target = env
                 .fs
                 .readlink(source)
-                .map_err(|e| format!("{}: {}", source, io_error_message(&e)))?;
+                .map_err(|e| format!("{}: {}", source, fs_error_message(&e)))?;
             env.fs
                 .symlink(&link_target, target)
-                .map_err(|e| format!("{}: {}", target, io_error_message(&e)))
+                .map_err(|e| format!("{}: {}", target, fs_error_message(&e)))
         } else {
             // Copy file contents
             let contents = env
                 .fs
                 .read_to_string(source)
-                .map_err(|e| format!("{}: {}", source, io_error_message(&e)))?;
+                .map_err(|e| format!("{}: {}", source, fs_error_message(&e)))?;
             env.fs
                 .write_string(target, &contents)
-                .map_err(|e| format!("{}: {}", target, io_error_message(&e)))
+                .map_err(|e| format!("{}: {}", target, fs_error_message(&e)))
         }
     }
 }

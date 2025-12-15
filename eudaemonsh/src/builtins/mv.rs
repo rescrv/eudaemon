@@ -3,7 +3,7 @@
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, io_error_message,
+    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, fs_error_message,
 };
 
 fn build_options() -> Options {
@@ -241,7 +241,7 @@ where
                 "rename {} to {}: {}",
                 from,
                 to,
-                io_error_message(&e)
+                fs_error_message(&e)
             ))
         }
     }

@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -70,10 +70,9 @@ where
 }
 
 /// Format an error for display, extracting the underlying IO error message.
-fn format_io_error(e: &Error) -> String {
+fn format_io_error(e: &FsError) -> String {
     match e {
-        Error::Io(io_err) => io_err.to_string(),
-        _ => format!("{:?}", e),
+        FsError::Io(io_err) => io_err.to_string(),
     }
 }
 

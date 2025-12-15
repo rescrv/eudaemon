@@ -1,7 +1,7 @@
 use getopts::Options;
 use regex::Regex;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// The type of line numbering to apply.
 #[derive(Clone, Debug, Default)]
@@ -393,11 +393,10 @@ where
             }
             Ok(())
         }
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             let _ = env.stderr.write_line(&format!("nl: {}: {}", path, e));
             Err(1)
         }
-        Err(_e) => Err(1),
     }
 }
 
@@ -514,7 +513,7 @@ where
         )
     };
 
-    env.stdout.write_line(&output)
+    Ok(env.stdout.write_line(&output)?)
 }
 
 #[cfg(test)]

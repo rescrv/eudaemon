@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -85,8 +85,7 @@ where
     }
 
     env.fs.mkdir(path).map_err(|e| match e {
-        Error::Io(io_err) => io_err.to_string(),
-        _ => "Unknown error".to_string(),
+        FsError::Io(io_err) => io_err.to_string(),
     })?;
 
     if verbose {
@@ -140,8 +139,7 @@ where
     to_create.reverse();
     for dir in to_create {
         env.fs.mkdir(&dir).map_err(|e| match e {
-            Error::Io(io_err) => io_err.to_string(),
-            _ => "Unknown error".to_string(),
+            FsError::Io(io_err) => io_err.to_string(),
         })?;
         if verbose {
             let _ = env.stdout.write_line(&dir);

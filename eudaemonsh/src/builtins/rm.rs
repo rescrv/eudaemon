@@ -3,7 +3,8 @@ use std::collections::VecDeque;
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, io_error_message,
+    Environment, Error, ExitCode, FileType, Filesystem, FsError, Stderr, Stdin, Stdout,
+    fs_error_message,
 };
 
 fn build_options() -> Options {
@@ -131,7 +132,7 @@ where
             if opts.force {
                 return Ok(());
             }
-            return Err(io_error_message(&e));
+            return Err(fs_error_message(&e));
         }
     };
 
@@ -166,7 +167,7 @@ where
         if opts.force && is_not_found(&e) {
             return String::new();
         }
-        io_error_message(&e)
+        fs_error_message(&e)
     })?;
 
     if opts.verbose {
@@ -188,7 +189,7 @@ where
     SE: Stderr,
     FS: Filesystem,
 {
-    env.fs.rmdir(path).map_err(|e| io_error_message(&e))?;
+    env.fs.rmdir(path).map_err(|e| fs_error_message(&e))?;
 
     if opts.verbose {
         env.stdout.write_line(path).ok();
@@ -222,7 +223,7 @@ where
                 if opts.force && is_not_found(&e) {
                     continue;
                 }
-                return Err(format!("{}: {}", path, io_error_message(&e)));
+                return Err(format!("{}: {}", path, fs_error_message(&e)));
             }
         };
 
@@ -233,7 +234,7 @@ where
                 if opts.force && is_not_found(&e) {
                     return String::new();
                 }
-                format!("{}: {}", path, io_error_message(&e))
+                format!("{}: {}", path, fs_error_message(&e))
             })?;
 
             for (name, _child_entry) in children {
@@ -269,7 +270,7 @@ where
                 if opts.force && is_not_found(&e) {
                     continue;
                 }
-                let msg = format!("{}: {}", path, io_error_message(&e));
+                let msg = format!("{}: {}", path, fs_error_message(&e));
                 env.stderr.write_line(&format!("rm: {}", msg)).ok();
                 last_error = Some(msg);
             }
@@ -313,14 +314,14 @@ where
         }
         Err(e) => {
             env.stderr
-                .write_line(&format!("unlink: {}: {}", file, io_error_message(&e)))?;
+                .write_line(&format!("unlink: {}: {}", file, fs_error_message(&e)))?;
             return Ok(ExitCode::from(1));
         }
     }
 
     if let Err(e) = env.fs.unlink(file) {
         env.stderr
-            .write_line(&format!("unlink: {}: {}", file, io_error_message(&e)))?;
+            .write_line(&format!("unlink: {}: {}", file, fs_error_message(&e)))?;
         return Ok(ExitCode::from(1));
     }
 
@@ -339,8 +340,8 @@ fn is_dot_or_dotdot(path: &str) -> bool {
 }
 
 /// Check if an error is "not found".
-fn is_not_found(e: &Error) -> bool {
-    matches!(e, Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
+fn is_not_found(e: &FsError) -> bool {
+    matches!(e, FsError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
 }
 
 #[cfg(test)]

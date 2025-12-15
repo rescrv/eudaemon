@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -46,7 +46,7 @@ where
         };
         if let Err(e) = env.fs.rmdir(dir) {
             env.stderr
-                .write_line(&format!("rmdir: {}: {}", dir, io_error_message(&e)))?;
+                .write_line(&format!("rmdir: {}: {}", dir, fs_error_message(&e)))?;
             errors = true;
         } else {
             if verbose {
@@ -92,7 +92,7 @@ where
 
         if let Err(e) = env.fs.rmdir(&path) {
             env.stderr
-                .write_line(&format!("rmdir: {}: {}", path, io_error_message(&e)))
+                .write_line(&format!("rmdir: {}: {}", path, fs_error_message(&e)))
                 .ok();
             return Err(());
         }
@@ -104,16 +104,15 @@ where
     Ok(())
 }
 
-/// Extract a user-friendly message from an Error.
-fn io_error_message(e: &Error) -> String {
+/// Extract a user-friendly message from a filesystem error.
+fn fs_error_message(e: &FsError) -> String {
     match e {
-        Error::Io(io_err) => match io_err.kind() {
+        FsError::Io(io_err) => match io_err.kind() {
             std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
             std::io::ErrorKind::DirectoryNotEmpty => "Directory not empty".to_string(),
             std::io::ErrorKind::NotADirectory => "Not a directory".to_string(),
             _ => io_err.to_string(),
         },
-        _ => "Unknown error".to_string(),
     }
 }
 

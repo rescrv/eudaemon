@@ -3,7 +3,7 @@
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, io_error_message,
+    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, fs_error_message,
 };
 
 fn build_options() -> Options {
@@ -210,13 +210,13 @@ where
                     env.stderr.write_line(&format!(
                         "ln: {}: {}",
                         target_path,
-                        io_error_message(&e)
+                        fs_error_message(&e)
                     ))?;
                     return Ok(ExitCode::from(1));
                 }
             } else if let Err(e) = env.fs.unlink(&target_path) {
                 env.stderr
-                    .write_line(&format!("ln: {}: {}", target_path, io_error_message(&e)))?;
+                    .write_line(&format!("ln: {}: {}", target_path, fs_error_message(&e)))?;
                 return Ok(ExitCode::from(1));
             }
         } else {
@@ -235,7 +235,7 @@ where
 
     if let Err(e) = result {
         env.stderr
-            .write_line(&format!("ln: {}: {}", target_path, io_error_message(&e)))?;
+            .write_line(&format!("ln: {}: {}", target_path, fs_error_message(&e)))?;
         return Ok(ExitCode::from(1));
     }
 

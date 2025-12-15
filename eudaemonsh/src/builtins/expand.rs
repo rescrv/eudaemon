@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Tab stops configuration.
 #[derive(Clone, Debug)]
@@ -255,11 +255,10 @@ where
             }
             Ok(())
         }
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             let _ = env.stderr.write_line(&format!("expand: {}: {}", path, e));
             Err(1)
         }
-        Err(_e) => Err(1),
     }
 }
 

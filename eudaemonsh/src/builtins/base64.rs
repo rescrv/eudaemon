@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Standard Base64 alphabet (RFC 4648).
 const BASE64_ALPHABET: &[u8; 64] =
@@ -203,12 +203,11 @@ where
         // Read from file
         match env.fs.read_to_string(&matches.free[0]) {
             Ok(contents) => contents,
-            Err(Error::Io(e)) => {
+            Err(FsError::Io(e)) => {
                 env.stderr
                     .write_line(&format!("base64: {}: {}", matches.free[0], e))?;
                 return Ok(ExitCode::from(1));
             }
-            Err(_) => return Ok(ExitCode::from(1)),
         }
     };
 

@@ -13,3 +13,5 @@ shvar = "0.8.0"
 utf8path = "0.9.1"
 
 eudaemonfs = { version = "0.1.0", path = "../eudaemonfs" }
+eudaemonty = { version = "0.1.0", path = "../eudaemonty" }
+lispdown = { version = "0.1.0", path = "../lispdown" }

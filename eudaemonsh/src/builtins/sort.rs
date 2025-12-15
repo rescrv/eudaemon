@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Modifiers that can be applied to a sort key or globally.
 #[derive(Clone, Copy, Debug, Default)]
@@ -436,11 +436,8 @@ where
                             contents.push('\n');
                         }
                     }
-                    Err(Error::Io(e)) => {
+                    Err(FsError::Io(e)) => {
                         env.stderr.write_line(&format!("sort: {}: {}", file, e))?;
-                    }
-                    Err(e) => {
-                        env.stderr.write_line(&format!("sort: {}: {:?}", file, e))?;
                     }
                 }
             }

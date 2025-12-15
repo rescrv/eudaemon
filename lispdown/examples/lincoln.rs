@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lispdown::{register_markdown_builtins, DirectoryFilesystem, Parser, Vm, VmState};
+use lispdown::{DirectoryFilesystem, Parser, Vm, VmState, register_markdown_builtins};
 
 /// The Lisp program that does the actual work.
 ///

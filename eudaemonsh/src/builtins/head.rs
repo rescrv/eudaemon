@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout, parse_size};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout, parse_size};
 
 /// Options for the head command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -168,11 +168,10 @@ where
 {
     match env.fs.read_to_string(path) {
         Ok(contents) => head_string(env, &contents, opts).map_err(|_| 1i8),
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             let _ = env.stderr.write_line(&format!("head: {}: {}", path, e));
             Err(1)
         }
-        Err(_e) => Err(1),
     }
 }
 
@@ -232,7 +231,7 @@ where
     let bytes = contents.as_bytes();
     let end = std::cmp::min(count, bytes.len());
     let output = std::str::from_utf8(&bytes[..end]).unwrap_or("");
-    env.stdout.write_str(output)
+    Ok(env.stdout.write_str(output)?)
 }
 
 #[cfg(test)]

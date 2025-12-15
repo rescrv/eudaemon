@@ -1,8 +1,4 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::BufRead;
-use std::io::Write;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -14,10 +10,24 @@ mod filesystem;
 
 pub use builtins::lookup_bin;
 pub use builtins::sh;
-pub use filesystem::{
-    DirEntry, EudaemonFilesystem, FileBackedEudaemonFilesystem, FileType, Filesystem,
-    RealFilesystem, TimeSpec,
-};
+pub use eudaemonty::DebugReplConfig;
+pub use eudaemonty::DirEntry;
+pub use eudaemonty::FileMetadata;
+pub use eudaemonty::FileType;
+pub use eudaemonty::Filesystem;
+pub use eudaemonty::RealFilesystem;
+pub use eudaemonty::Stderr;
+pub use eudaemonty::Stdin;
+pub use eudaemonty::Stdout;
+pub use eudaemonty::StringStderr;
+pub use eudaemonty::StringStdin;
+pub use eudaemonty::StringStdout;
+pub use eudaemonty::TimeSpec;
+pub use filesystem::EudaemonFilesystem;
+pub use filesystem::FileBackedEudaemonFilesystem;
+
+/// Alias for filesystem errors from eudaemonty.
+pub use eudaemonty::Error as FsError;
 
 /// Errors that can occur during shell operations.
 #[derive(Debug)]
@@ -38,194 +48,11 @@ impl From<shvar::Error> for Error {
     }
 }
 
-/// A trait for types that can serve as standard input.
-pub trait Stdin {
-    /// Duplicate the stdin handle.
-    fn dup(&self) -> Self;
-    /// Read a line from stdin, returning None at EOF.
-    fn read_line(&self) -> Result<Option<String>, Error>;
-}
-
-impl Stdin for () {
-    fn dup(&self) -> Self {
-        *self
-    }
-
-    fn read_line(&self) -> Result<Option<String>, Error> {
-        Ok(None)
-    }
-}
-
-/// A stdin backed by a vector of lines.
-#[derive(Clone)]
-pub struct StringStdin(Rc<RefCell<Vec<String>>>);
-
-impl StringStdin {
-    /// Create a new StringStdin from a string, splitting on newlines.
-    pub fn new(input: &str) -> Self {
-        let lines: Vec<String> = input.lines().rev().map(|s| s.to_string()).collect();
-        Self(Rc::new(RefCell::new(lines)))
-    }
-}
-
-impl Stdin for StringStdin {
-    fn dup(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-
-    fn read_line(&self) -> Result<Option<String>, Error> {
-        Ok(self.0.borrow_mut().pop())
-    }
-}
-
-impl Stdin for std::io::Stdin {
-    fn dup(&self) -> Self {
-        std::io::stdin()
-    }
-
-    fn read_line(&self) -> Result<Option<String>, Error> {
-        let mut buf = String::new();
-        let n = self.lock().read_line(&mut buf).map_err(Error::Io)?;
-        if n == 0 {
-            Ok(None)
-        } else {
-            if buf.ends_with('\n') {
-                buf.pop();
-            }
-            Ok(Some(buf))
+impl From<eudaemonty::Error> for Error {
+    fn from(err: eudaemonty::Error) -> Self {
+        match err {
+            eudaemonty::Error::Io(e) => Self::Io(e),
         }
-    }
-}
-
-/// A trait for types that can serve as standard output.
-pub trait Stdout {
-    /// Duplicate the stdout handle.
-    fn dup(&self) -> Self;
-    /// Write a string to stdout.
-    fn write_str(&self, s: &str) -> Result<(), Error>;
-    /// Write a string followed by a newline to stdout.
-    fn write_line(&self, s: &str) -> Result<(), Error> {
-        self.write_str(s)?;
-        self.write_str("\n")
-    }
-}
-
-impl Stdout for () {
-    fn dup(&self) -> Self {
-        *self
-    }
-
-    fn write_str(&self, _s: &str) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-/// A stdout that collects output into a string.
-#[derive(Clone)]
-pub struct StringStdout(Rc<RefCell<String>>);
-
-impl StringStdout {
-    /// Create a new empty StringStdout.
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(String::new())))
-    }
-
-    /// Get the collected output as a string.
-    pub fn into_string(&self) -> String {
-        self.0.borrow().clone()
-    }
-}
-
-impl Default for StringStdout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Stdout for StringStdout {
-    fn dup(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-
-    fn write_str(&self, s: &str) -> Result<(), Error> {
-        self.0.borrow_mut().push_str(s);
-        Ok(())
-    }
-}
-
-impl Stdout for std::io::Stdout {
-    fn dup(&self) -> Self {
-        std::io::stdout()
-    }
-
-    fn write_str(&self, s: &str) -> Result<(), Error> {
-        self.lock().write_all(s.as_bytes()).map_err(Error::Io)
-    }
-}
-
-/// A trait for types that can serve as standard error.
-pub trait Stderr {
-    /// Duplicate the stderr handle.
-    fn dup(&self) -> Self;
-    /// Write a string to stderr.
-    fn write_str(&self, s: &str) -> Result<(), Error>;
-    /// Write a string followed by a newline to stderr.
-    fn write_line(&self, s: &str) -> Result<(), Error> {
-        self.write_str(s)?;
-        self.write_str("\n")
-    }
-}
-
-impl Stderr for () {
-    fn dup(&self) -> Self {
-        *self
-    }
-
-    fn write_str(&self, _s: &str) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-/// A stderr that collects output into a string.
-#[derive(Clone)]
-pub struct StringStderr(Rc<RefCell<String>>);
-
-impl StringStderr {
-    /// Create a new empty StringStderr.
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(String::new())))
-    }
-
-    /// Get the collected output as a string.
-    pub fn into_string(&self) -> String {
-        self.0.borrow().clone()
-    }
-}
-
-impl Default for StringStderr {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Stderr for StringStderr {
-    fn dup(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-
-    fn write_str(&self, s: &str) -> Result<(), Error> {
-        self.0.borrow_mut().push_str(s);
-        Ok(())
-    }
-}
-
-impl Stderr for std::io::Stderr {
-    fn dup(&self) -> Self {
-        std::io::stderr()
-    }
-
-    fn write_str(&self, s: &str) -> Result<(), Error> {
-        self.lock().write_all(s.as_bytes()).map_err(Error::Io)
     }
 }
 
@@ -460,6 +287,24 @@ pub fn io_error_message(e: &Error) -> String {
         Error::Shvar(e) => format!("{:?}", e),
         Error::EmptyCommand => "empty command".to_string(),
         Error::UnknownBinary(b) => format!("unknown binary: {}", b),
+    }
+}
+
+/// Extract a user-friendly message from a filesystem error.
+///
+/// Converts common I/O error kinds to human-readable strings like
+/// "No such file or directory" instead of the default Rust error messages.
+pub fn fs_error_message(e: &FsError) -> String {
+    match e {
+        FsError::Io(io_err) => match io_err.kind() {
+            std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
+            std::io::ErrorKind::DirectoryNotEmpty => "Directory not empty".to_string(),
+            std::io::ErrorKind::NotADirectory => "Not a directory".to_string(),
+            std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
+            std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
+            std::io::ErrorKind::AlreadyExists => "File exists".to_string(),
+            _ => io_err.to_string(),
+        },
     }
 }
 

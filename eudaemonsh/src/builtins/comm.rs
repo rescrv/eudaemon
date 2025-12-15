@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Options for the comm command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -104,8 +104,8 @@ where
     } else {
         match env.fs.read_to_string(path) {
             Ok(contents) => Ok(Some(contents)),
-            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
+            Err(FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 }

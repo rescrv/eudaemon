@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// The mode of operation for cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,11 +311,10 @@ where
             }
             Ok(())
         }
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             let _ = env.stderr.write_line(&format!("cut: {}: {}", path, e));
             Err(1)
         }
-        Err(_e) => Err(1),
     }
 }
 
@@ -360,7 +359,7 @@ where
         }
     }
 
-    env.stdout.write_line(&output)
+    Ok(env.stdout.write_line(&output)?)
 }
 
 /// Cut by character positions.
@@ -384,7 +383,7 @@ where
         }
     }
 
-    env.stdout.write_line(&output)
+    Ok(env.stdout.write_line(&output)?)
 }
 
 /// Cut by field positions.
@@ -413,7 +412,7 @@ where
             return Ok(());
         } else {
             // Output the whole line unchanged
-            return env.stdout.write_line(line);
+            return Ok(env.stdout.write_line(line)?);
         }
     }
 
@@ -442,7 +441,7 @@ where
     };
     let output: String = output_parts.join(&output_delim.to_string());
 
-    env.stdout.write_line(&output)
+    Ok(env.stdout.write_line(&output)?)
 }
 
 #[cfg(test)]

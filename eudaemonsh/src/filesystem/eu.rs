@@ -8,14 +8,12 @@ use eudaemonfs::DeviceId;
 use eudaemonfs::FileBlockDevice;
 use eudaemonfs::Lfs;
 use eudaemonfs::MemoryBlockDevice;
-
-use crate::Error;
-
-use super::DirEntry;
-use super::FileMetadata;
-use super::FileType;
-use super::Filesystem;
-use super::TimeSpec;
+use eudaemonty::DirEntry;
+use eudaemonty::Error;
+use eudaemonty::FileMetadata;
+use eudaemonty::FileType;
+use eudaemonty::Filesystem;
+use eudaemonty::TimeSpec;
 
 /// A filesystem backed by eudaemonfs using in-memory storage.
 #[derive(Clone)]

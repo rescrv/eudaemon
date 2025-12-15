@@ -13,8 +13,10 @@ mod env;
 pub mod expand;
 mod fold;
 mod head;
+mod inspect_fs;
 mod ln;
 mod ls;
+mod markdownsp;
 mod mkdir;
 mod mktemp;
 mod mv;
@@ -103,6 +105,7 @@ where
         "unlink" | "/bin/unlink" => Ok(rm::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),
+        "inspect-fs" => Ok(inspect_fs::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
 }

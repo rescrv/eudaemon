@@ -1,4 +1,4 @@
-use crate::{Command, Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Command, Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// The sh builtin: execute shell commands.
 ///
@@ -52,11 +52,10 @@ where
 {
     let contents = match env.fs.read_to_string(path) {
         Ok(c) => c,
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             env.stderr.write_line(&format!("sh: {}: {}", path, e))?;
             return Ok(ExitCode::from(127));
         }
-        Err(e) => return Err(e),
     };
 
     run_string(&contents, env)

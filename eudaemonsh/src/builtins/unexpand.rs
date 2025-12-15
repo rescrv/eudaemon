@@ -3,7 +3,7 @@
 use getopts::Options;
 
 use super::expand::TabStops;
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -106,11 +106,10 @@ where
             }
             Ok(())
         }
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             let _ = env.stderr.write_line(&format!("unexpand: {}: {}", path, e));
             Err(1)
         }
-        Err(_e) => Err(1),
     }
 }
 

@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Options for the paste command.
 #[derive(Clone, Debug)]
@@ -172,11 +172,8 @@ where
                     let lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
                     sources.push(Some(LineSource::from_lines(lines)));
                 }
-                Err(Error::Io(e)) => {
+                Err(FsError::Io(e)) => {
                     env.stderr.write_line(&format!("paste: {}: {}", file, e))?;
-                    return Ok(ExitCode::from(1));
-                }
-                Err(_) => {
                     return Ok(ExitCode::from(1));
                 }
             }
@@ -276,12 +273,8 @@ where
         } else {
             match env.fs.read_to_string(file) {
                 Ok(contents) => contents.lines().map(|s| s.to_string()).collect(),
-                Err(Error::Io(e)) => {
+                Err(FsError::Io(e)) => {
                     env.stderr.write_line(&format!("paste: {}: {}", file, e))?;
-                    exit_code = 1;
-                    continue;
-                }
-                Err(_) => {
                     exit_code = 1;
                     continue;
                 }

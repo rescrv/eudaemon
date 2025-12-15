@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout, parse_size};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout, parse_size};
 
 /// The style of offset: from beginning or from end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -267,11 +267,10 @@ where
 {
     match env.fs.read_to_string(path) {
         Ok(contents) => tail_string(env, &contents, opts).map_err(|_| 1i8),
-        Err(Error::Io(e)) => {
+        Err(FsError::Io(e)) => {
             let _ = env.stderr.write_line(&format!("tail: {}: {}", path, e));
             Err(1)
         }
-        Err(_e) => Err(1),
     }
 }
 

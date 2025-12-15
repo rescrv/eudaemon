@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Parse a size string with optional K/M/G/T suffix.
 /// Returns the size in bytes.
@@ -205,7 +205,7 @@ where
                 continue;
             }
 
-            if let Err(Error::Io(e)) = env.fs.punch_hole(file, offset, length) {
+            if let Err(FsError::Io(e)) = env.fs.punch_hole(file, offset, length) {
                 env.stderr
                     .write_line(&format!("truncate: {}: {}", file, e))?;
                 exit_code = 1;
@@ -219,12 +219,11 @@ where
     let size_spec = if let Some(ref rfile) = ref_file {
         match env.fs.metadata(rfile) {
             Ok(meta) => SizeSpec::Absolute(meta.size),
-            Err(Error::Io(e)) => {
+            Err(FsError::Io(e)) => {
                 env.stderr
                     .write_line(&format!("truncate: {}: {}", rfile, e))?;
                 return Ok(ExitCode::from(1));
             }
-            Err(_) => return Ok(ExitCode::from(1)),
         }
     } else {
         match parse_size_spec(size_arg.as_ref().unwrap()) {
@@ -252,13 +251,9 @@ where
             let target_size = if needs_current_size {
                 match env.fs.metadata(file) {
                     Ok(meta) => calculate_target_size(meta.size, size_spec),
-                    Err(Error::Io(e)) => {
+                    Err(FsError::Io(e)) => {
                         env.stderr
                             .write_line(&format!("truncate: {}: {}", file, e))?;
-                        exit_code = 1;
-                        continue;
-                    }
-                    Err(_) => {
                         exit_code = 1;
                         continue;
                     }
@@ -274,12 +269,9 @@ where
                 Ok(false) => {
                     // File doesn't exist, silently skip with -c
                 }
-                Err(Error::Io(e)) => {
+                Err(FsError::Io(e)) => {
                     env.stderr
                         .write_line(&format!("truncate: {}: {}", file, e))?;
-                    exit_code = 1;
-                }
-                Err(_) => {
                     exit_code = 1;
                 }
             }
@@ -289,13 +281,9 @@ where
                 let current_size = if env.fs.exists(file) {
                     match env.fs.metadata(file) {
                         Ok(meta) => meta.size,
-                        Err(Error::Io(e)) => {
+                        Err(FsError::Io(e)) => {
                             env.stderr
                                 .write_line(&format!("truncate: {}: {}", file, e))?;
-                            exit_code = 1;
-                            continue;
-                        }
-                        Err(_) => {
                             exit_code = 1;
                             continue;
                         }
@@ -310,7 +298,7 @@ where
                 unreachable!()
             };
 
-            if let Err(Error::Io(e)) = env.fs.truncate(file, target_size) {
+            if let Err(FsError::Io(e)) = env.fs.truncate(file, target_size) {
                 env.stderr
                     .write_line(&format!("truncate: {}: {}", file, e))?;
                 exit_code = 1;

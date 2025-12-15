@@ -4,7 +4,7 @@ use getopts::Options;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Options for the shuf command.
 #[derive(Clone, Debug, Default)]
@@ -268,14 +268,9 @@ where
                     lines.pop();
                 }
             }
-            Err(Error::Io(e)) => {
+            Err(FsError::Io(e)) => {
                 env.stderr
                     .write_line(&format!("shuf: {}: {}", args[0], e))?;
-                return Ok(Vec::new());
-            }
-            Err(e) => {
-                env.stderr
-                    .write_line(&format!("shuf: {}: {:?}", args[0], e))?;
                 return Ok(Vec::new());
             }
         }

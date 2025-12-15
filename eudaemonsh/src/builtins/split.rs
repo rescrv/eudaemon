@@ -3,7 +3,7 @@
 use getopts::Options;
 use regex::Regex;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Default number of lines per output file.
 const DEFAULT_LINES: u64 = 1000;
@@ -313,13 +313,8 @@ where
     let input = if let Some(path) = input_file {
         match env.fs.read_to_string(path) {
             Ok(contents) => contents,
-            Err(Error::Io(e)) => {
+            Err(FsError::Io(e)) => {
                 env.stderr.write_line(&format!("split: {}: {}", path, e))?;
-                return Ok(ExitCode::from(1));
-            }
-            Err(_) => {
-                env.stderr
-                    .write_line(&format!("split: {}: error reading file", path))?;
                 return Ok(ExitCode::from(1));
             }
         }

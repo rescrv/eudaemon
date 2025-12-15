@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
 
 /// Options for the wc command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -251,8 +251,7 @@ where
 {
     match env.fs.read_to_string(path) {
         Ok(contents) => Ok(count_string(&contents, opts)),
-        Err(Error::Io(e)) => Err(format!("{}: {}", path, e)),
-        Err(_) => Err(format!("{}: unknown error", path)),
+        Err(FsError::Io(e)) => Err(format!("{}: {}", path, e)),
     }
 }
 
@@ -295,7 +294,7 @@ where
         parts.join("")
     };
 
-    env.stdout.write_line(&output)
+    Ok(env.stdout.write_line(&output)?)
 }
 
 #[cfg(test)]
