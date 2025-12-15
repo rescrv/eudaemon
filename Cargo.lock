@@ -297,8 +297,11 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 name = "eudaemonfs"
 version = "0.1.0"
 dependencies = [
+ "arrrg",
+ "arrrg_derive",
  "getopts",
  "guacamole",
+ "lispdown",
  "proptest",
 ]
 

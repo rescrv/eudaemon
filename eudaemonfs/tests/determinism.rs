@@ -4,17 +4,23 @@
 //! 1. The LFS behaves identically to a reference implementation
 //! 2. Replaying the same operations produces identical on-disk state
 //! 3. Persist/restore cycles preserve all data correctly
+//!
+//! Each proptest writes a debug log to `proptest_<test_name>.sexpr` for analysis.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
 use eudaemonfs::BlockAddress;
+use eudaemonfs::DebugLog;
 use eudaemonfs::DeviceId;
 use eudaemonfs::Error;
 use eudaemonfs::FileDescriptor;
 use eudaemonfs::Lfs;
+use eudaemonfs::LoggingBlockDevice;
+use eudaemonfs::LoggingFilesystem;
 use eudaemonfs::MemoryBlockDevice;
 use eudaemonfs::SequentialBlockDevice;
 
@@ -37,7 +43,7 @@ fn zero_time() -> i64 {
 /////////////////////////////////////////////// FsOp ///////////////////////////////////////////////////
 
 /// A filesystem operation that can be applied to both LFS and the reference implementation.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum FsOp {
     /// Open or create a file.
     Open { name: String },
@@ -53,6 +59,163 @@ enum FsOp {
     Truncate { fd_index: usize, size: u64 },
     /// Remove a file.
     Remove { name: String },
+}
+
+impl std::fmt::Debug for FsOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Compact debug format that doesn't dump massive byte arrays
+        match self {
+            FsOp::Open { name } => write!(f, "Open({:?})", name),
+            FsOp::Close { fd_index } => write!(f, "Close(fd={})", fd_index),
+            FsOp::Write { fd_index, data } => {
+                write!(f, "Write(fd={}, {} bytes)", fd_index, data.len())
+            }
+            FsOp::Read { fd_index, len } => write!(f, "Read(fd={}, len={})", fd_index, len),
+            FsOp::Seek { fd_index, pos } => write!(f, "Seek(fd={}, pos={})", fd_index, pos),
+            FsOp::Truncate { fd_index, size } => {
+                write!(f, "Truncate(fd={}, size={})", fd_index, size)
+            }
+            FsOp::Remove { name } => write!(f, "Remove({:?})", name),
+        }
+    }
+}
+
+impl std::fmt::Display for FsOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}
+
+///////////////////////////////////////////// OpTrace ///////////////////////////////////////////////////
+
+/// Records the outcome of an operation for debugging.
+#[derive(Clone)]
+struct OpTrace {
+    op_index: usize,
+    op: FsOp,
+    outcome: OpOutcome,
+    /// State of open files after operation (fd_index -> (ino, position, filename)).
+    /// Available for future debugging use.
+    #[allow(dead_code)]
+    ref_open_files: Vec<(u64, usize, String)>,
+    /// State of files in reference after operation (name -> size).
+    ref_files: Vec<(String, usize)>,
+}
+
+#[derive(Clone, Debug)]
+enum OpOutcome {
+    /// Operation succeeded on both LFS and reference.
+    Success(String),
+    /// Operation was skipped (e.g., fd_index out of range).
+    Skipped,
+    /// LFS returned NoSpace, operation skipped on reference.
+    NoSpace,
+    /// Both returned the same error.
+    Error(String),
+    /// Results diverged - this is the bug!
+    Diverged { lfs: String, reference: String },
+}
+
+impl std::fmt::Debug for OpTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {:?} => ", self.op_index, self.op)?;
+        match &self.outcome {
+            OpOutcome::Success(msg) => write!(f, "OK: {}", msg)?,
+            OpOutcome::Skipped => write!(f, "SKIP")?,
+            OpOutcome::NoSpace => write!(f, "NOSPACE")?,
+            OpOutcome::Error(msg) => write!(f, "ERR: {}", msg)?,
+            OpOutcome::Diverged { lfs, reference } => {
+                write!(f, "DIVERGED! lfs={}, ref={}", lfs, reference)?
+            }
+        }
+        if !self.ref_files.is_empty() {
+            write!(f, " | files: {:?}", self.ref_files)?;
+        }
+        Ok(())
+    }
+}
+
+/// Trace of all operations executed in a test run.
+struct ExecutionTrace {
+    ops: Vec<OpTrace>,
+}
+
+impl ExecutionTrace {
+    fn new() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    fn record(&mut self, trace: OpTrace) {
+        self.ops.push(trace);
+    }
+
+    /// Prints a compact summary of the execution trace.
+    fn print_summary(&self) {
+        println!("\n=== Execution Trace ({} ops) ===", self.ops.len());
+        for trace in &self.ops {
+            println!("{:?}", trace);
+        }
+        println!("=== End Trace ===\n");
+    }
+
+    /// Prints only the last N operations (useful for debugging).
+    #[allow(dead_code)]
+    fn print_last(&self, n: usize) {
+        let start = self.ops.len().saturating_sub(n);
+        println!(
+            "\n=== Last {} ops (of {}) ===",
+            self.ops.len() - start,
+            self.ops.len()
+        );
+        for trace in &self.ops[start..] {
+            println!("{:?}", trace);
+        }
+        println!("=== End Trace ===\n");
+    }
+}
+
+/// State of open file descriptors: (ino, position, filename).
+type OpenFileState = Vec<(u64, usize, String)>;
+
+/// State of files: (name, size).
+type FileState = Vec<(String, usize)>;
+
+/// Captures the state of the reference filesystem for the trace.
+fn capture_ref_state(reference: &ReferenceFs) -> (OpenFileState, FileState) {
+    // Capture open files: (ino, position, filename)
+    let open_files: Vec<_> = reference
+        .open_files
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, of)| {
+            if of.closed {
+                None
+            } else {
+                // Find filename for this inode
+                let filename = reference
+                    .directory
+                    .iter()
+                    .find(|(_, ino)| **ino == of.ino)
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_else(|| format!("<unlinked:{}>", of.ino));
+                Some((of.ino, of.position, format!("fd{}:{}", idx, filename)))
+            }
+        })
+        .collect();
+
+    // Capture file state: (name, size)
+    let files: Vec<_> = reference
+        .directory
+        .iter()
+        .filter_map(|(name, ino)| {
+            reference
+                .inodes
+                .get(ino)
+                .map(|file| (name.clone(), file.size()))
+        })
+        .collect();
+
+    (open_files, files)
 }
 
 ////////////////////////////////////////// ReferenceFile ///////////////////////////////////////////////
@@ -251,17 +414,22 @@ impl ReferenceFs {
 
 /////////////////////////////////////////// LfsAdapter /////////////////////////////////////////////////
 
+/// Type alias for the complex logging LFS type.
+type LoggingLfs =
+    LoggingFilesystem<LoggingBlockDevice<SequentialBlockDevice<MemoryBlockDevice>>, fn() -> i64>;
+
 /// Adapter to track open file descriptors for LFS.
 ///
 /// Uses `SequentialBlockDevice` to enforce that all block writes happen in strictly
 /// sequential order, verifying a key property of log-structured filesystems.
+/// Wraps the filesystem and block device with logging for debugging.
 struct LfsAdapter {
-    lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>, fn() -> i64>,
+    lfs: LoggingLfs,
     open_fds: Vec<Option<FileDescriptor>>,
 }
 
 impl LfsAdapter {
-    fn new(lfs: Lfs<SequentialBlockDevice<MemoryBlockDevice>, fn() -> i64>) -> Self {
+    fn new(lfs: LoggingLfs) -> Self {
         Self {
             lfs,
             open_fds: Vec::new(),
@@ -325,7 +493,12 @@ impl LfsAdapter {
     }
 
     fn into_inner(self) -> Vec<u8> {
-        self.lfs.into_device().into_inner().into_inner()
+        self.lfs
+            .into_inner()
+            .into_device()
+            .into_inner()
+            .into_inner()
+            .into_inner()
     }
 }
 
@@ -359,196 +532,266 @@ fn ops_strategy() -> impl Strategy<Value = Vec<FsOp>> {
 
 ////////////////////////////////////////// Test Execution //////////////////////////////////////////////
 
+/// Helper to create an OpTrace.
+fn make_trace(op_index: usize, op: &FsOp, outcome: OpOutcome, reference: &ReferenceFs) -> OpTrace {
+    let (ref_open_files, ref_files) = capture_ref_state(reference);
+    OpTrace {
+        op_index,
+        op: op.clone(),
+        outcome,
+        ref_open_files,
+        ref_files,
+    }
+}
+
 /// Execute a single operation on both implementations and compare results.
 /// Operations are tried on LFS first; if LFS returns NoSpace, the operation becomes a NOP
 /// (skipped on reference) to keep both implementations in sync. This allows testing
 /// recovery from full-fs conditions.
+///
+/// Returns an OpTrace for debugging.
 fn execute_op(
+    op_index: usize,
     op: &FsOp,
     lfs: &mut LfsAdapter,
     reference: &mut ReferenceFs,
     open_count: &mut usize,
-) {
+) -> OpTrace {
     match op {
         FsOp::Open { name } => {
             let lfs_result = lfs.open(name);
             if lfs_result == Err(Error::NoSpace) {
-                // NOP: LFS is full, skip on reference to stay in sync
-                return;
+                return make_trace(op_index, op, OpOutcome::NoSpace, reference);
             }
             let ref_result = reference.open(name);
 
-            match (&lfs_result, &ref_result) {
-                (Ok(_), Ok(_)) => {
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(lfs_fd), Ok(ref_fd)) => {
                     *open_count += 1;
+                    OpOutcome::Success(format!("lfs_fd={}, ref_fd={}", lfs_fd, ref_fd))
                 }
-                (Err(e1), Err(e2)) => {
-                    assert_eq!(e1, e2, "Open error mismatch for {:?}", name);
-                }
-                _ => {
-                    panic!(
-                        "Open result mismatch for {:?}: lfs={:?}, ref={:?}",
-                        name, lfs_result, ref_result
-                    );
-                }
-            }
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
         FsOp::Close { fd_index } => {
-            if *fd_index < *open_count {
-                let lfs_result = lfs.close(*fd_index);
-                let ref_result = reference.close(*fd_index);
-
-                match (&lfs_result, &ref_result) {
-                    (Ok(()), Ok(())) => {}
-                    (Err(e1), Err(e2)) => {
-                        assert_eq!(e1, e2, "Close error mismatch for fd_index {}", fd_index);
-                    }
-                    _ => {
-                        panic!(
-                            "Close result mismatch for fd_index {}: lfs={:?}, ref={:?}",
-                            fd_index, lfs_result, ref_result
-                        );
-                    }
-                }
+            if *fd_index >= *open_count {
+                return make_trace(op_index, op, OpOutcome::Skipped, reference);
             }
+            let lfs_result = lfs.close(*fd_index);
+            let ref_result = reference.close(*fd_index);
+
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(()), Ok(())) => OpOutcome::Success("closed".to_string()),
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
         FsOp::Write { fd_index, data } => {
-            if *fd_index < *open_count {
-                let lfs_result = lfs.write(*fd_index, data);
-                if lfs_result == Err(Error::NoSpace) {
-                    // NOP: LFS is full, skip on reference to stay in sync
-                    return;
-                }
-                let ref_result = reference.write(*fd_index, data);
-
-                match (&lfs_result, &ref_result) {
-                    (Ok(n1), Ok(n2)) => {
-                        assert_eq!(n1, n2, "Write length mismatch");
-                    }
-                    (Err(Error::FileTooLarge), Err(Error::FileTooLarge)) => {}
-                    (Err(Error::InvalidFd), Err(Error::InvalidFd)) => {}
-                    _ => {
-                        panic!(
-                            "Write result mismatch for fd_index {}: lfs={:?}, ref={:?}",
-                            fd_index, lfs_result, ref_result
-                        );
-                    }
-                }
+            if *fd_index >= *open_count {
+                return make_trace(op_index, op, OpOutcome::Skipped, reference);
             }
+            let lfs_result = lfs.write(*fd_index, data);
+            if lfs_result == Err(Error::NoSpace) {
+                return make_trace(op_index, op, OpOutcome::NoSpace, reference);
+            }
+            let ref_result = reference.write(*fd_index, data);
+
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(n1), Ok(n2)) if n1 == n2 => OpOutcome::Success(format!("wrote {} bytes", n1)),
+                (Ok(n1), Ok(n2)) => OpOutcome::Diverged {
+                    lfs: format!("wrote {} bytes", n1),
+                    reference: format!("wrote {} bytes", n2),
+                },
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
         FsOp::Read { fd_index, len } => {
-            if *fd_index < *open_count {
-                let lfs_result = lfs.read(*fd_index, *len);
-                let ref_result = reference.read(*fd_index, *len);
-
-                match (&lfs_result, &ref_result) {
-                    (Ok(d1), Ok(d2)) => {
-                        assert_eq!(d1, d2, "Read data mismatch at fd_index {}", fd_index);
-                    }
-                    (Err(e1), Err(e2)) => {
-                        assert_eq!(e1, e2, "Read error mismatch for fd_index {}", fd_index);
-                    }
-                    _ => {
-                        panic!(
-                            "Read result mismatch for fd_index {}: lfs={:?}, ref={:?}",
-                            fd_index, lfs_result, ref_result
-                        );
-                    }
-                }
+            if *fd_index >= *open_count {
+                return make_trace(op_index, op, OpOutcome::Skipped, reference);
             }
+            let lfs_result = lfs.read(*fd_index, *len);
+            let ref_result = reference.read(*fd_index, *len);
+
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(d1), Ok(d2)) if d1 == d2 => {
+                    OpOutcome::Success(format!("read {} bytes", d1.len()))
+                }
+                (Ok(d1), Ok(d2)) => OpOutcome::Diverged {
+                    lfs: format!("read {} bytes", d1.len()),
+                    reference: format!("read {} bytes", d2.len()),
+                },
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
         FsOp::Seek { fd_index, pos } => {
-            if *fd_index < *open_count {
-                let lfs_result = lfs.seek(*fd_index, *pos);
-                let ref_result = reference.seek(*fd_index, *pos);
-
-                match (&lfs_result, &ref_result) {
-                    (Ok(()), Ok(())) => {}
-                    (Err(e1), Err(e2)) => {
-                        assert_eq!(e1, e2, "Seek error mismatch for fd_index {}", fd_index);
-                    }
-                    _ => {
-                        panic!(
-                            "Seek result mismatch for fd_index {}: lfs={:?}, ref={:?}",
-                            fd_index, lfs_result, ref_result
-                        );
-                    }
-                }
+            if *fd_index >= *open_count {
+                return make_trace(op_index, op, OpOutcome::Skipped, reference);
             }
+            let lfs_result = lfs.seek(*fd_index, *pos);
+            let ref_result = reference.seek(*fd_index, *pos);
+
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(()), Ok(())) => OpOutcome::Success(format!("pos={}", pos)),
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
         FsOp::Truncate { fd_index, size } => {
-            if *fd_index < *open_count {
-                let lfs_result = lfs.truncate(*fd_index, *size);
-                if lfs_result == Err(Error::NoSpace) {
-                    // NOP: LFS is full, skip on reference to stay in sync
-                    return;
-                }
-                let ref_result = reference.truncate(*fd_index, *size);
-
-                match (&lfs_result, &ref_result) {
-                    (Ok(()), Ok(())) => {}
-                    (Err(Error::FileTooLarge), Err(Error::FileTooLarge)) => {}
-                    (Err(Error::InvalidFd), Err(Error::InvalidFd)) => {}
-                    _ => {
-                        panic!(
-                            "Truncate result mismatch for fd_index {}: lfs={:?}, ref={:?}",
-                            fd_index, lfs_result, ref_result
-                        );
-                    }
-                }
+            if *fd_index >= *open_count {
+                return make_trace(op_index, op, OpOutcome::Skipped, reference);
             }
+            let lfs_result = lfs.truncate(*fd_index, *size);
+            if lfs_result == Err(Error::NoSpace) {
+                return make_trace(op_index, op, OpOutcome::NoSpace, reference);
+            }
+            let ref_result = reference.truncate(*fd_index, *size);
+
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(()), Ok(())) => OpOutcome::Success(format!("size={}", size)),
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
         FsOp::Remove { name } => {
             let lfs_result = lfs.remove(name);
             if lfs_result == Err(Error::NoSpace) {
-                // NOP: LFS is full, skip on reference to stay in sync
-                return;
+                return make_trace(op_index, op, OpOutcome::NoSpace, reference);
             }
             let ref_result = reference.remove(name);
 
-            match (&lfs_result, &ref_result) {
-                (Ok(()), Ok(())) => {}
-                (Err(Error::NotFound), Err(Error::NotFound)) => {}
-                _ => {
-                    panic!(
-                        "Remove result mismatch for {:?}: lfs={:?}, ref={:?}",
-                        name, lfs_result, ref_result
-                    );
-                }
-            }
+            let outcome = match (&lfs_result, &ref_result) {
+                (Ok(()), Ok(())) => OpOutcome::Success("removed".to_string()),
+                (Err(e1), Err(e2)) if e1 == e2 => OpOutcome::Error(format!("{:?}", e1)),
+                _ => OpOutcome::Diverged {
+                    lfs: format!("{:?}", lfs_result),
+                    reference: format!("{:?}", ref_result),
+                },
+            };
+            make_trace(op_index, op, outcome, reference)
         }
     }
 }
 
-/// Run a sequence of operations on both implementations.
-///
-/// The LFS uses a `SequentialBlockDevice` wrapper to enforce that all block writes
-/// happen in strictly sequential order, which is a key invariant of log-structured
-/// filesystems.
-fn run_ops(ops: &[FsOp]) -> (LfsAdapter, ReferenceFs) {
+/// Run a sequence of operations with logging to a specific file.
+fn run_ops_traced_with_log(
+    ops: &[FsOp],
+    test_name: &str,
+) -> (LfsAdapter, ReferenceFs, ExecutionTrace) {
+    // Create log file for this test
+    let log_path = format!("{}.sexpr", test_name);
+    let log = Arc::new(DebugLog::to_file(&log_path).unwrap_or_else(|_| DebugLog::to_stderr()));
+
     let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
     let mem_device = MemoryBlockDevice::new(data);
     let log_start = BlockAddress::new(1);
     let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
     let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-    let lfs = Lfs::new(
-        seq_device,
+
+    // Wrap with logging block device
+    let logging_device = LoggingBlockDevice::new(seq_device, Arc::clone(&log));
+
+    let inner_lfs = Lfs::new(
+        logging_device,
         TEST_FS_BLOCKS as u64,
         DeviceId::new(1),
         zero_time as fn() -> i64,
     )
     .expect("Failed to create LFS");
+
+    // Wrap with logging filesystem
+    let logging_lfs = LoggingFilesystem::new(inner_lfs, Arc::clone(&log));
+
     let max_file_size = TEST_FS_BLOCKS * BLOCK_SIZE / 10;
 
-    let mut lfs_adapter = LfsAdapter::new(lfs);
+    let mut lfs_adapter = LfsAdapter::new(logging_lfs);
     let mut reference = ReferenceFs::new(max_file_size);
     let mut open_count = 0;
+    let mut trace = ExecutionTrace::new();
 
-    for op in ops {
-        execute_op(op, &mut lfs_adapter, &mut reference, &mut open_count);
+    for (idx, op) in ops.iter().enumerate() {
+        let op_trace = execute_op(idx, op, &mut lfs_adapter, &mut reference, &mut open_count);
+
+        // Check for divergence and print trace if found
+        if matches!(op_trace.outcome, OpOutcome::Diverged { .. }) {
+            trace.record(op_trace.clone());
+            eprintln!("\n!!! DIVERGENCE DETECTED at operation {} !!!", idx);
+            eprintln!("Debug log written to: {}", log_path);
+            trace.print_summary();
+            panic!(
+                "LFS and reference diverged at op {}: {:?}",
+                idx, op_trace.outcome
+            );
+        }
+
+        trace.record(op_trace);
     }
 
-    (lfs_adapter, reference)
+    (lfs_adapter, reference, trace)
+}
+
+/// Run a sequence of operations on both implementations (non-traced version for compatibility).
+fn run_ops(ops: &[FsOp]) -> (LfsAdapter, ReferenceFs) {
+    run_ops_with_log(ops, "proptest_run")
+}
+
+/// Run a sequence of operations with logging to a specific file (non-traced version).
+fn run_ops_with_log(ops: &[FsOp], test_name: &str) -> (LfsAdapter, ReferenceFs) {
+    let (lfs, reference, _trace) = run_ops_traced_with_log(ops, test_name);
+    (lfs, reference)
+}
+
+/// Creates a logging LFS for individual proptest functions.
+/// Returns the logging LFS and the debug log Arc (for keeping it alive).
+fn create_logging_lfs(test_name: &str) -> (LoggingLfs, Arc<DebugLog>) {
+    let log_path = format!("{}.sexpr", test_name);
+    let log = Arc::new(DebugLog::to_file(&log_path).unwrap_or_else(|_| DebugLog::to_stderr()));
+
+    let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+    let mem_device = MemoryBlockDevice::new(data);
+    let log_start = BlockAddress::new(1);
+    let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
+    let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
+
+    let logging_device = LoggingBlockDevice::new(seq_device, Arc::clone(&log));
+
+    let inner_lfs = Lfs::new(
+        logging_device,
+        TEST_FS_BLOCKS as u64,
+        DeviceId::new(1),
+        zero_time as fn() -> i64,
+    )
+    .expect("Failed to create LFS");
+
+    let logging_lfs = LoggingFilesystem::new(inner_lfs, Arc::clone(&log));
+
+    (logging_lfs, log)
 }
 
 ///////////////////////////////////////////// Proptests ////////////////////////////////////////////////
@@ -558,7 +801,7 @@ proptest! {
 
     #[test]
     fn lfs_matches_reference(ops in ops_strategy()) {
-        let (lfs, reference) = run_ops(&ops);
+        let (lfs, reference, trace) = run_ops_traced_with_log(&ops, "proptest_lfs_matches_reference");
 
         // Close all open fds in lfs so we can reopen and verify
         let data = lfs.into_inner();
@@ -575,6 +818,12 @@ proptest! {
             let mut buf = vec![0u8; ref_file.size()];
             let n = lfs_verify.read(fd, &mut buf).expect("Failed to read");
 
+            if n != ref_file.size() || buf[..n] != ref_file.data[..] {
+                eprintln!("\n!!! VERIFICATION FAILED for {} !!!", name);
+                eprintln!("LFS read {} bytes, reference has {} bytes", n, ref_file.size());
+                trace.print_summary();
+            }
+
             prop_assert_eq!(n, ref_file.size(), "Size mismatch for {}", name);
             prop_assert_eq!(&buf[..n], &ref_file.data[..], "Data mismatch for {}", name);
 
@@ -589,18 +838,7 @@ proptest! {
         data1 in data_strategy(),
         data2 in data_strategy()
     ) {
-        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-        let mem_device = MemoryBlockDevice::new(data);
-        let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
-        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(
-            seq_device,
-            TEST_FS_BLOCKS as u64,
-            DeviceId::new(1),
-            zero_time as fn() -> i64,
-        )
-        .expect("Failed to create LFS");
+        let (mut lfs, _log) = create_logging_lfs("proptest_remove_and_recreate");
 
         // Create file and write initial data
         let fd = lfs.open_file(&name).expect("Failed to open file");
@@ -639,18 +877,7 @@ proptest! {
         data1 in data_strategy(),
         data2 in prop::collection::vec(any::<u8>(), 1..1000)
     ) {
-        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-        let mem_device = MemoryBlockDevice::new(data);
-        let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
-        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(
-            seq_device,
-            TEST_FS_BLOCKS as u64,
-            DeviceId::new(1),
-            zero_time as fn() -> i64,
-        )
-        .expect("Failed to create LFS");
+        let (mut lfs, _log) = create_logging_lfs("proptest_remove_while_open_then_write_read");
 
         // Create file and write initial data
         let fd = lfs.open_file(&name).expect("Failed to open file");
@@ -695,18 +922,7 @@ proptest! {
         data1 in prop::collection::vec(any::<u8>(), 1..1000),
         data2 in prop::collection::vec(any::<u8>(), 1..1000)
     ) {
-        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-        let mem_device = MemoryBlockDevice::new(data);
-        let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
-        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(
-            seq_device,
-            TEST_FS_BLOCKS as u64,
-            DeviceId::new(1),
-            zero_time as fn() -> i64,
-        )
-        .expect("Failed to create LFS");
+        let (mut lfs, _log) = create_logging_lfs("proptest_remove_with_multiple_open_fds");
 
         // Open file twice
         let fd1 = lfs.open_file(&name).expect("Failed to open file first time");
@@ -761,18 +977,7 @@ proptest! {
         data1 in prop::collection::vec(any::<u8>(), 1..500),
         data2 in prop::collection::vec(any::<u8>(), 1..500)
     ) {
-        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-        let mem_device = MemoryBlockDevice::new(data);
-        let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
-        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(
-            seq_device,
-            TEST_FS_BLOCKS as u64,
-            DeviceId::new(1),
-            zero_time as fn() -> i64,
-        )
-        .expect("Failed to create LFS");
+        let (mut lfs, _log) = create_logging_lfs("proptest_remove_recreate_write_persists");
 
         // Create and write initial data
         let fd = lfs.open_file(&name).expect("Failed to open file");
@@ -788,7 +993,7 @@ proptest! {
         lfs.close(fd).expect("Failed to close");
 
         // Persist and restore
-        let raw_data = lfs.into_device().into_inner().into_inner();
+        let raw_data = lfs.into_inner().into_device().into_inner().into_inner().into_inner();
         let mut lfs2 = Lfs::open_vec(raw_data, DeviceId::new(1), zero_time)
             .expect("Failed to restore LFS");
 
@@ -815,18 +1020,7 @@ proptest! {
     ) {
         prop_assume!(name1 != name2);
 
-        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-        let mem_device = MemoryBlockDevice::new(data);
-        let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
-        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(
-            seq_device,
-            TEST_FS_BLOCKS as u64,
-            DeviceId::new(1),
-            zero_time as fn() -> i64,
-        )
-        .expect("Failed to create LFS");
+        let (mut lfs, _log) = create_logging_lfs("proptest_remove_then_write_other_files");
 
         // Create first file
         let fd1 = lfs.open_file(&name1).expect("Failed to open file1");
@@ -862,18 +1056,7 @@ proptest! {
         data2 in prop::collection::vec(any::<u8>(), 100..500),
         data3 in prop::collection::vec(any::<u8>(), 100..500)
     ) {
-        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
-        let mem_device = MemoryBlockDevice::new(data);
-        let log_start = BlockAddress::new(1);
-        let log_end = BlockAddress::new(TEST_FS_BLOCKS as u64);
-        let seq_device = SequentialBlockDevice::new(mem_device, log_start, log_end);
-        let mut lfs = Lfs::new(
-            seq_device,
-            TEST_FS_BLOCKS as u64,
-            DeviceId::new(1),
-            zero_time as fn() -> i64,
-        )
-        .expect("Failed to create LFS");
+        let (mut lfs, _log) = create_logging_lfs("proptest_write_remove_write_read_same_file");
 
         // First write
         let fd = lfs.open_file(&name).expect("Failed to open");
@@ -913,8 +1096,8 @@ proptest! {
 
     #[test]
     fn deterministic_replay(ops in ops_strategy()) {
-        let (lfs1, _) = run_ops(&ops);
-        let (lfs2, _) = run_ops(&ops);
+        let (lfs1, _) = run_ops_with_log(&ops, "proptest_deterministic_replay_1");
+        let (lfs2, _) = run_ops_with_log(&ops, "proptest_deterministic_replay_2");
 
         let data1 = lfs1.into_inner();
         let data2 = lfs2.into_inner();
@@ -924,7 +1107,7 @@ proptest! {
 
     #[test]
     fn persist_restore_preserves_data(ops in ops_strategy()) {
-        let (lfs, reference) = run_ops(&ops);
+        let (lfs, reference) = run_ops_with_log(&ops, "proptest_persist_restore_preserves_data");
 
         let data = lfs.into_inner();
 
@@ -1181,4 +1364,195 @@ fn replay_produces_identical_state() {
 
     assert_eq!(data1, data2, "Replay must produce identical on-disk state");
     println!("Replay produces identical state verified");
+}
+
+/// Regression test for proptest failure: truncate then seek then read
+#[test]
+fn regression_truncate_seek_read() {
+    // Minimal reproduction of proptest failure
+    let ops = vec![
+        FsOp::Open {
+            name: "b.txt".to_string(),
+        },
+        FsOp::Open {
+            name: "c.txt".to_string(),
+        },
+        FsOp::Open {
+            name: "d.txt".to_string(),
+        },
+        FsOp::Open {
+            name: "e.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 2,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "domml.txt".to_string(),
+        },
+        FsOp::Close { fd_index: 2 },
+        FsOp::Open {
+            name: "woxqold.txt".to_string(),
+        },
+        FsOp::Open {
+            name: "dsshxdy.txt".to_string(),
+        },
+        FsOp::Seek {
+            fd_index: 5,
+            pos: 22066,
+        },
+        FsOp::Open {
+            name: "ejtd.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 1,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 3,
+            data: vec![],
+        },
+        FsOp::Seek {
+            fd_index: 6,
+            pos: 10072,
+        },
+        FsOp::Open {
+            name: "jcyj.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 5,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "nrbdnt.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 5,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "mrjr.txt".to_string(),
+        },
+        FsOp::Truncate {
+            fd_index: 7,
+            size: 4193,
+        },
+        FsOp::Write {
+            fd_index: 8,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 5,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "helc.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 6,
+            data: vec![],
+        },
+        FsOp::Truncate {
+            fd_index: 0,
+            size: 12106,
+        },
+        FsOp::Write {
+            fd_index: 3,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 8,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 5,
+            data: vec![],
+        },
+        FsOp::Truncate {
+            fd_index: 5,
+            size: 3626,
+        },
+        FsOp::Write {
+            fd_index: 1,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 3,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "slsupd.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 1,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "bgui.txt".to_string(),
+        },
+        FsOp::Seek {
+            fd_index: 3,
+            pos: 6553,
+        },
+        FsOp::Truncate {
+            fd_index: 7,
+            size: 25263,
+        },
+        FsOp::Write {
+            fd_index: 3,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 9,
+            data: vec![],
+        },
+        FsOp::Seek {
+            fd_index: 8,
+            pos: 371,
+        },
+        FsOp::Open {
+            name: "a.txt".to_string(),
+        },
+        FsOp::Open {
+            name: "vt.txt".to_string(),
+        },
+        FsOp::Truncate {
+            fd_index: 7,
+            size: 17950,
+        },
+        FsOp::Write {
+            fd_index: 4,
+            data: vec![],
+        },
+        FsOp::Write {
+            fd_index: 8,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "klxx.txt".to_string(),
+        },
+        FsOp::Open {
+            name: "rhlw.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 7,
+            data: vec![],
+        },
+        FsOp::Open {
+            name: "wtbh.txt".to_string(),
+        },
+        FsOp::Write {
+            fd_index: 8,
+            data: vec![],
+        },
+        FsOp::Read {
+            fd_index: 8,
+            len: 9376,
+        },
+    ];
+
+    let (lfs, reference) = run_ops(&ops);
+    drop(lfs);
+    drop(reference);
+    println!("Regression test passed");
 }

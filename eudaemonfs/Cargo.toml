@@ -4,8 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arrrg = "0.8.0"
+arrrg_derive = "0.8.0"
 getopts = "0.2.24"
 guacamole = "0.14.0"
+lispdown = { path = "../lispdown" }
 
 [dev-dependencies]
 proptest = "1.4"
+
+[[bin]]
+name = "eudaemon-fs-debug"
+path = "src/bin/eudaemon-fs-debug.rs"

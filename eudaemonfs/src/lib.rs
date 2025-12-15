@@ -441,6 +441,353 @@ impl DeviceId {
     }
 }
 
+////////////////////////////////////////////// DebugLog //////////////////////////////////////////////
+
+/// State protected by the debug log mutex.
+struct DebugLogState {
+    writer: Box<dyn std::io::Write + Send>,
+    sequence: u64,
+}
+
+/// A shared debug log for synchronized output from filesystem and block device operations.
+///
+/// The log is written as S-expressions for easy parsing and analysis. Each line is a complete
+/// S-expression representing one operation.
+pub struct DebugLog {
+    state: std::sync::Mutex<DebugLogState>,
+}
+
+impl DebugLog {
+    /// Creates a new debug log writing to the given writer.
+    pub fn new(writer: Box<dyn std::io::Write + Send>) -> Self {
+        Self {
+            state: std::sync::Mutex::new(DebugLogState {
+                writer,
+                sequence: 0,
+            }),
+        }
+    }
+
+    /// Creates a debug log that writes to a file.
+    pub fn to_file<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self::new(Box::new(file)))
+    }
+
+    /// Creates a debug log that writes to stderr.
+    pub fn to_stderr() -> Self {
+        Self::new(Box::new(std::io::stderr()))
+    }
+
+    /// Logs an S-expression to the log.
+    ///
+    /// The sequence number is assigned and the write is performed atomically
+    /// under the same lock to ensure ordering.
+    fn log(&self, sexpr: &str) {
+        let mut state = self.state.lock().unwrap();
+        let seq = state.sequence;
+        state.sequence += 1;
+        let _ = writeln!(state.writer, "(seq {} {})", seq, sexpr);
+    }
+
+    /// Logs a block device read operation.
+    pub fn log_block_read(&self, block: u64, data_hash: u64) {
+        self.log(&format!("(block-read {} #x{:016x})", block, data_hash));
+    }
+
+    /// Logs a block device write operation.
+    pub fn log_block_write(&self, block: u64, data_hash: u64) {
+        self.log(&format!("(block-write {} #x{:016x})", block, data_hash));
+    }
+
+    /// Logs a filesystem open operation.
+    pub fn log_fs_open(&self, path: &str, fd: u32, created: bool) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-open \"{}\" fd:{} created:{})",
+            escaped, fd, created
+        ));
+    }
+
+    /// Logs a filesystem close operation.
+    pub fn log_fs_close(&self, fd: u32) {
+        self.log(&format!("(fs-close fd:{})", fd));
+    }
+
+    /// Logs a filesystem read operation.
+    pub fn log_fs_read(&self, fd: u32, offset: u64, len: usize, data_hash: u64) {
+        self.log(&format!(
+            "(fs-read fd:{} offset:{} len:{} #x{:016x})",
+            fd, offset, len, data_hash
+        ));
+    }
+
+    /// Logs a filesystem write operation.
+    pub fn log_fs_write(&self, fd: u32, offset: u64, len: usize, data_hash: u64) {
+        self.log(&format!(
+            "(fs-write fd:{} offset:{} len:{} #x{:016x})",
+            fd, offset, len, data_hash
+        ));
+    }
+
+    /// Logs a filesystem seek operation.
+    pub fn log_fs_seek(&self, fd: u32, position: u64) {
+        self.log(&format!("(fs-seek fd:{} pos:{})", fd, position));
+    }
+
+    /// Logs a filesystem truncate operation.
+    pub fn log_fs_truncate(&self, fd: u32, size: u64) {
+        self.log(&format!("(fs-truncate fd:{} size:{})", fd, size));
+    }
+
+    /// Logs a filesystem remove operation.
+    pub fn log_fs_remove(&self, path: &str) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-remove \"{}\")", escaped));
+    }
+
+    /// Logs a filesystem mkdir operation.
+    pub fn log_fs_mkdir(&self, path: &str) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-mkdir \"{}\")", escaped));
+    }
+
+    /// Logs a filesystem rmdir operation.
+    pub fn log_fs_rmdir(&self, path: &str) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-rmdir \"{}\")", escaped));
+    }
+
+    /// Logs a filesystem link operation.
+    pub fn log_fs_link(&self, src: &str, dst: &str) {
+        let src_escaped = Self::escape_string(src);
+        let dst_escaped = Self::escape_string(dst);
+        self.log(&format!(
+            "(fs-link \"{}\" \"{}\")",
+            src_escaped, dst_escaped
+        ));
+    }
+
+    /// Logs a filesystem symlink operation.
+    pub fn log_fs_symlink(&self, target: &str, linkpath: &str) {
+        let target_escaped = Self::escape_string(target);
+        let link_escaped = Self::escape_string(linkpath);
+        self.log(&format!(
+            "(fs-symlink \"{}\" \"{}\")",
+            target_escaped, link_escaped
+        ));
+    }
+
+    /// Logs a filesystem rename operation.
+    pub fn log_fs_rename(&self, src: &str, dst: &str) {
+        let src_escaped = Self::escape_string(src);
+        let dst_escaped = Self::escape_string(dst);
+        self.log(&format!(
+            "(fs-rename \"{}\" \"{}\")",
+            src_escaped, dst_escaped
+        ));
+    }
+
+    /// Logs a filesystem error.
+    pub fn log_fs_error(&self, op: &str, err: &Error) {
+        self.log(&format!("(fs-error \"{}\" {:?})", op, err));
+    }
+
+    /// Logs a filesystem stat operation.
+    pub fn log_fs_stat(&self, path: &str, size: u64, file_type: &str) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-stat \"{}\" size:{} type:{})",
+            escaped, size, file_type
+        ));
+    }
+
+    /// Logs a filesystem lstat operation.
+    pub fn log_fs_lstat(&self, path: &str, size: u64, file_type: &str) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-lstat \"{}\" size:{} type:{})",
+            escaped, size, file_type
+        ));
+    }
+
+    /// Logs a filesystem read_dir operation.
+    pub fn log_fs_read_dir(&self, path: &str, count: usize) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-read-dir \"{}\" count:{})", escaped, count));
+    }
+
+    /// Logs a filesystem exists check.
+    pub fn log_fs_exists(&self, path: &str, exists: bool) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-exists \"{}\" {})", escaped, exists));
+    }
+
+    /// Logs a filesystem is_dir check.
+    pub fn log_fs_is_dir(&self, path: &str, is_dir: bool) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-is-dir \"{}\" {})", escaped, is_dir));
+    }
+
+    /// Logs a filesystem readlink operation.
+    pub fn log_fs_readlink(&self, path: &str, target: &str) {
+        let path_escaped = Self::escape_string(path);
+        let target_escaped = Self::escape_string(target);
+        self.log(&format!(
+            "(fs-readlink \"{}\" \"{}\")",
+            path_escaped, target_escaped
+        ));
+    }
+
+    /// Logs a filesystem file_size operation.
+    pub fn log_fs_file_size(&self, fd: u32, size: u64) {
+        self.log(&format!("(fs-file-size fd:{} size:{})", fd, size));
+    }
+
+    /// Logs a filesystem clean operation.
+    pub fn log_fs_clean(&self, blocks_reclaimed: usize) {
+        self.log(&format!("(fs-clean reclaimed:{})", blocks_reclaimed));
+    }
+
+    /// Logs a filesystem set_times operation.
+    pub fn log_fs_set_times(&self, path: &str) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-set-times \"{}\")", escaped));
+    }
+
+    /// Logs a filesystem read_file operation.
+    pub fn log_fs_read_file(&self, path: &str, len: usize, data_hash: u64) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-read-file \"{}\" len:{} #x{:016x})",
+            escaped, len, data_hash
+        ));
+    }
+
+    /// Logs a filesystem write_file operation.
+    pub fn log_fs_write_file(&self, path: &str, len: usize, data_hash: u64) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-write-file \"{}\" len:{} #x{:016x})",
+            escaped, len, data_hash
+        ));
+    }
+
+    /// Logs a filesystem append_file operation.
+    pub fn log_fs_append_file(&self, path: &str, len: usize, data_hash: u64) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-append-file \"{}\" len:{} #x{:016x})",
+            escaped, len, data_hash
+        ));
+    }
+
+    /// Logs a filesystem create_file operation.
+    pub fn log_fs_create_file(&self, path: &str, created: bool) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!(
+            "(fs-create-file \"{}\" created:{})",
+            escaped, created
+        ));
+    }
+
+    /// Logs a filesystem truncate_path operation.
+    pub fn log_fs_truncate_path(&self, path: &str, size: u64) {
+        let escaped = Self::escape_string(path);
+        self.log(&format!("(fs-truncate-path \"{}\" size:{})", escaped, size));
+    }
+
+    /// Escapes a string for S-expression output.
+    fn escape_string(s: &str) -> String {
+        let mut result = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '"' => result.push_str("\\\""),
+                '\\' => result.push_str("\\\\"),
+                '\n' => result.push_str("\\n"),
+                '\r' => result.push_str("\\r"),
+                '\t' => result.push_str("\\t"),
+                _ => result.push(c),
+            }
+        }
+        result
+    }
+}
+
+impl std::fmt::Debug for DebugLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let seq = self.state.lock().map(|s| s.sequence).unwrap_or(0);
+        f.debug_struct("DebugLog").field("sequence", &seq).finish()
+    }
+}
+
+/// Computes a simple hash of data for logging purposes.
+fn hash_data(data: &[u8]) -> u64 {
+    // FNV-1a hash
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+///////////////////////////////////////// LoggingBlockDevice /////////////////////////////////////////
+
+/// A block device wrapper that logs all operations to a debug log.
+///
+/// This wrapper logs all read and write operations with their block addresses and
+/// data hashes, allowing detailed analysis of block-level I/O patterns.
+pub struct LoggingBlockDevice<D: BlockDevice> {
+    inner: D,
+    log: std::sync::Arc<DebugLog>,
+}
+
+impl<D: BlockDevice> LoggingBlockDevice<D> {
+    /// Creates a new logging block device wrapper.
+    pub fn new(inner: D, log: std::sync::Arc<DebugLog>) -> Self {
+        Self { inner, log }
+    }
+
+    /// Consumes the wrapper and returns the inner device.
+    pub fn into_inner(self) -> D {
+        self.inner
+    }
+
+    /// Returns a reference to the inner device.
+    pub fn inner(&self) -> &D {
+        &self.inner
+    }
+
+    /// Returns the debug log.
+    pub fn log(&self) -> &std::sync::Arc<DebugLog> {
+        &self.log
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for LoggingBlockDevice<D> {
+    fn read_block(&self, block: BlockAddress, buf: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        let result = self.inner.read_block(block, buf);
+        if result.is_ok() {
+            self.log.log_block_read(block.as_u64(), hash_data(buf));
+        }
+        result
+    }
+
+    fn write_block(&mut self, block: BlockAddress, buf: &[u8; BLOCK_SIZE]) -> Result<()> {
+        self.log.log_block_write(block.as_u64(), hash_data(buf));
+        self.inner.write_block(block, buf)
+    }
+
+    fn reset_sequence(&mut self) {
+        self.inner.reset_sequence();
+    }
+}
+
 ///////////////////////////////////////////// BlockAddress /////////////////////////////////////////////
 
 /// A strongly-typed block address on disk.
@@ -1114,8 +1461,10 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
     }
 
     /// Reads entire file contents as bytes.
+    ///
+    /// Returns `Error::NotFound` if the file doesn't exist.
     pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
-        let fd = self.open_file(path)?;
+        let fd = self.open_existing(path)?;
         let size = self.file_size(fd)?;
         let mut buf = vec![0u8; size as usize];
         self.read(fd, &mut buf)?;
@@ -1414,6 +1763,46 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         Ok(fd)
     }
 
+    /// Opens an existing file by name.
+    ///
+    /// Returns `Error::NotFound` if the file doesn't exist, unlike `open_file`
+    /// which creates the file if it doesn't exist.
+    fn open_existing(&mut self, path: &str) -> Result<FileDescriptor> {
+        self.open_existing_inner_with_hops(path, 0)
+    }
+
+    fn open_existing_inner_with_hops(&mut self, path: &str, hops: usize) -> Result<FileDescriptor> {
+        if hops > Self::MAX_SYMLINK_HOPS {
+            return Err(Error::InvalidArgument); // Too many symlink hops (loop)
+        }
+
+        let (parent_ino, name) = self.resolve_path(path)?;
+        let name = name.to_string(); // Copy to avoid borrow issues
+        let parent_inode = self.read_inode(parent_ino)?;
+
+        let ino = match self.lookup_in_dir(&parent_inode, &name)? {
+            Some(ino) => {
+                let inode = self.read_inode(ino)?;
+                if inode.is_directory() {
+                    return Err(Error::IsDirectory);
+                }
+                if inode.is_symlink() {
+                    // Follow the symlink
+                    let target = self.read_symlink_target(&inode)?;
+                    return self.open_existing_inner_with_hops(&target, hops + 1);
+                }
+                ino
+            }
+            None => return Err(Error::NotFound),
+        };
+
+        let fd = self.next_fd;
+        self.next_fd = self.next_fd.next();
+        self.open_files.insert(fd, OpenFile { ino, position: 0 });
+
+        Ok(fd)
+    }
+
     /// Closes an open file descriptor.
     ///
     /// If the file was unlinked while open, and this is the last open FD,
@@ -1547,8 +1936,10 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         }
 
         self.write_inode(&inode)?;
-        self.open_files.get_mut(&fd).unwrap().position = position;
         self.persist_inode_map()?;
+        // Update position only after persist_inode_map() succeeds, so that if it fails
+        // with NoSpace, the position remains at its pre-write value.
+        self.open_files.get_mut(&fd).unwrap().position = position;
 
         Ok(bytes_written)
     }
@@ -1649,6 +2040,12 @@ impl<D: BlockDevice, T: Fn() -> i64> Lfs<D, T> {
         let open_file = self.open_files.get(&fd).ok_or(Error::InvalidFd)?;
         let inode = self.read_inode_from_map(open_file.ino)?;
         Ok(inode.size)
+    }
+
+    /// Returns the current position of an open file.
+    pub fn file_position(&self, fd: FileDescriptor) -> Result<u64> {
+        let open_file = self.open_files.get(&fd).ok_or(Error::InvalidFd)?;
+        Ok(open_file.position)
     }
 
     /// Removes a file from the filesystem.
@@ -3037,6 +3434,480 @@ impl<T: Fn() -> i64> Lfs<MemoryBlockDevice, T> {
     /// Returns a reference to the underlying data.
     pub fn data(&self) -> &[u8] {
         self.device.data()
+    }
+}
+
+///////////////////////////////////////// LoggingFilesystem /////////////////////////////////////////
+
+/// A filesystem wrapper that logs all operations to a debug log.
+///
+/// This wrapper logs all filesystem operations with their parameters and results,
+/// allowing detailed analysis of filesystem behavior.
+pub struct LoggingFilesystem<D: BlockDevice, T: Fn() -> i64> {
+    inner: Lfs<D, T>,
+    log: std::sync::Arc<DebugLog>,
+}
+
+impl<D: BlockDevice, T: Fn() -> i64> LoggingFilesystem<D, T> {
+    /// Creates a new logging filesystem wrapper around an existing Lfs.
+    pub fn new(inner: Lfs<D, T>, log: std::sync::Arc<DebugLog>) -> Self {
+        Self { inner, log }
+    }
+
+    /// Consumes the wrapper and returns the inner filesystem.
+    pub fn into_inner(self) -> Lfs<D, T> {
+        self.inner
+    }
+
+    /// Returns a reference to the inner filesystem.
+    pub fn inner(&self) -> &Lfs<D, T> {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the inner filesystem.
+    pub fn inner_mut(&mut self) -> &mut Lfs<D, T> {
+        &mut self.inner
+    }
+
+    /// Returns the debug log.
+    pub fn log(&self) -> &std::sync::Arc<DebugLog> {
+        &self.log
+    }
+
+    /// Returns the device ID for this filesystem.
+    pub fn dev(&self) -> DeviceId {
+        self.inner.dev()
+    }
+
+    /// Returns the current tail offset.
+    pub fn tail(&self) -> BlockAddress {
+        self.inner.tail()
+    }
+
+    /// Consumes the filesystem and returns the underlying block device.
+    pub fn into_device(self) -> D {
+        self.inner.into_device()
+    }
+
+    /// Returns a reference to the underlying block device.
+    pub fn device(&self) -> &D {
+        self.inner.device()
+    }
+
+    /// Gets metadata for a path, following symlinks.
+    pub fn stat(&self, path: &str) -> Result<StatInfo> {
+        match self.inner.stat(path) {
+            Ok(info) => {
+                let type_str = match info.file_type {
+                    FileType::RegularFile => "file",
+                    FileType::Directory => "dir",
+                    FileType::Symlink => "symlink",
+                    FileType::Other => "other",
+                };
+                self.log.log_fs_stat(path, info.size, type_str);
+                Ok(info)
+            }
+            Err(e) => {
+                self.log.log_fs_error("stat", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Gets metadata for a path, not following the final symlink component.
+    pub fn lstat(&self, path: &str) -> Result<StatInfo> {
+        match self.inner.lstat(path) {
+            Ok(info) => {
+                let type_str = match info.file_type {
+                    FileType::RegularFile => "file",
+                    FileType::Directory => "dir",
+                    FileType::Symlink => "symlink",
+                    FileType::Other => "other",
+                };
+                self.log.log_fs_lstat(path, info.size, type_str);
+                Ok(info)
+            }
+            Err(e) => {
+                self.log.log_fs_error("lstat", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Lists directory contents with metadata.
+    pub fn read_dir(&self, path: &str) -> Result<Vec<(String, StatInfo)>> {
+        match self.inner.read_dir(path) {
+            Ok(entries) => {
+                self.log.log_fs_read_dir(path, entries.len());
+                Ok(entries)
+            }
+            Err(e) => {
+                self.log.log_fs_error("read_dir", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Checks if a path exists.
+    pub fn exists(&self, path: &str) -> bool {
+        let result = self.inner.exists(path);
+        self.log.log_fs_exists(path, result);
+        result
+    }
+
+    /// Checks if a path is a directory.
+    pub fn is_dir(&self, path: &str) -> bool {
+        let result = self.inner.is_dir(path);
+        self.log.log_fs_is_dir(path, result);
+        result
+    }
+
+    /// Opens or creates a file by name.
+    pub fn open_file(&mut self, name: &str) -> Result<FileDescriptor> {
+        let existed = self.inner.exists(name);
+        match self.inner.open_file(name) {
+            Ok(fd) => {
+                self.log.log_fs_open(name, fd.0, !existed);
+                Ok(fd)
+            }
+            Err(e) => {
+                self.log.log_fs_error("open_file", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Closes an open file descriptor.
+    pub fn close(&mut self, fd: FileDescriptor) -> Result<()> {
+        match self.inner.close(fd) {
+            Ok(()) => {
+                self.log.log_fs_close(fd.0);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("close", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Reads data from an open file.
+    pub fn read(&mut self, fd: FileDescriptor, buf: &mut [u8]) -> Result<usize> {
+        let position = self.inner.file_position(fd).unwrap_or(0);
+        match self.inner.read(fd, buf) {
+            Ok(n) => {
+                self.log
+                    .log_fs_read(fd.0, position, n, hash_data(&buf[..n]));
+                Ok(n)
+            }
+            Err(e) => {
+                self.log.log_fs_error("read", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Writes data to an open file.
+    pub fn write(&mut self, fd: FileDescriptor, buf: &[u8]) -> Result<usize> {
+        let position = self.inner.file_position(fd).unwrap_or(0);
+        match self.inner.write(fd, buf) {
+            Ok(n) => {
+                self.log
+                    .log_fs_write(fd.0, position, n, hash_data(&buf[..n]));
+                Ok(n)
+            }
+            Err(e) => {
+                self.log.log_fs_error("write", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Seeks to a position in an open file.
+    pub fn seek(&mut self, fd: FileDescriptor, position: u64) -> Result<()> {
+        match self.inner.seek(fd, position) {
+            Ok(()) => {
+                self.log.log_fs_seek(fd.0, position);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("seek", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Truncates a file to the specified size.
+    pub fn truncate(&mut self, fd: FileDescriptor, size: u64) -> Result<()> {
+        match self.inner.truncate(fd, size) {
+            Ok(()) => {
+                self.log.log_fs_truncate(fd.0, size);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("truncate", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Returns the size of an open file.
+    pub fn file_size(&self, fd: FileDescriptor) -> Result<u64> {
+        match self.inner.file_size(fd) {
+            Ok(size) => {
+                self.log.log_fs_file_size(fd.0, size);
+                Ok(size)
+            }
+            Err(e) => {
+                self.log.log_fs_error("file_size", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Returns the current position of an open file.
+    pub fn file_position(&self, fd: FileDescriptor) -> Result<u64> {
+        self.inner.file_position(fd)
+    }
+
+    /// Removes a file from the filesystem.
+    pub fn remove(&mut self, name: &str) -> Result<()> {
+        match self.inner.remove(name) {
+            Ok(()) => {
+                self.log.log_fs_remove(name);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("remove", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Creates a hard link at `dst` pointing to the file at `src`.
+    pub fn link(&mut self, src: &str, dst: &str) -> Result<()> {
+        match self.inner.link(src, dst) {
+            Ok(()) => {
+                self.log.log_fs_link(src, dst);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("link", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Creates a symbolic link at `linkpath` pointing to `target`.
+    pub fn symlink(&mut self, target: &str, linkpath: &str) -> Result<()> {
+        match self.inner.symlink(target, linkpath) {
+            Ok(()) => {
+                self.log.log_fs_symlink(target, linkpath);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("symlink", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Reads the target of a symbolic link.
+    pub fn readlink(&self, path: &str) -> Result<String> {
+        match self.inner.readlink(path) {
+            Ok(target) => {
+                self.log.log_fs_readlink(path, &target);
+                Ok(target)
+            }
+            Err(e) => {
+                self.log.log_fs_error("readlink", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Creates a directory at the given path.
+    pub fn mkdir(&mut self, path: &str) -> Result<()> {
+        match self.inner.mkdir(path) {
+            Ok(()) => {
+                self.log.log_fs_mkdir(path);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("mkdir", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Creates a directory and all parent directories as needed.
+    pub fn mkdir_all(&mut self, path: &str) -> Result<()> {
+        match self.inner.mkdir_all(path) {
+            Ok(()) => {
+                self.log.log_fs_mkdir(path);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("mkdir_all", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Removes an empty directory at the given path.
+    pub fn rmdir(&mut self, path: &str) -> Result<()> {
+        match self.inner.rmdir(path) {
+            Ok(()) => {
+                self.log.log_fs_rmdir(path);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("rmdir", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Renames a file or directory from src to dst.
+    pub fn rename(&mut self, src: &str, dst: &str) -> Result<()> {
+        match self.inner.rename(src, dst) {
+            Ok(()) => {
+                self.log.log_fs_rename(src, dst);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("rename", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Reads entire file contents as bytes.
+    pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        match self.inner.read_file(path) {
+            Ok(data) => {
+                self.log
+                    .log_fs_read_file(path, data.len(), hash_data(&data));
+                Ok(data)
+            }
+            Err(e) => {
+                self.log.log_fs_error("read_file", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Writes bytes to a file (create or overwrite).
+    pub fn write_file(&mut self, path: &str, contents: &[u8]) -> Result<()> {
+        match self.inner.write_file(path, contents) {
+            Ok(()) => {
+                self.log
+                    .log_fs_write_file(path, contents.len(), hash_data(contents));
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("write_file", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Appends bytes to a file (create if needed).
+    pub fn append_file(&mut self, path: &str, contents: &[u8]) -> Result<()> {
+        match self.inner.append_file(path, contents) {
+            Ok(()) => {
+                self.log
+                    .log_fs_append_file(path, contents.len(), hash_data(contents));
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("append_file", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Sets access and modification times for a path (follows symlinks).
+    pub fn set_times(&mut self, path: &str, atime: TimeSpec, mtime: TimeSpec) -> Result<()> {
+        match self.inner.set_times(path, atime, mtime) {
+            Ok(()) => {
+                self.log.log_fs_set_times(path);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("set_times", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Creates an empty file if it doesn't exist.
+    pub fn create_file(&mut self, path: &str) -> Result<bool> {
+        match self.inner.create_file(path) {
+            Ok(created) => {
+                self.log.log_fs_create_file(path, created);
+                Ok(created)
+            }
+            Err(e) => {
+                self.log.log_fs_error("create_file", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Truncates or extends a file to the given size. Creates if not exists.
+    pub fn truncate_path(&mut self, path: &str, size: u64) -> Result<()> {
+        match self.inner.truncate_path(path, size) {
+            Ok(()) => {
+                self.log.log_fs_truncate_path(path, size);
+                Ok(())
+            }
+            Err(e) => {
+                self.log.log_fs_error("truncate_path", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Performs log cleaning (garbage collection).
+    pub fn clean(&mut self) -> Result<usize> {
+        match self.inner.clean() {
+            Ok(reclaimed) => {
+                self.log.log_fs_clean(reclaimed);
+                Ok(reclaimed)
+            }
+            Err(e) => {
+                self.log.log_fs_error("clean", &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Returns the number of free blocks available.
+    pub fn free_blocks(&self) -> u64 {
+        self.inner.free_blocks()
+    }
+
+    /// Returns the total number of blocks in the log region.
+    pub fn total_log_blocks(&self) -> u64 {
+        self.inner.total_log_blocks()
+    }
+
+    /// Returns the current usage percentage of the filesystem (0-100).
+    pub fn usage_percent(&self) -> u64 {
+        self.inner.usage_percent()
+    }
+}
+
+impl<T: Fn() -> i64> LoggingFilesystem<MemoryBlockDevice, T> {
+    /// Consumes the filesystem and returns the underlying data buffer.
+    pub fn into_data(self) -> Vec<u8> {
+        self.inner.into_inner()
+    }
+
+    /// Returns a reference to the underlying data.
+    pub fn data(&self) -> &[u8] {
+        self.inner.data()
     }
 }
 
@@ -5840,5 +6711,343 @@ mod tests {
         // Clean up
         std::fs::remove_file(&test_file).expect("remove test file");
         println!("File block device create opens existing test passed");
+    }
+
+    #[test]
+    fn read_file_nonexistent_returns_not_found() {
+        let mut lfs = create_test_fs(64);
+
+        // Read a file that doesn't exist - should return NotFound, not empty content
+        let result = lfs.read_file("/nonexistent.txt");
+        println!("read_file result for nonexistent file: {:?}", result);
+        assert_eq!(result, Err(Error::NotFound));
+        println!("read_file on nonexistent file correctly returns NotFound");
+    }
+
+    #[test]
+    fn read_file_nonexistent_in_subdirectory_returns_not_found() {
+        let mut lfs = create_test_fs(64);
+
+        // Create a directory
+        lfs.mkdir("subdir").expect("create directory");
+
+        // Read a file that doesn't exist in the directory
+        let result = lfs.read_file("/subdir/nonexistent.txt");
+        println!(
+            "read_file result for nonexistent file in subdir: {:?}",
+            result
+        );
+        assert_eq!(result, Err(Error::NotFound));
+        println!("read_file on nonexistent file in subdir correctly returns NotFound");
+    }
+
+    /// Regression test for NoSpace recovery bug where file size gets corrupted.
+    #[test]
+    fn regression_nospace_corrupts_file_size() {
+        let mut lfs = create_test_fs(256);
+
+        // Open a file and write some data
+        let fd = lfs.open_file("test.txt").expect("open");
+        let data = vec![b'X'; 20000];
+        lfs.write(fd, &data).expect("initial write");
+
+        println!("After write: position should be 20000");
+        let size = lfs.file_size(fd).expect("get size");
+        println!("File size: {}", size);
+        assert_eq!(size, 20000);
+
+        // Seek to middle of file
+        lfs.seek(fd, 5000).expect("seek");
+
+        // Write some data (this shouldn't extend file)
+        let overwrite = vec![b'Y'; 3000];
+        lfs.write(fd, &overwrite).expect("overwrite");
+
+        let size_after_overwrite = lfs.file_size(fd).expect("get size after overwrite");
+        println!("Size after overwrite: {}", size_after_overwrite);
+        assert_eq!(
+            size_after_overwrite, 20000,
+            "Size should not change when overwriting"
+        );
+
+        // Fill up the filesystem to trigger NoSpace
+        let mut fill_fds = Vec::new();
+        for i in 0..50 {
+            let fill_fd = lfs
+                .open_file(&format!("fill_{}.txt", i))
+                .expect("open fill file");
+            let fill_result = lfs.write(fill_fd, &vec![0u8; 10000]);
+            if fill_result.is_err() {
+                println!("Fill write {} got error: {:?}", i, fill_result);
+                lfs.close(fill_fd).expect("close fill");
+                break;
+            }
+            fill_fds.push(fill_fd);
+        }
+
+        // Try to write to original file - should get NoSpace
+        lfs.seek(fd, 8000).expect("seek before nospace write");
+        let result = lfs.write(fd, &vec![b'Z'; 2000]);
+        println!("Write result after filling: {:?}", result);
+
+        // Now check if we can still read the file correctly
+        lfs.seek(fd, 0).expect("seek to start");
+        let final_size = lfs.file_size(fd).expect("get final size");
+        println!("Final file size: {}", final_size);
+
+        let mut buf = vec![0u8; 20000];
+        let n = lfs.read(fd, &mut buf).expect("read");
+        println!("Read {} bytes (expected 20000)", n);
+
+        // The file should still be 20000 bytes
+        assert_eq!(
+            final_size, 20000,
+            "File size should be preserved after NoSpace"
+        );
+        assert_eq!(n, 20000, "Should read 20000 bytes");
+
+        lfs.close(fd).expect("close");
+        for fill_fd in fill_fds {
+            lfs.close(fill_fd).expect("close fill fd");
+        }
+    }
+
+    /// More specific regression test matching proptest failure pattern.
+    /// Tests: write extends file, then NoSpace, then successful write to another file,
+    /// then read from original file at position within bounds.
+    #[test]
+    fn regression_nospace_then_other_write_corrupts_read() {
+        let mut lfs = create_test_fs(256);
+
+        // Create file A with some content
+        let fd_a = lfs.open_file("a.txt").expect("open a");
+        let data_a = vec![b'A'; 10000];
+        lfs.write(fd_a, &data_a).expect("write a initial");
+
+        // Extend file A more
+        let more_data = vec![b'B'; 13000];
+        lfs.write(fd_a, &more_data).expect("write a more");
+
+        let size_a = lfs.file_size(fd_a).expect("size a");
+        println!("File A size: {} (expected 23000)", size_a);
+        assert_eq!(size_a, 23000);
+
+        // Seek and write (overwrite within bounds)
+        lfs.seek(fd_a, 371).expect("seek a");
+        let overwrite = vec![b'C'; 11498];
+        lfs.write(fd_a, &overwrite).expect("overwrite a");
+
+        // Position should now be 371 + 11498 = 11869
+        // Size should still be 23000
+
+        let size_after_overwrite = lfs.file_size(fd_a).expect("size a after overwrite");
+        println!(
+            "File A size after overwrite: {} (expected 23000)",
+            size_after_overwrite
+        );
+        assert_eq!(size_after_overwrite, 23000);
+
+        // Fill up filesystem
+        let mut fill_fds = Vec::new();
+        for i in 0..50 {
+            let fill_fd = lfs
+                .open_file(&format!("fill_{}.txt", i))
+                .expect("open fill");
+            let fill_result = lfs.write(fill_fd, &vec![0u8; 10000]);
+            if fill_result.is_err() {
+                println!("Fill {} got NoSpace", i);
+                lfs.close(fill_fd).expect("close fill");
+                break;
+            }
+            fill_fds.push(fill_fd);
+        }
+
+        // Try to write to A - should fail with NoSpace
+        // Position is still at 11869
+        let big_write = vec![b'D'; 16000];
+        let result = lfs.write(fd_a, &big_write);
+        println!("Big write result: {:?}", result);
+
+        // Clean up some space
+        for fill_fd in fill_fds {
+            lfs.close(fill_fd).expect("close fill");
+        }
+        for i in 0..20 {
+            let _ = lfs.remove(&format!("fill_{}.txt", i));
+        }
+
+        // Run cleaner to reclaim space from removed files
+        lfs.clean().expect("clean");
+
+        // Write to another file (this should succeed and update superblock)
+        let fd_b = lfs.open_file("b.txt").expect("open b");
+        let data_b = vec![b'E'; 7000];
+        lfs.write(fd_b, &data_b).expect("write b");
+        lfs.close(fd_b).expect("close b");
+
+        // Now try to read from A
+        // File A size should still be 23000
+        // Position should be 11869 (write failed, position not updated)
+        // Should be able to read 23000 - 11869 = 11131 bytes
+
+        let final_size = lfs.file_size(fd_a).expect("final size a");
+        println!("Final size of A: {} (expected 23000)", final_size);
+
+        let mut buf = vec![0u8; 9376];
+        let n = lfs.read(fd_a, &mut buf).expect("read a");
+        println!(
+            "Read from A: {} bytes (expected 9376, since 23000-11869=11131 > 9376)",
+            n
+        );
+
+        assert_eq!(final_size, 23000, "File size should be preserved");
+        assert_eq!(n, 9376, "Should read 9376 bytes");
+
+        lfs.close(fd_a).expect("close a");
+    }
+
+    #[test]
+    fn logging_filesystem_captures_operations() {
+        use std::sync::Arc;
+
+        // Create a buffer to capture log output
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = {
+            struct BufWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+            impl std::io::Write for BufWriter {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(buf);
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            BufWriter(Arc::clone(&buffer))
+        };
+
+        let log = Arc::new(DebugLog::new(Box::new(writer)));
+
+        // Create filesystem with logging
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let inner_lfs =
+            Lfs::from_vec(data, DeviceId::new(1), zero_time).expect("Failed to create filesystem");
+        let mut lfs = LoggingFilesystem::new(inner_lfs, Arc::clone(&log));
+
+        // Perform some operations
+        let fd = lfs.open_file("test.txt").expect("Failed to open file");
+        lfs.write(fd, b"Hello, World!").expect("Failed to write");
+        lfs.seek(fd, 0).expect("Failed to seek");
+        let mut buf = vec![0u8; 13];
+        lfs.read(fd, &mut buf).expect("Failed to read");
+        lfs.close(fd).expect("Failed to close");
+
+        // Get the log contents
+        let log_contents =
+            String::from_utf8(buffer.lock().unwrap().clone()).expect("Invalid UTF-8");
+        println!("Log contents:\n{}", log_contents);
+
+        // Verify key operations are logged
+        assert!(
+            log_contents.contains("fs-open"),
+            "Log should contain fs-open"
+        );
+        assert!(
+            log_contents.contains("fs-write"),
+            "Log should contain fs-write"
+        );
+        assert!(
+            log_contents.contains("fs-seek"),
+            "Log should contain fs-seek"
+        );
+        assert!(
+            log_contents.contains("fs-read"),
+            "Log should contain fs-read"
+        );
+        assert!(
+            log_contents.contains("fs-close"),
+            "Log should contain fs-close"
+        );
+        assert!(
+            log_contents.contains("test.txt"),
+            "Log should contain filename"
+        );
+
+        // Verify sequence numbers are present and increasing
+        let lines: Vec<&str> = log_contents.lines().collect();
+        assert!(!lines.is_empty(), "Log should not be empty");
+        for (i, line) in lines.iter().enumerate() {
+            let expected_seq = format!("(seq {}", i);
+            assert!(
+                line.contains(&expected_seq),
+                "Line {} should have seq {}",
+                i,
+                i
+            );
+        }
+        println!("Logging test passed with {} log entries", lines.len());
+    }
+
+    #[test]
+    fn logging_block_device_captures_operations() {
+        use std::sync::Arc;
+
+        // Create a buffer to capture log output
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = {
+            struct BufWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+            impl std::io::Write for BufWriter {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(buf);
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            BufWriter(Arc::clone(&buffer))
+        };
+
+        let log = Arc::new(DebugLog::new(Box::new(writer)));
+
+        // Create block device with logging
+        let data = vec![0u8; 64 * BLOCK_SIZE];
+        let inner_device = MemoryBlockDevice::new(data);
+        let mut device = LoggingBlockDevice::new(inner_device, Arc::clone(&log));
+
+        // Perform some operations
+        let mut write_buf = [0u8; BLOCK_SIZE];
+        write_buf[0..5].copy_from_slice(b"Hello");
+        device
+            .write_block(BlockAddress::new(1), &write_buf)
+            .expect("Failed to write block");
+
+        let mut read_buf = [0u8; BLOCK_SIZE];
+        device
+            .read_block(BlockAddress::new(1), &mut read_buf)
+            .expect("Failed to read block");
+
+        // Get the log contents
+        let log_contents =
+            String::from_utf8(buffer.lock().unwrap().clone()).expect("Invalid UTF-8");
+        println!("Block device log contents:\n{}", log_contents);
+
+        // Verify operations are logged
+        assert!(
+            log_contents.contains("block-write"),
+            "Log should contain block-write"
+        );
+        assert!(
+            log_contents.contains("block-read"),
+            "Log should contain block-read"
+        );
+
+        // Verify sequence numbers
+        let lines: Vec<&str> = log_contents.lines().collect();
+        assert_eq!(lines.len(), 2, "Should have exactly 2 log entries");
+        println!(
+            "Block device logging test passed with {} log entries",
+            lines.len()
+        );
     }
 }
