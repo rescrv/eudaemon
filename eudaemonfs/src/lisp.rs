@@ -35,9 +35,7 @@
 //! - `(lfs-free-blocks)` - Get the number of free blocks
 //! - `(lfs-usage-percent)` - Get the filesystem usage percentage
 
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -71,54 +69,45 @@ fn string_atom(s: &str) -> SExpr {
 
 /// A wrapper around Lfs that provides a Lisp-friendly interface.
 ///
-/// This type holds the Lfs instance in a RefCell to allow mutation through
+/// This type holds the Lfs instance in a Mutex to allow mutation through
 /// the `&self` interface required by lispdown's builtin function signature.
+/// Using Arc<Mutex<_>> enables thread-safe sharing.
 pub struct LfsLisp<D: BlockDevice, T: Fn() -> i64> {
-    lfs: RefCell<Lfs<D, T>>,
+    lfs: Mutex<Lfs<D, T>>,
 }
 
 impl<D: BlockDevice, T: Fn() -> i64> LfsLisp<D, T> {
     /// Creates a new LfsLisp wrapper around an existing Lfs instance.
     pub fn new(lfs: Lfs<D, T>) -> Self {
         Self {
-            lfs: RefCell::new(lfs),
+            lfs: Mutex::new(lfs),
         }
-    }
-
-    /// Returns a reference to the underlying Lfs.
-    pub fn borrow(&self) -> std::cell::Ref<'_, Lfs<D, T>> {
-        self.lfs.borrow()
-    }
-
-    /// Returns a mutable reference to the underlying Lfs.
-    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Lfs<D, T>> {
-        self.lfs.borrow_mut()
     }
 
     /// Consumes the wrapper and returns the underlying Lfs.
     pub fn into_inner(self) -> Lfs<D, T> {
-        self.lfs.into_inner()
+        self.lfs.into_inner().expect("mutex poisoned")
     }
 
     /// Gets file or directory metadata as an S-expression.
     ///
     /// Returns: `(stat (type TYPE) (size SIZE) (mtime MTIME) (atime ATIME) (ino INO) (links LINKS))`
     pub fn stat(&self, path: &str) -> SResult<SExpr> {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         let info = lfs.stat(path).map_err(lfs_error_to_serror)?;
         Ok(stat_info_to_sexpr(&info))
     }
 
     /// Gets metadata without following the final symlink.
     pub fn lstat(&self, path: &str) -> SResult<SExpr> {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         let info = lfs.lstat(path).map_err(lfs_error_to_serror)?;
         Ok(stat_info_to_sexpr(&info))
     }
 
     /// Reads file contents as a string.
     pub fn read(&self, path: &str) -> SResult<String> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         let bytes = lfs.read_file(path).map_err(lfs_error_to_serror)?;
         String::from_utf8(bytes).map_err(|e| {
             SError::new("lfs")
@@ -130,32 +119,32 @@ impl<D: BlockDevice, T: Fn() -> i64> LfsLisp<D, T> {
 
     /// Writes string content to a file.
     pub fn write(&self, path: &str, content: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.write_file(path, content.as_bytes())
             .map_err(lfs_error_to_serror)
     }
 
     /// Creates a directory.
     pub fn mkdir(&self, path: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.mkdir(path).map_err(lfs_error_to_serror)
     }
 
     /// Creates a directory and all parent directories.
     pub fn mkdir_all(&self, path: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.mkdir_all(path).map_err(lfs_error_to_serror)
     }
 
     /// Removes a file.
     pub fn remove(&self, path: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.remove(path).map_err(lfs_error_to_serror)
     }
 
     /// Removes an empty directory.
     pub fn rmdir(&self, path: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.rmdir(path).map_err(lfs_error_to_serror)
     }
 
@@ -163,7 +152,7 @@ impl<D: BlockDevice, T: Fn() -> i64> LfsLisp<D, T> {
     ///
     /// Returns: `((name1 stat1) (name2 stat2) ...)`
     pub fn readdir(&self, path: &str) -> SResult<SExpr> {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         let entries = lfs.read_dir(path).map_err(lfs_error_to_serror)?;
         let items: Vec<SExpr> = entries
             .into_iter()
@@ -174,43 +163,43 @@ impl<D: BlockDevice, T: Fn() -> i64> LfsLisp<D, T> {
 
     /// Checks if a path exists.
     pub fn exists(&self, path: &str) -> bool {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         lfs.exists(path)
     }
 
     /// Checks if a path is a directory.
     pub fn is_dir(&self, path: &str) -> bool {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         lfs.is_dir(path)
     }
 
     /// Creates a symbolic link.
     pub fn symlink(&self, target: &str, linkpath: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.symlink(target, linkpath).map_err(lfs_error_to_serror)
     }
 
     /// Reads the target of a symbolic link.
     pub fn readlink(&self, path: &str) -> SResult<String> {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         lfs.readlink(path).map_err(lfs_error_to_serror)
     }
 
     /// Creates a hard link.
     pub fn link(&self, src: &str, dst: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.link(src, dst).map_err(lfs_error_to_serror)
     }
 
     /// Renames a file or directory.
     pub fn rename(&self, src: &str, dst: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.rename(src, dst).map_err(lfs_error_to_serror)
     }
 
     /// Appends content to a file.
     pub fn append(&self, path: &str, content: &str) -> SResult<()> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.append_file(path, content.as_bytes())
             .map_err(lfs_error_to_serror)
     }
@@ -219,29 +208,29 @@ impl<D: BlockDevice, T: Fn() -> i64> LfsLisp<D, T> {
     ///
     /// Returns a recursive representation of the filesystem starting from root.
     pub fn tree(&self) -> SResult<SExpr> {
-        let lfs = self.lfs.borrow();
+        let lfs = self.lfs.lock().unwrap();
         let root_tree = tree_recursive(&lfs, "/")?;
         Ok(SExpr::List(vec![SExpr::Atom("fs".to_string()), root_tree]))
     }
 
     /// Returns the number of free blocks.
     pub fn free_blocks(&self) -> u64 {
-        self.lfs.borrow().free_blocks()
+        self.lfs.lock().unwrap().free_blocks()
     }
 
     /// Returns the total number of log blocks.
     pub fn total_log_blocks(&self) -> u64 {
-        self.lfs.borrow().total_log_blocks()
+        self.lfs.lock().unwrap().total_log_blocks()
     }
 
     /// Returns the usage percentage (0-100).
     pub fn usage_percent(&self) -> u64 {
-        self.lfs.borrow().usage_percent()
+        self.lfs.lock().unwrap().usage_percent()
     }
 
     /// Performs garbage collection.
     pub fn clean(&self) -> SResult<usize> {
-        let mut lfs = self.lfs.borrow_mut();
+        let mut lfs = self.lfs.lock().unwrap();
         lfs.clean().map_err(lfs_error_to_serror)
     }
 }
@@ -261,12 +250,12 @@ impl<T: Fn() -> i64> LfsLisp<MemoryBlockDevice, T> {
 
     /// Returns the underlying data buffer.
     pub fn data(&self) -> Vec<u8> {
-        self.lfs.borrow().data().to_vec()
+        self.lfs.lock().unwrap().data().to_vec()
     }
 
     /// Consumes the wrapper and returns the underlying data buffer.
     pub fn into_data(self) -> Vec<u8> {
-        self.lfs.into_inner().into_inner()
+        self.lfs.into_inner().expect("mutex poisoned").into_inner()
     }
 }
 
@@ -431,25 +420,27 @@ fn stat_info_to_sexpr(info: &StatInfo) -> SExpr {
 
 /// Shared state for LfsLisp builtins.
 ///
-/// This type wraps LfsLisp in an Rc so it can be shared across multiple builtin
-/// function closures while still providing interior mutability.
+/// This type wraps LfsLisp in an Arc so it can be shared across multiple builtin
+/// function closures while still providing interior mutability and thread safety.
 pub struct LfsLispState<D: BlockDevice, T: Fn() -> i64> {
-    lfs: Rc<LfsLisp<D, T>>,
+    lfs: Arc<LfsLisp<D, T>>,
 }
 
 impl<D: BlockDevice, T: Fn() -> i64> LfsLispState<D, T> {
     /// Creates a new LfsLispState.
     pub fn new(lfs: LfsLisp<D, T>) -> Self {
-        Self { lfs: Rc::new(lfs) }
+        Self {
+            lfs: Arc::new(lfs),
+        }
     }
 
-    /// Returns a clone of the inner Rc for sharing.
-    pub fn share(&self) -> Rc<LfsLisp<D, T>> {
-        Rc::clone(&self.lfs)
+    /// Returns a clone of the inner Arc for sharing.
+    pub fn share(&self) -> Arc<LfsLisp<D, T>> {
+        Arc::clone(&self.lfs)
     }
 }
 
-impl<D: BlockDevice + 'static, T: Fn() -> i64 + 'static> LfsLispState<D, T> {
+impl<D: BlockDevice + Send + Sync + 'static, T: Fn() -> i64 + Send + Sync + 'static> LfsLispState<D, T> {
     /// Registers all LFS builtins with the given VM.
     ///
     /// This registers the following functions:
@@ -498,7 +489,7 @@ impl<D: BlockDevice + 'static, T: Fn() -> i64 + 'static> LfsLispState<D, T> {
 // This is necessary because lispdown's BuiltinFn is a function pointer
 // that cannot capture state.
 thread_local! {
-    static THREAD_LFS: RefCell<Option<Rc<dyn LfsLispOps>>> = const { RefCell::new(None) };
+    static THREAD_LFS: std::cell::RefCell<Option<Arc<dyn LfsLispOps + Send + Sync>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Trait for type-erased LfsLisp operations.
@@ -593,16 +584,16 @@ impl<D: BlockDevice, T: Fn() -> i64> LfsLispOps for LfsLisp<D, T> {
 }
 
 /// Sets the thread-local LfsLisp instance.
-fn set_thread_local_lfs<D: BlockDevice + 'static, T: Fn() -> i64 + 'static>(
-    lfs: Rc<LfsLisp<D, T>>,
+fn set_thread_local_lfs<D: BlockDevice + Send + Sync + 'static, T: Fn() -> i64 + Send + Sync + 'static>(
+    lfs: Arc<LfsLisp<D, T>>,
 ) {
     THREAD_LFS.with(|cell| {
-        *cell.borrow_mut() = Some(lfs as Rc<dyn LfsLispOps>);
+        *cell.borrow_mut() = Some(lfs as Arc<dyn LfsLispOps + Send + Sync>);
     });
 }
 
 /// Gets the thread-local LfsLisp instance.
-fn get_thread_local_lfs() -> SResult<Rc<dyn LfsLispOps>> {
+fn get_thread_local_lfs() -> SResult<Arc<dyn LfsLispOps + Send + Sync>> {
     THREAD_LFS.with(|cell| {
         cell.borrow().clone().ok_or_else(|| {
             SError::new("lfs")
