@@ -8,6 +8,7 @@
 //! Each proptest writes a debug log to `proptest_<test_name>.sexpr` for analysis.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proptest::prelude::*;
@@ -1130,6 +1131,380 @@ proptest! {
             prop_assert_eq!(&buf[..n], &ref_file.data[..], "Data mismatch for {}", name);
 
             restored_lfs.close(fd).expect("Failed to close");
+        }
+    }
+}
+
+//////////////////////////////////////////// Directory Navigation Tests /////////////////////////////////
+
+/// Operations for testing directory navigation with relative paths.
+#[derive(Clone)]
+enum DirNavOp {
+    /// Change to a child directory (create if needed).
+    CdChild { name: String },
+    /// Change to parent directory.
+    CdParent,
+    /// Change to root directory.
+    CdRoot,
+    /// Create a file with data in the current directory.
+    CreateFile { name: String, data: Vec<u8> },
+    /// Read a file in the current directory.
+    ReadFile { name: String },
+    /// Create a subdirectory in the current directory.
+    Mkdir { name: String },
+    /// List contents of current directory.
+    ListDir,
+    /// Write to an existing file using relative path.
+    WriteFile { name: String, data: Vec<u8> },
+}
+
+impl std::fmt::Debug for DirNavOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DirNavOp::CdChild { name } => write!(f, "CdChild({:?})", name),
+            DirNavOp::CdParent => write!(f, "CdParent"),
+            DirNavOp::CdRoot => write!(f, "CdRoot"),
+            DirNavOp::CreateFile { name, data } => {
+                write!(f, "CreateFile({:?}, {} bytes)", name, data.len())
+            }
+            DirNavOp::ReadFile { name } => write!(f, "ReadFile({:?})", name),
+            DirNavOp::Mkdir { name } => write!(f, "Mkdir({:?})", name),
+            DirNavOp::ListDir => write!(f, "ListDir"),
+            DirNavOp::WriteFile { name, data } => {
+                write!(f, "WriteFile({:?}, {} bytes)", name, data.len())
+            }
+        }
+    }
+}
+
+/// Reference implementation that tracks cwd and file contents.
+struct DirNavReference {
+    /// Current working directory as a list of path components (empty = root).
+    cwd: Vec<String>,
+    /// Files stored as (absolute path -> contents).
+    files: BTreeMap<String, Vec<u8>>,
+    /// Directories that exist (absolute paths).
+    dirs: BTreeSet<String>,
+}
+
+impl DirNavReference {
+    fn new() -> Self {
+        let mut dirs = BTreeSet::new();
+        dirs.insert("/".to_string());
+        Self {
+            cwd: Vec::new(),
+            files: BTreeMap::new(),
+            dirs,
+        }
+    }
+
+    fn cwd_path(&self) -> String {
+        if self.cwd.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", self.cwd.join("/"))
+        }
+    }
+
+    fn absolute_path(&self, name: &str) -> String {
+        if self.cwd.is_empty() {
+            format!("/{}", name)
+        } else {
+            format!("/{}/{}", self.cwd.join("/"), name)
+        }
+    }
+
+    fn cd_child(&mut self, name: &str) -> bool {
+        let child_path = self.absolute_path(name);
+        if self.dirs.contains(&child_path) {
+            self.cwd.push(name.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cd_parent(&mut self) {
+        self.cwd.pop();
+    }
+
+    fn cd_root(&mut self) {
+        self.cwd.clear();
+    }
+
+    fn mkdir(&mut self, name: &str) -> bool {
+        let path = self.absolute_path(name);
+        if self.dirs.contains(&path) || self.files.contains_key(&path) {
+            false
+        } else {
+            self.dirs.insert(path);
+            true
+        }
+    }
+
+    fn create_file(&mut self, name: &str, data: &[u8]) -> bool {
+        let path = self.absolute_path(name);
+        if self.dirs.contains(&path) {
+            false
+        } else {
+            self.files.insert(path, data.to_vec());
+            true
+        }
+    }
+
+    fn read_file(&self, name: &str) -> Option<&Vec<u8>> {
+        let path = self.absolute_path(name);
+        self.files.get(&path)
+    }
+
+    fn write_file(&mut self, name: &str, data: &[u8]) -> bool {
+        let path = self.absolute_path(name);
+        if let std::collections::btree_map::Entry::Occupied(mut e) = self.files.entry(path) {
+            e.insert(data.to_vec());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn dirname_strategy() -> impl Strategy<Value = String> {
+    prop::string::string_regex("[a-z]{1,6}")
+        .expect("valid regex")
+        .prop_filter("non-empty", |s| !s.is_empty())
+}
+
+fn small_data_strategy() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(any::<u8>(), 0..500)
+}
+
+fn dir_nav_op_strategy() -> impl Strategy<Value = DirNavOp> {
+    prop_oneof![
+        3 => dirname_strategy().prop_map(|name| DirNavOp::CdChild { name }),
+        2 => Just(DirNavOp::CdParent),
+        1 => Just(DirNavOp::CdRoot),
+        4 => (filename_strategy(), small_data_strategy())
+            .prop_map(|(name, data)| DirNavOp::CreateFile { name, data }),
+        3 => filename_strategy().prop_map(|name| DirNavOp::ReadFile { name }),
+        3 => dirname_strategy().prop_map(|name| DirNavOp::Mkdir { name }),
+        2 => Just(DirNavOp::ListDir),
+        3 => (filename_strategy(), small_data_strategy())
+            .prop_map(|(name, data)| DirNavOp::WriteFile { name, data }),
+    ]
+}
+
+fn dir_nav_ops_strategy() -> impl Strategy<Value = Vec<DirNavOp>> {
+    prop::collection::vec(dir_nav_op_strategy(), 1..50)
+}
+
+proptest! {
+    #![proptest_config(Config::with_cases(500))]
+
+    /// Tests filesystem operations with directory navigation and relative paths.
+    ///
+    /// This test maintains a "current working directory" and performs operations
+    /// using relative paths, comparing against a reference implementation that
+    /// tracks the same state.
+    #[test]
+    fn directory_navigation_with_relative_paths(ops in dir_nav_ops_strategy()) {
+        let data = vec![0u8; TEST_FS_BLOCKS * BLOCK_SIZE];
+        let mut lfs = Lfs::from_vec(data, DeviceId::new(1), zero_time)
+            .expect("Failed to create LFS");
+
+        let mut reference = DirNavReference::new();
+        let mut lfs_cwd = String::from("/");
+
+        for (op_idx, op) in ops.iter().enumerate() {
+            // Debug output for test failures
+            // println!("Op {}: {:?}, cwd={}", op_idx, op, lfs_cwd);
+
+            match op {
+                DirNavOp::CdChild { name } => {
+                    // Try to cd into a child directory
+                    let target = if lfs_cwd == "/" {
+                        format!("/{}", name)
+                    } else {
+                        format!("{}/{}", lfs_cwd, name)
+                    };
+
+                    if lfs.is_dir(&target) {
+                        let ref_ok = reference.cd_child(name);
+                        prop_assert!(ref_ok, "Op {}: reference cd_child failed but lfs has dir", op_idx);
+                        lfs_cwd = target;
+                    } else {
+                        let ref_ok = reference.cd_child(name);
+                        prop_assert!(!ref_ok, "Op {}: reference cd_child succeeded but lfs has no dir", op_idx);
+                    }
+                }
+                DirNavOp::CdParent => {
+                    reference.cd_parent();
+                    // Update lfs_cwd to parent
+                    if let Some(pos) = lfs_cwd.rfind('/') {
+                        if pos == 0 {
+                            lfs_cwd = "/".to_string();
+                        } else {
+                            lfs_cwd = lfs_cwd[..pos].to_string();
+                        }
+                    }
+                    prop_assert_eq!(&lfs_cwd, &reference.cwd_path(), "Op {}: cwd mismatch after CdParent", op_idx);
+                }
+                DirNavOp::CdRoot => {
+                    reference.cd_root();
+                    lfs_cwd = "/".to_string();
+                    prop_assert_eq!(&lfs_cwd, &reference.cwd_path(), "Op {}: cwd mismatch after CdRoot", op_idx);
+                }
+                DirNavOp::CreateFile { name, data } => {
+                    let path = if lfs_cwd == "/" {
+                        format!("/{}", name)
+                    } else {
+                        format!("{}/{}", lfs_cwd, name)
+                    };
+
+                    // Skip if it's a directory
+                    if lfs.is_dir(&path) {
+                        continue;
+                    }
+
+                    match lfs.write_file(&path, data) {
+                        Ok(()) => {
+                            let ref_ok = reference.create_file(name, data);
+                            // Reference might return false if file exists, but write_file overwrites
+                            // So we just update the reference
+                            if !ref_ok {
+                                reference.files.insert(reference.absolute_path(name), data.clone());
+                            }
+                        }
+                        Err(Error::NoSpace) => {
+                            // Skip on NoSpace
+                        }
+                        Err(e) => {
+                            prop_assert!(false, "Op {}: unexpected error {:?}", op_idx, e);
+                        }
+                    }
+                }
+                DirNavOp::ReadFile { name } => {
+                    let path = if lfs_cwd == "/" {
+                        format!("/{}", name)
+                    } else {
+                        format!("{}/{}", lfs_cwd, name)
+                    };
+
+                    let lfs_result = lfs.read_file(&path);
+                    let ref_result = reference.read_file(name);
+
+                    match (lfs_result, ref_result) {
+                        (Ok(lfs_data), Some(ref_data)) => {
+                            prop_assert_eq!(&lfs_data, ref_data, "Op {}: file content mismatch for {}", op_idx, name);
+                        }
+                        (Err(Error::NotFound), None) => {
+                            // Both agree file doesn't exist
+                        }
+                        (Err(Error::IsDirectory), _) => {
+                            // LFS says it's a directory, which is fine
+                        }
+                        (Ok(_), None) => {
+                            // LFS found file but reference doesn't have it - could be stale reference
+                            // This shouldn't happen in a correct test
+                            prop_assert!(false, "Op {}: LFS has file {} but reference doesn't", op_idx, name);
+                        }
+                        (Err(e), Some(_)) => {
+                            prop_assert!(false, "Op {}: LFS error {:?} but reference has file {}", op_idx, e, name);
+                        }
+                        (Err(_), None) => {
+                            // Both agree file doesn't exist (different error types)
+                        }
+                    }
+                }
+                DirNavOp::Mkdir { name } => {
+                    let path = if lfs_cwd == "/" {
+                        format!("/{}", name)
+                    } else {
+                        format!("{}/{}", lfs_cwd, name)
+                    };
+
+                    match lfs.mkdir(&path) {
+                        Ok(()) => {
+                            let ref_ok = reference.mkdir(name);
+                            // mkdir might fail in reference if dir exists, but we just created it
+                            if !ref_ok {
+                                // Already existed in reference
+                            }
+                            reference.dirs.insert(reference.absolute_path(name));
+                        }
+                        Err(Error::AlreadyExists) => {
+                            // Directory or file already exists
+                        }
+                        Err(Error::NoSpace) => {
+                            // Skip on NoSpace
+                        }
+                        Err(e) => {
+                            prop_assert!(false, "Op {}: unexpected mkdir error {:?}", op_idx, e);
+                        }
+                    }
+                }
+                DirNavOp::ListDir => {
+                    // Just verify that listing works without error
+                    match lfs.read_dir(&lfs_cwd) {
+                        Ok(entries) => {
+                            // Verify we can list the directory
+                            for (entry_name, _) in &entries {
+                                // Just verify entries exist
+                                let entry_path = if lfs_cwd == "/" {
+                                    format!("/{}", entry_name)
+                                } else {
+                                    format!("{}/{}", lfs_cwd, entry_name)
+                                };
+                                prop_assert!(
+                                    lfs.exists(&entry_path),
+                                    "Op {}: listed entry {} doesn't exist",
+                                    op_idx,
+                                    entry_name
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            prop_assert!(false, "Op {}: read_dir failed with {:?}", op_idx, e);
+                        }
+                    }
+                }
+                DirNavOp::WriteFile { name, data } => {
+                    let path = if lfs_cwd == "/" {
+                        format!("/{}", name)
+                    } else {
+                        format!("{}/{}", lfs_cwd, name)
+                    };
+
+                    // Only write if file exists
+                    if lfs.exists(&path) && !lfs.is_dir(&path) {
+                        match lfs.write_file(&path, data) {
+                            Ok(()) => {
+                                reference.write_file(name, data);
+                                // If write_file returns false, file didn't exist in reference
+                                // but we update it anyway since LFS has it
+                                reference.files.insert(reference.absolute_path(name), data.clone());
+                            }
+                            Err(Error::NoSpace) => {
+                                // Skip on NoSpace
+                            }
+                            Err(e) => {
+                                prop_assert!(false, "Op {}: unexpected write error {:?}", op_idx, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Final verification: check all files in reference match LFS
+        for (path, ref_data) in &reference.files {
+            match lfs.read_file(path) {
+                Ok(lfs_data) => {
+                    prop_assert_eq!(&lfs_data, ref_data, "Final verification: content mismatch for {}", path);
+                }
+                Err(e) => {
+                    prop_assert!(false, "Final verification: error reading {}: {:?}", path, e);
+                }
+            }
         }
     }
 }
