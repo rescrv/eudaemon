@@ -10,15 +10,10 @@ eudaemonty = { path = "../eudaemonty" }
 getopts = "0.2.24"
 guacamole = "0.14.0"
 lispdown = { path = "../lispdown" }
-rustyline = "15"
 utf8path = "0.9.1"
 
 [dev-dependencies]
 proptest = "1.4"
-
-[[bin]]
-name = "eudaemon-debug-img"
-path = "src/bin/eudaemon-debug-img.rs"
 
 [[bin]]
 name = "eudaemon-fs-debug-log"

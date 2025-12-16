@@ -355,6 +355,45 @@ pub trait Filesystem {
     fn mkdtemp(&self, template: &str) -> Result<String, Error>;
     /// Lists markdown files, returns paths relative to root.
     fn list_markdown_files(&self) -> Result<Vec<String>, Error>;
+
+    // =========================================================================
+    // Debug/introspection methods for filesystem debugging
+    // =========================================================================
+
+    /// Returns the number of free blocks in the filesystem.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn free_blocks(&self) -> Option<u64> {
+        None
+    }
+
+    /// Returns the total number of blocks in the filesystem's log.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn total_blocks(&self) -> Option<u64> {
+        None
+    }
+
+    /// Returns the filesystem usage as a percentage (0-100).
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn usage_percent(&self) -> Option<u64> {
+        None
+    }
+
+    /// Triggers garbage collection/cleaning and returns the number of blocks reclaimed.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn clean(&self) -> Option<Result<usize, Error>> {
+        None
+    }
+
+    /// Returns the entire filesystem tree as a formatted string.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn tree(&self) -> Option<String> {
+        None
+    }
 }
 
 ///////////////////////////////////////// MutFilesystem ////////////////////////////////////////////
@@ -428,6 +467,45 @@ pub trait MutFilesystem {
     fn mkdtemp(&mut self, template: &str) -> Result<String, Error>;
     /// Lists markdown files, returns paths relative to root.
     fn list_markdown_files(&self) -> Result<Vec<String>, Error>;
+
+    // =========================================================================
+    // Debug/introspection methods for filesystem debugging
+    // =========================================================================
+
+    /// Returns the number of free blocks in the filesystem.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn free_blocks(&self) -> Option<u64> {
+        None
+    }
+
+    /// Returns the total number of blocks in the filesystem's log.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn total_blocks(&self) -> Option<u64> {
+        None
+    }
+
+    /// Returns the filesystem usage as a percentage (0-100).
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn usage_percent(&self) -> Option<u64> {
+        None
+    }
+
+    /// Triggers garbage collection/cleaning and returns the number of blocks reclaimed.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn clean(&mut self) -> Option<Result<usize, Error>> {
+        None
+    }
+
+    /// Returns the entire filesystem tree as a formatted string.
+    ///
+    /// Returns `None` if the filesystem does not support this operation.
+    fn tree(&self) -> Option<String> {
+        None
+    }
 }
 
 /////////////////////////////////////// SyncMutFilesystem //////////////////////////////////////////
@@ -594,6 +672,26 @@ impl<F: MutFilesystem> Filesystem for SyncMutFilesystem<F> {
 
     fn list_markdown_files(&self) -> Result<Vec<String>, Error> {
         self.inner.lock().unwrap().list_markdown_files()
+    }
+
+    fn free_blocks(&self) -> Option<u64> {
+        self.inner.lock().unwrap().free_blocks()
+    }
+
+    fn total_blocks(&self) -> Option<u64> {
+        self.inner.lock().unwrap().total_blocks()
+    }
+
+    fn usage_percent(&self) -> Option<u64> {
+        self.inner.lock().unwrap().usage_percent()
+    }
+
+    fn clean(&self) -> Option<Result<usize, Error>> {
+        self.inner.lock().unwrap().clean()
+    }
+
+    fn tree(&self) -> Option<String> {
+        self.inner.lock().unwrap().tree()
     }
 }
 

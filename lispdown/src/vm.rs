@@ -23,45 +23,6 @@ use eudaemonty::Filesystem;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FunctionId(usize);
 
-/// A runtime value in the VM.
-///
-/// TODO(claude): This type is scaffolding for first-class functions. Currently unused because
-/// the VM only passes SExpr values. When implementing user-defined lambdas (defun), this
-/// type will be needed to distinguish between S-expression data and function references.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum Value {
-    /// An S-expression value (atoms and lists).
-    SExpr(SExpr),
-    /// A reference to a function in the arena.
-    Function(FunctionId),
-}
-
-impl From<SExpr> for Value {
-    fn from(expr: SExpr) -> Self {
-        Value::SExpr(expr)
-    }
-}
-
-#[allow(dead_code)]
-impl Value {
-    /// Converts the value to an SExpr, panicking if it's a function reference.
-    pub fn into_sexpr(self) -> SExpr {
-        match self {
-            Value::SExpr(e) => e,
-            Value::Function(id) => panic!("Cannot convert FunctionId {:?} to SExpr", id),
-        }
-    }
-
-    /// Tries to convert the value to an SExpr.
-    pub fn as_sexpr(&self) -> Option<&SExpr> {
-        match self {
-            Value::SExpr(e) => Some(e),
-            Value::Function(_) => None,
-        }
-    }
-}
-
 /// Function signature for built-in functions.
 ///
 /// Built-in functions receive a reference to the VM for access to filesystem
@@ -78,12 +39,10 @@ pub enum FunctionObj {
         /// The function implementation.
         func: BuiltinFn,
     },
-    /// A user-defined lambda (future extension).
+    /// A user-defined lambda function.
     ///
-    /// TODO(claude): Implement `(lambda (params) body)` or `(defun name (params) body)` special
-    /// forms in the VM to construct this variant. The scaffolding for evaluation exists in
-    /// `step_call` but no syntax currently produces lambdas.
-    #[allow(dead_code)]
+    /// Created by `(lambda (params) body)` or `(defun name (params) body)` special forms.
+    /// Lambdas capture the lexical environment at definition time for closure semantics.
     Lambda {
         /// Parameter names.
         params: Vec<String>,
@@ -358,13 +317,47 @@ impl Vm {
     /// These builtins require a filesystem to be set on the VM via [`Vm::set_filesystem`].
     /// If no filesystem is set, the builtins will return an error.
     pub fn register_filesystem_builtins(&mut self) {
+        // High-level markdown operations
         self.def_fn("load", builtin_load);
         self.def_fn("save", builtin_save);
         self.def_fn("list-files", builtin_list_files);
-        self.def_fn("read-file", builtin_read_file);
-        self.def_fn("write-file", builtin_write_file);
-        self.def_fn("file-exists?", builtin_file_exists);
         self.def_fn("splat", builtin_splat);
+
+        // Basic file operations
+        self.def_fn("fs-read", builtin_fs_read);
+        self.def_fn("fs-write", builtin_fs_write);
+        self.def_fn("fs-append", builtin_fs_append);
+        self.def_fn("fs-exists?", builtin_fs_exists);
+        self.def_fn("fs-is-dir?", builtin_fs_is_dir);
+
+        // Directory operations
+        self.def_fn("fs-mkdir", builtin_fs_mkdir);
+        self.def_fn("fs-mkdir-all", builtin_fs_mkdir_all);
+        self.def_fn("fs-readdir", builtin_fs_readdir);
+        self.def_fn("fs-rmdir", builtin_fs_rmdir);
+
+        // File metadata and manipulation
+        self.def_fn("fs-stat", builtin_fs_stat);
+        self.def_fn("fs-lstat", builtin_fs_lstat);
+        self.def_fn("fs-unlink", builtin_fs_unlink);
+        self.def_fn("fs-rename", builtin_fs_rename);
+
+        // Symlink and link operations
+        self.def_fn("fs-symlink", builtin_fs_symlink);
+        self.def_fn("fs-readlink", builtin_fs_readlink);
+        self.def_fn("fs-link", builtin_fs_link);
+
+        // Debug/introspection operations
+        self.def_fn("fs-tree", builtin_fs_tree);
+        self.def_fn("fs-free-blocks", builtin_fs_free_blocks);
+        self.def_fn("fs-total-blocks", builtin_fs_total_blocks);
+        self.def_fn("fs-usage-percent", builtin_fs_usage_percent);
+        self.def_fn("fs-clean", builtin_fs_clean);
+
+        // Legacy aliases for compatibility
+        self.def_fn("read-file", builtin_fs_read);
+        self.def_fn("write-file", builtin_fs_write);
+        self.def_fn("file-exists?", builtin_fs_exists);
     }
 
     /// Looks up a function by name.
@@ -1846,63 +1839,6 @@ fn builtin_list_files(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
     Ok(SExpr::List(items))
 }
 
-/// Reads a file as a raw string.
-///
-/// `(read-file "path")` -> string content
-fn builtin_read_file(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.len() != 1 {
-        return Err(SError::new("read-file")
-            .with_code("wrong-argument-count")
-            .with_message("read-file requires exactly one argument: the file path")
-            .with_atom_field("received", args.len()));
-    }
-    let path = extract_string(&args[0]);
-    let fs = require_filesystem(vm)?;
-    let content = fs.read_to_string(&path).map_err(|e| {
-        SError::new("filesystem")
-            .with_code("read-error")
-            .with_message(&e.to_string())
-    })?;
-    Ok(string_atom(&content))
-}
-
-/// Writes a string to a file.
-///
-/// `(write-file "path" content)` -> writes file, returns path
-fn builtin_write_file(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.len() != 2 {
-        return Err(SError::new("write-file")
-            .with_code("wrong-argument-count")
-            .with_message("write-file requires exactly two arguments: path and content")
-            .with_atom_field("received", args.len()));
-    }
-    let path = extract_string(&args[0]);
-    let content = extract_string(&args[1]);
-    let fs = require_filesystem(vm)?;
-    fs.write_string(&path, &content).map_err(|e| {
-        SError::new("filesystem")
-            .with_code("write-error")
-            .with_message(&e.to_string())
-    })?;
-    Ok(string_atom(&path))
-}
-
-/// Checks if a file exists.
-///
-/// `(file-exists? "path")` -> #t or #f
-fn builtin_file_exists(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
-    if args.len() != 1 {
-        return Err(SError::new("file-exists?")
-            .with_code("wrong-argument-count")
-            .with_message("file-exists? requires exactly one argument: the file path")
-            .with_atom_field("received", args.len()));
-    }
-    let path = extract_string(&args[0]);
-    let fs = require_filesystem(vm)?;
-    let exists = fs.exists(&path);
-    Ok(SExpr::Atom(if exists { "#t" } else { "#f" }.to_string()))
-}
-
 /// Splats a document into a directory hierarchy based on header structure.
 ///
 /// `(splat doc "prefix/")` -> list of written file paths
@@ -1932,6 +1868,439 @@ fn builtin_splat(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
                 .with_message(&e.to_string())
         })
     })
+}
+
+// ============================================================================
+// General filesystem builtins
+// ============================================================================
+
+/// Reads a file as a raw string.
+///
+/// `(fs-read "path")` -> string content
+fn builtin_fs_read(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-read")
+            .with_code("wrong-argument-count")
+            .with_message("fs-read requires exactly one argument: the file path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let content = fs.read_to_string(&path).map_err(|e| {
+        SError::new("fs-read")
+            .with_code("read-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&content))
+}
+
+/// Writes a string to a file.
+///
+/// `(fs-write "path" content)` -> writes file, returns path
+fn builtin_fs_write(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("fs-write")
+            .with_code("wrong-argument-count")
+            .with_message("fs-write requires exactly two arguments: path and content"));
+    }
+    let path = extract_string(&args[0]);
+    let content = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    fs.write_string(&path, &content).map_err(|e| {
+        SError::new("fs-write")
+            .with_code("write-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&path))
+}
+
+/// Appends a string to a file.
+///
+/// `(fs-append "path" content)` -> appends to file, returns path
+fn builtin_fs_append(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("fs-append")
+            .with_code("wrong-argument-count")
+            .with_message("fs-append requires exactly two arguments: path and content"));
+    }
+    let path = extract_string(&args[0]);
+    let content = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    fs.append_string(&path, &content).map_err(|e| {
+        SError::new("fs-append")
+            .with_code("append-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&path))
+}
+
+/// Checks if a path exists.
+///
+/// `(fs-exists? "path")` -> #t or #f
+fn builtin_fs_exists(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-exists?")
+            .with_code("wrong-argument-count")
+            .with_message("fs-exists? requires exactly one argument: the file path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let exists = fs.exists(&path);
+    Ok(SExpr::Atom(if exists { "#t" } else { "#f" }.to_string()))
+}
+
+/// Checks if a path is a directory.
+///
+/// `(fs-is-dir? "path")` -> #t or #f
+fn builtin_fs_is_dir(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-is-dir?")
+            .with_code("wrong-argument-count")
+            .with_message("fs-is-dir? requires exactly one argument: the file path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let is_dir = fs.is_dir(&path);
+    Ok(SExpr::Atom(if is_dir { "#t" } else { "#f" }.to_string()))
+}
+
+/// Creates a directory.
+///
+/// `(fs-mkdir "path")` -> returns path on success
+fn builtin_fs_mkdir(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-mkdir")
+            .with_code("wrong-argument-count")
+            .with_message("fs-mkdir requires exactly one argument: the directory path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    fs.mkdir(&path).map_err(|e| {
+        SError::new("fs-mkdir")
+            .with_code("mkdir-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&path))
+}
+
+/// Creates a directory and all parent directories.
+///
+/// `(fs-mkdir-all "path")` -> returns path on success
+fn builtin_fs_mkdir_all(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-mkdir-all")
+            .with_code("wrong-argument-count")
+            .with_message("fs-mkdir-all requires exactly one argument: the directory path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    fs.mkdir_all(&path).map_err(|e| {
+        SError::new("fs-mkdir-all")
+            .with_code("mkdir-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&path))
+}
+
+/// Converts a DirEntry to an S-expression.
+fn dir_entry_to_sexpr(entry: &eudaemonty::DirEntry) -> SExpr {
+    let type_str = match entry.file_type {
+        eudaemonty::FileType::RegularFile => "file",
+        eudaemonty::FileType::Directory => "directory",
+        eudaemonty::FileType::Symlink => "symlink",
+        eudaemonty::FileType::Other => "other",
+    };
+    SExpr::List(vec![
+        SExpr::Atom("stat".to_string()),
+        SExpr::List(vec![
+            SExpr::Atom("type".to_string()),
+            SExpr::Atom(type_str.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("size".to_string()),
+            SExpr::Atom(entry.size.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("mtime".to_string()),
+            SExpr::Atom(entry.mtime_ms.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("atime".to_string()),
+            SExpr::Atom(entry.atime_ms.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("ino".to_string()),
+            SExpr::Atom(entry.ino.to_string()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("dev".to_string()),
+            SExpr::Atom(entry.dev.to_string()),
+        ]),
+    ])
+}
+
+/// Lists directory contents.
+///
+/// `(fs-readdir "path")` -> ((name1 stat1) (name2 stat2) ...)
+fn builtin_fs_readdir(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-readdir")
+            .with_code("wrong-argument-count")
+            .with_message("fs-readdir requires exactly one argument: the directory path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let entries = fs.read_dir(&path).map_err(|e| {
+        SError::new("fs-readdir")
+            .with_code("readdir-error")
+            .with_message(&e.to_string())
+    })?;
+    let items: Vec<SExpr> = entries
+        .iter()
+        .map(|(name, entry)| SExpr::List(vec![string_atom(name), dir_entry_to_sexpr(entry)]))
+        .collect();
+    Ok(SExpr::List(items))
+}
+
+/// Removes an empty directory.
+///
+/// `(fs-rmdir "path")` -> returns path on success
+fn builtin_fs_rmdir(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-rmdir")
+            .with_code("wrong-argument-count")
+            .with_message("fs-rmdir requires exactly one argument: the directory path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    fs.rmdir(&path).map_err(|e| {
+        SError::new("fs-rmdir")
+            .with_code("rmdir-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&path))
+}
+
+/// Gets file metadata (following symlinks).
+///
+/// `(fs-stat "path")` -> (stat (type TYPE) (size SIZE) ...)
+fn builtin_fs_stat(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-stat")
+            .with_code("wrong-argument-count")
+            .with_message("fs-stat requires exactly one argument: the file path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let entry = fs.stat(&path).map_err(|e| {
+        SError::new("fs-stat")
+            .with_code("stat-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(dir_entry_to_sexpr(&entry))
+}
+
+/// Gets file metadata (not following symlinks).
+///
+/// `(fs-lstat "path")` -> (stat (type TYPE) (size SIZE) ...)
+fn builtin_fs_lstat(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-lstat")
+            .with_code("wrong-argument-count")
+            .with_message("fs-lstat requires exactly one argument: the file path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let entry = fs.lstat(&path).map_err(|e| {
+        SError::new("fs-lstat")
+            .with_code("lstat-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(dir_entry_to_sexpr(&entry))
+}
+
+/// Removes a file or symbolic link.
+///
+/// `(fs-unlink "path")` -> returns path on success
+fn builtin_fs_unlink(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-unlink")
+            .with_code("wrong-argument-count")
+            .with_message("fs-unlink requires exactly one argument: the file path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    fs.unlink(&path).map_err(|e| {
+        SError::new("fs-unlink")
+            .with_code("unlink-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&path))
+}
+
+/// Renames a file or directory.
+///
+/// `(fs-rename "src" "dst")` -> returns dst path on success
+fn builtin_fs_rename(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("fs-rename")
+            .with_code("wrong-argument-count")
+            .with_message("fs-rename requires exactly two arguments: src and dst paths"));
+    }
+    let src = extract_string(&args[0]);
+    let dst = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    fs.rename(&src, &dst).map_err(|e| {
+        SError::new("fs-rename")
+            .with_code("rename-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&dst))
+}
+
+/// Creates a symbolic link.
+///
+/// `(fs-symlink "target" "linkpath")` -> returns linkpath on success
+fn builtin_fs_symlink(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("fs-symlink")
+            .with_code("wrong-argument-count")
+            .with_message("fs-symlink requires exactly two arguments: target and linkpath"));
+    }
+    let target = extract_string(&args[0]);
+    let linkpath = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    fs.symlink(&target, &linkpath).map_err(|e| {
+        SError::new("fs-symlink")
+            .with_code("symlink-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&linkpath))
+}
+
+/// Reads the target of a symbolic link.
+///
+/// `(fs-readlink "path")` -> target string
+fn builtin_fs_readlink(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 1 {
+        return Err(SError::new("fs-readlink")
+            .with_code("wrong-argument-count")
+            .with_message("fs-readlink requires exactly one argument: the symlink path"));
+    }
+    let path = extract_string(&args[0]);
+    let fs = require_filesystem(vm)?;
+    let target = fs.readlink(&path).map_err(|e| {
+        SError::new("fs-readlink")
+            .with_code("readlink-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&target))
+}
+
+/// Creates a hard link.
+///
+/// `(fs-link "src" "dst")` -> returns dst path on success
+fn builtin_fs_link(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.len() != 2 {
+        return Err(SError::new("fs-link")
+            .with_code("wrong-argument-count")
+            .with_message("fs-link requires exactly two arguments: src and dst paths"));
+    }
+    let src = extract_string(&args[0]);
+    let dst = extract_string(&args[1]);
+    let fs = require_filesystem(vm)?;
+    fs.link(&src, &dst).map_err(|e| {
+        SError::new("fs-link")
+            .with_code("link-error")
+            .with_message(&e.to_string())
+    })?;
+    Ok(string_atom(&dst))
+}
+
+// ============================================================================
+// Filesystem debug/introspection builtins
+// ============================================================================
+
+/// Returns the filesystem tree as an S-expression string.
+///
+/// `(fs-tree)` -> tree string, or #f if unsupported
+fn builtin_fs_tree(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if !args.is_empty() {
+        return Err(SError::new("fs-tree")
+            .with_code("wrong-argument-count")
+            .with_message("fs-tree takes no arguments"));
+    }
+    let fs = require_filesystem(vm)?;
+    match fs.tree() {
+        Some(tree) => Ok(string_atom(&tree)),
+        None => Ok(SExpr::Atom("#f".to_string())),
+    }
+}
+
+/// Returns the number of free blocks in the filesystem.
+///
+/// `(fs-free-blocks)` -> number, or #f if unsupported
+fn builtin_fs_free_blocks(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if !args.is_empty() {
+        return Err(SError::new("fs-free-blocks")
+            .with_code("wrong-argument-count")
+            .with_message("fs-free-blocks takes no arguments"));
+    }
+    let fs = require_filesystem(vm)?;
+    match fs.free_blocks() {
+        Some(blocks) => Ok(SExpr::Atom(blocks.to_string())),
+        None => Ok(SExpr::Atom("#f".to_string())),
+    }
+}
+
+/// Returns the total number of blocks in the filesystem.
+///
+/// `(fs-total-blocks)` -> number, or #f if unsupported
+fn builtin_fs_total_blocks(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if !args.is_empty() {
+        return Err(SError::new("fs-total-blocks")
+            .with_code("wrong-argument-count")
+            .with_message("fs-total-blocks takes no arguments"));
+    }
+    let fs = require_filesystem(vm)?;
+    match fs.total_blocks() {
+        Some(blocks) => Ok(SExpr::Atom(blocks.to_string())),
+        None => Ok(SExpr::Atom("#f".to_string())),
+    }
+}
+
+/// Returns the filesystem usage percentage.
+///
+/// `(fs-usage-percent)` -> number (0-100), or #f if unsupported
+fn builtin_fs_usage_percent(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if !args.is_empty() {
+        return Err(SError::new("fs-usage-percent")
+            .with_code("wrong-argument-count")
+            .with_message("fs-usage-percent takes no arguments"));
+    }
+    let fs = require_filesystem(vm)?;
+    match fs.usage_percent() {
+        Some(percent) => Ok(SExpr::Atom(percent.to_string())),
+        None => Ok(SExpr::Atom("#f".to_string())),
+    }
+}
+
+/// Triggers filesystem garbage collection.
+///
+/// `(fs-clean)` -> number of blocks reclaimed, or #f if unsupported
+fn builtin_fs_clean(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if !args.is_empty() {
+        return Err(SError::new("fs-clean")
+            .with_code("wrong-argument-count")
+            .with_message("fs-clean takes no arguments"));
+    }
+    let fs = require_filesystem(vm)?;
+    match fs.clean() {
+        Some(Ok(reclaimed)) => Ok(SExpr::Atom(reclaimed.to_string())),
+        Some(Err(e)) => Err(SError::new("fs-clean")
+            .with_code("clean-error")
+            .with_message(&e.to_string())),
+        None => Ok(SExpr::Atom("#f".to_string())),
+    }
 }
 
 /// Extract a string key from an atom, handling quoted strings.
@@ -3055,54 +3424,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Value type tests
-    // ========================================================================
-
-    #[test]
-    fn value_from_sexpr() {
-        let expr = SExpr::Atom("test".to_string());
-        let value: Value = expr.clone().into();
-        match value {
-            Value::SExpr(e) => assert_eq!(e, expr),
-            Value::Function(_) => panic!("Expected SExpr variant"),
-        }
-        println!("DEBUG: Value::from(SExpr) works correctly");
-    }
-
-    #[test]
-    fn value_into_sexpr_success() {
-        let expr = SExpr::Atom("42".to_string());
-        let value = Value::SExpr(expr.clone());
-        let result = value.into_sexpr();
-        assert_eq!(result, expr);
-        println!("DEBUG: Value::into_sexpr converts SExpr correctly");
-    }
-
-    #[test]
-    #[should_panic(expected = "Cannot convert FunctionId")]
-    fn value_into_sexpr_panic_on_function() {
-        let value = Value::Function(FunctionId(0));
-        let _ = value.into_sexpr();
-    }
-
-    #[test]
-    fn value_as_sexpr_some() {
-        let expr = SExpr::List(vec![SExpr::Atom("a".to_string())]);
-        let value = Value::SExpr(expr.clone());
-        let result = value.as_sexpr();
-        assert_eq!(result, Some(&expr));
-        println!("DEBUG: Value::as_sexpr returns Some for SExpr variant");
-    }
-
-    #[test]
-    fn value_as_sexpr_none() {
-        let value = Value::Function(FunctionId(42));
-        let result = value.as_sexpr();
-        assert_eq!(result, None);
-        println!("DEBUG: Value::as_sexpr returns None for Function variant");
-    }
-
-    // ========================================================================
     // FunctionId tests
     // ========================================================================
 
@@ -4197,22 +4518,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Value debug test
-    // ========================================================================
-
-    #[test]
-    fn value_debug() {
-        let v1 = Value::SExpr(SExpr::Atom("test".to_string()));
-        let v2 = Value::Function(FunctionId(42));
-        let debug1 = format!("{:?}", v1);
-        let debug2 = format!("{:?}", v2);
-        assert!(debug1.contains("SExpr"));
-        assert!(debug1.contains("test"));
-        assert!(debug2.contains("Function"));
-        assert!(debug2.contains("42"));
-        println!("DEBUG: Value debug format works: {} / {}", debug1, debug2);
-    }
-
     // ========================================================================
     // VM with nested function calls
     // ========================================================================
