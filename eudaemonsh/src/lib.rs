@@ -22,7 +22,7 @@ pub use eudaemonty::DirEntry;
 pub use eudaemonty::FileMetadata;
 pub use eudaemonty::FileType;
 pub use eudaemonty::Filesystem;
-pub use eudaemonty::RealFilesystem;
+
 pub use eudaemonty::Stderr;
 pub use eudaemonty::Stdin;
 pub use eudaemonty::Stdout;
@@ -68,7 +68,7 @@ impl From<eudaemonty::Error> for Error {
 }
 
 /// The execution environment for a command.
-pub struct Environment<SI, SO, SE, FS = RealFilesystem>
+pub struct Environment<SI, SO, SE, FS>
 where
     SI: Stdin,
     SO: Stdout,
@@ -91,29 +91,6 @@ where
     pub cwd: Path<'static>,
     /// Whether an exit has been signaled by the `exit` builtin.
     pub exit_signaled: Arc<AtomicBool>,
-}
-
-impl Default for Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, RealFilesystem> {
-    fn default() -> Self {
-        Self {
-            stdin: std::io::stdin(),
-            stdout: std::io::stdout(),
-            stderr: std::io::stderr(),
-            fs: RealFilesystem,
-            env: HashMap::from_iter([
-                ("COLUMNS".to_string(), "120".to_string()),
-                ("HOME".to_string(), "/home/assistant".to_string()),
-                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-                ("PWD".to_string(), "/".to_string()),
-                ("SHELL".to_string(), "eudaemonsh".to_string()),
-                ("TMPDIR".to_string(), "/tmp".to_string()),
-                ("USER".to_string(), "assistant".to_string()),
-            ]),
-            args: vec!["/bin/eudaemonsh".to_string()],
-            cwd: Path::from("/home/assistant"),
-            exit_signaled: Arc::new(AtomicBool::new(false)),
-        }
-    }
 }
 
 impl<SI, SO, SE, FS> Environment<SI, SO, SE, FS>
@@ -177,7 +154,7 @@ impl std::fmt::Display for ExitCode {
 
 /// A command to be executed.
 #[allow(clippy::type_complexity)]
-pub struct Command<SI, SO, SE, FS = RealFilesystem>
+pub struct Command<SI, SO, SE, FS>
 where
     SI: Stdin,
     SO: Stdout,

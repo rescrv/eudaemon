@@ -44,6 +44,7 @@ mod uname;
 mod unexpand;
 mod uniq;
 mod wc;
+mod which;
 mod yes;
 
 /// Look up a builtin binary by name.
@@ -98,19 +99,46 @@ where
         "test" | "/usr/bin/test" | "[" | "/usr/bin/[" => Ok(test::bin),
         "touch" | "/usr/bin/touch" => Ok(touch::bin),
         "tr" | "/usr/bin/tr" => Ok(tr::bin),
-        "false" | "/bin/false" => Ok(|env| sh::run_string(include_str!("../../shell/false"), env)),
+        "false" | "/bin/false" => Ok(false_bin),
         "sh" | "/bin/sh" => Ok(sh::bin),
-        "true" | "/bin/true" => Ok(|env| sh::run_string(include_str!("../../shell/true"), env)),
+        "true" | "/bin/true" => Ok(true_bin),
         "truncate" | "/usr/bin/truncate" => Ok(truncate::bin),
         "uname" | "/usr/bin/uname" => Ok(uname::bin),
         "unexpand" | "/usr/bin/unexpand" => Ok(unexpand::bin),
         "uniq" | "/usr/bin/uniq" => Ok(uniq::bin),
         "unlink" | "/bin/unlink" => Ok(rm::bin),
         "wc" | "/usr/bin/wc" => Ok(wc::bin),
+        "which" | "/usr/bin/which" => Ok(which::bin),
         "yes" | "/usr/bin/yes" => Ok(yes::bin),
         "markdownsp" => Ok(markdownsp::bin),
         _ => Err(Error::UnknownBinary(bin.to_string())),
     }
+}
+
+/// The true builtin: do nothing, successfully.
+///
+/// Returns exit code 0.
+fn true_bin<SI, SO, SE, FS>(_env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    Ok(ExitCode::from(0))
+}
+
+/// The false builtin: do nothing, unsuccessfully.
+///
+/// Returns exit code 1.
+fn false_bin<SI, SO, SE, FS>(_env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    Ok(ExitCode::from(1))
 }
 
 /// The exit builtin: exit the shell with an optional exit code.

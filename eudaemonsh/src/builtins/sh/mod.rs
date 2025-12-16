@@ -87,7 +87,7 @@ where
     Ok(last_exit)
 }
 
-/// Run a single command line.
+/// Run a single command line with support for && and || operators.
 pub fn run<SI, SO, SE, FS>(
     command: String,
     env: &Environment<SI, SO, SE, FS>,
@@ -102,10 +102,117 @@ where
     if args.is_empty() || args[0].is_empty() {
         return Err(Error::EmptyCommand);
     }
-    let argv0 = args[0].clone();
-    let env = env.dup().with_args(args);
-    let cmd = Command::new(&argv0, env)?;
-    cmd.run()
+
+    // Parse into commands separated by && and ||
+    let commands = parse_command_chain(&args);
+    run_command_chain(&commands, env)
+}
+
+/// Operator between commands in a chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChainOp {
+    /// Execute next command only if previous succeeded (&&).
+    And,
+    /// Execute next command only if previous failed (||).
+    Or,
+}
+
+/// A single command in a chain with its following operator.
+#[derive(Debug)]
+struct ChainedCommand {
+    /// Arguments for this command.
+    args: Vec<String>,
+    /// Operator to next command, if any.
+    next_op: Option<ChainOp>,
+}
+
+/// Parse a list of arguments into a chain of commands separated by && and ||.
+fn parse_command_chain(args: &[String]) -> Vec<ChainedCommand> {
+    let mut commands = Vec::new();
+    let mut current_args = Vec::new();
+
+    for arg in args {
+        if arg == "&&" {
+            if !current_args.is_empty() {
+                commands.push(ChainedCommand {
+                    args: std::mem::take(&mut current_args),
+                    next_op: Some(ChainOp::And),
+                });
+            }
+        } else if arg == "||" {
+            if !current_args.is_empty() {
+                commands.push(ChainedCommand {
+                    args: std::mem::take(&mut current_args),
+                    next_op: Some(ChainOp::Or),
+                });
+            }
+        } else {
+            current_args.push(arg.clone());
+        }
+    }
+
+    // Add final command
+    if !current_args.is_empty() {
+        commands.push(ChainedCommand {
+            args: current_args,
+            next_op: None,
+        });
+    }
+
+    commands
+}
+
+/// Run a chain of commands respecting && and || operators.
+fn run_command_chain<SI, SO, SE, FS>(
+    commands: &[ChainedCommand],
+    env: &Environment<SI, SO, SE, FS>,
+) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem + 'static,
+{
+    if commands.is_empty() {
+        return Ok(ExitCode::from(0));
+    }
+
+    // Run first command unconditionally
+    let first = &commands[0];
+    if first.args.is_empty() {
+        return Ok(ExitCode::from(0));
+    }
+
+    let argv0 = first.args[0].clone();
+    let cmd_env = env.dup().with_args(first.args.clone());
+    let command = Command::new(&argv0, cmd_env)?;
+    let mut last_exit = command.run()?;
+
+    // Process remaining commands based on operators
+    for i in 1..commands.len() {
+        let prev_op = commands[i - 1].next_op;
+        let cmd = &commands[i];
+
+        if cmd.args.is_empty() {
+            continue;
+        }
+
+        // Decide whether to run this command based on previous exit code and operator
+        let should_run = match prev_op {
+            Some(ChainOp::And) => last_exit.code() == 0,
+            Some(ChainOp::Or) => last_exit.code() != 0,
+            None => true,
+        };
+
+        if should_run {
+            let argv0 = cmd.args[0].clone();
+            let cmd_env = env.dup().with_args(cmd.args.clone());
+            let command = Command::new(&argv0, cmd_env)?;
+            last_exit = command.run()?;
+        }
+    }
+
+    Ok(last_exit)
 }
 
 #[cfg(test)]
@@ -346,5 +453,105 @@ mod tests {
         assert!(!env.is_exit_signaled());
         let _ = run_string("exit 0", &env).unwrap();
         assert!(env.is_exit_signaled());
+    }
+
+    // ========================================================================
+    // command chaining tests (&&, ||)
+    // ========================================================================
+
+    #[test]
+    fn and_chain_both_succeed() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("true && echo success".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("success\n", stdout);
+    }
+
+    #[test]
+    fn and_chain_first_fails() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("false && echo should_not_appear".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert_eq!("", stdout);
+    }
+
+    #[test]
+    fn or_chain_first_succeeds() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("true || echo should_not_appear".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+    }
+
+    #[test]
+    fn or_chain_first_fails() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("false || echo fallback".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("fallback\n", stdout);
+    }
+
+    #[test]
+    fn multiple_and_chain() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("true && echo one && echo two".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("one\ntwo\n", stdout);
+    }
+
+    #[test]
+    fn and_chain_stops_on_failure() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("true && false && echo should_not_appear".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert_eq!("", stdout);
+    }
+
+    #[test]
+    fn mixed_and_or_chain() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("false || echo fallback && echo then_this".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("fallback\nthen_this\n", stdout);
+    }
+
+    #[test]
+    fn and_with_pwd() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("pwd && echo done".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/\ndone\n", stdout);
     }
 }
