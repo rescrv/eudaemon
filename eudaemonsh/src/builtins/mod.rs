@@ -12,6 +12,7 @@ mod echo;
 mod env;
 pub mod expand;
 mod fold;
+mod grep;
 mod head;
 mod ln;
 mod ls;
@@ -70,6 +71,9 @@ where
         "exit" => Ok(exit_bin),
         "expand" | "/usr/bin/expand" => Ok(expand::bin),
         "fold" | "/usr/bin/fold" => Ok(fold::bin),
+        "grep" | "/usr/bin/grep" | "egrep" | "/usr/bin/egrep" | "fgrep" | "/usr/bin/fgrep" => {
+            Ok(grep::bin)
+        }
         "head" | "/usr/bin/head" => Ok(head::bin),
         "ln" | "/bin/ln" => Ok(ln::bin),
         "ls" | "/bin/ls" => Ok(ls::bin),
