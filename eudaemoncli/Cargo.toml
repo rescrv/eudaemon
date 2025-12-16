@@ -1,0 +1,12 @@
+[package]
+name = "eudaemoncli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.89"
+claudius = { version = "0.16.0", path = "../../claudius" }
+eudaemonsh = { version = "0.1.0", path = "../eudaemonsh" }
+serde_json = "1.0.145"
+tokio = "1.48.0"
+utf8path = "0.9.1"
