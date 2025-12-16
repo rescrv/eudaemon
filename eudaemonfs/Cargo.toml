@@ -10,6 +10,7 @@ eudaemonty = { path = "../eudaemonty" }
 getopts = "0.2.24"
 guacamole = "0.14.0"
 lispdown = { path = "../lispdown" }
+rustyline = "15.0.0"
 utf8path = "0.9.1"
 
 [dev-dependencies]
@@ -22,3 +23,7 @@ path = "src/bin/eudaemon-fs-debug-log.rs"
 [[bin]]
 name = "eudaemon-stress-test"
 path = "src/bin/eudaemon-stress-test.rs"
+
+[[bin]]
+name = "inspect-fs"
+path = "src/bin/inspect-fs.rs"

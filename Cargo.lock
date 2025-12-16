@@ -304,6 +304,7 @@ dependencies = [
  "guacamole",
  "lispdown",
  "proptest",
+ "rustyline",
  "utf8path",
 ]
 
