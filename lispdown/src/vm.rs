@@ -8,6 +8,8 @@
 //! The VM stores functions in an arena and uses `FunctionId` references, allowing
 //! function redefinition to affect all existing references.
 
+use std::any::Any;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -226,6 +228,8 @@ pub struct Vm {
     globals: HashMap<String, SExpr>,
     /// Optional filesystem for file operations.
     filesystem: Option<Box<dyn Filesystem>>,
+    /// User data storage, keyed by TypeId.
+    user_data: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl Default for Vm {
@@ -245,6 +249,7 @@ impl Vm {
             current_result: None,
             globals: HashMap::new(),
             filesystem: None,
+            user_data: HashMap::new(),
         }
     }
 
@@ -256,6 +261,58 @@ impl Vm {
     /// Sets the filesystem for this VM.
     pub fn set_filesystem(&mut self, fs: Box<dyn Filesystem>) {
         self.filesystem = Some(fs);
+    }
+
+    /// Sets user data of type T.
+    ///
+    /// If user data of this type already exists, it is replaced.
+    /// User data persists across evaluations and is not cleared by `reset()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let inspector = Arc::new(Mutex::new(Inspector::new("disk.img")?));
+    /// vm.set_user_data(inspector);
+    /// ```
+    pub fn set_user_data<T: Any + Send + Sync + 'static>(&mut self, data: T) {
+        let type_id = TypeId::of::<T>();
+        self.user_data.insert(type_id, Arc::new(data));
+    }
+
+    /// Gets a reference to user data of type T.
+    ///
+    /// Returns `None` if no user data of this type has been set.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn builtin_foo(vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    ///     let inspector = vm.get_user_data::<Arc<Mutex<Inspector>>>()
+    ///         .ok_or_else(|| SError::new("foo").with_message("No inspector"))?;
+    ///     // use inspector...
+    /// }
+    /// ```
+    pub fn get_user_data<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
+        let type_id = TypeId::of::<T>();
+        self.user_data
+            .get(&type_id)
+            .and_then(|arc| arc.downcast_ref::<T>())
+    }
+
+    /// Removes and returns user data of type T.
+    ///
+    /// Returns `None` if no user data of this type has been set.
+    pub fn take_user_data<T: Any + Send + Sync + Clone + 'static>(&mut self) -> Option<T> {
+        let type_id = TypeId::of::<T>();
+        self.user_data
+            .remove(&type_id)
+            .and_then(|arc| arc.downcast_ref::<T>().cloned())
+    }
+
+    /// Returns true if user data of type T exists.
+    pub fn has_user_data<T: Any + Send + Sync + 'static>(&self) -> bool {
+        let type_id = TypeId::of::<T>();
+        self.user_data.contains_key(&type_id)
     }
 
     /// Binds a global variable.
