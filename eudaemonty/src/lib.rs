@@ -228,6 +228,133 @@ impl Stderr for std::io::Stderr {
     }
 }
 
+/////////////////////////////////////////////// Pipe /////////////////////////////////////////////////
+
+use std::collections::VecDeque;
+
+/// Internal state for a pipe.
+struct PipeInner {
+    /// Lines waiting to be read.
+    lines: VecDeque<String>,
+    /// Partial line being accumulated (no newline yet).
+    partial: String,
+    /// Number of active writers.
+    writer_count: usize,
+}
+
+/// Create a new pipe, returning the read and write ends.
+///
+/// The write end (`PipeWriter`) implements `Stdout` and `Stderr`.
+/// The read end (`PipeReader`) implements `Stdin`.
+///
+/// When all `PipeWriter` handles are closed, the reader will receive EOF
+/// after draining any remaining buffered data.
+pub fn mkpipe() -> (PipeReader, PipeWriter) {
+    let inner = Arc::new(Mutex::new(PipeInner {
+        lines: VecDeque::new(),
+        partial: String::new(),
+        writer_count: 1,
+    }));
+    (
+        PipeReader {
+            inner: Arc::clone(&inner),
+        },
+        PipeWriter { inner },
+    )
+}
+
+/// The read end of a pipe.
+///
+/// Implements `Stdin` for reading data written to the corresponding `PipeWriter`.
+/// Returns EOF (None) when the buffer is empty and all writers have been closed.
+#[derive(Clone)]
+pub struct PipeReader {
+    inner: Arc<Mutex<PipeInner>>,
+}
+
+impl Stdin for PipeReader {
+    fn dup(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    fn read_line(&self) -> Result<Option<String>, Error> {
+        let mut inner = self.inner.lock().unwrap();
+        // Try to return a complete line first
+        if let Some(line) = inner.lines.pop_front() {
+            return Ok(Some(line));
+        }
+        // No complete lines; check if pipe is closed
+        if inner.writer_count == 0 {
+            // Return any remaining partial content as the last line
+            if inner.partial.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(std::mem::take(&mut inner.partial)))
+            }
+        } else {
+            // Writers still active but no data available
+            Ok(None)
+        }
+    }
+}
+
+/// The write end of a pipe.
+///
+/// Implements `Stdout` and `Stderr` for writing data to be read by the corresponding `PipeReader`.
+/// When all `PipeWriter` handles are closed (via `close()` or dropped), the reader receives EOF.
+pub struct PipeWriter {
+    inner: Arc<Mutex<PipeInner>>,
+}
+
+impl Clone for PipeWriter {
+    fn clone(&self) -> Self {
+        let mut inner = self.inner.lock().unwrap();
+        inner.writer_count += 1;
+        drop(inner);
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Drop for PipeWriter {
+    fn drop(&mut self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.writer_count = inner.writer_count.saturating_sub(1);
+    }
+}
+
+impl Stdout for PipeWriter {
+    fn dup(&self) -> Self {
+        self.clone()
+    }
+
+    fn write_str(&self, s: &str) -> Result<(), Error> {
+        let mut inner = self.inner.lock().unwrap();
+        for ch in s.chars() {
+            if ch == '\n' {
+                let line = std::mem::take(&mut inner.partial);
+                inner.lines.push_back(line);
+            } else {
+                inner.partial.push(ch);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Stderr for PipeWriter {
+    fn dup(&self) -> Self {
+        self.clone()
+    }
+
+    fn write_str(&self, s: &str) -> Result<(), Error> {
+        Stdout::write_str(self, s)
+    }
+}
+
 /////////////////////////////////////////// FileMetadata ///////////////////////////////////////////
 
 /// Metadata about a file.
@@ -1183,5 +1310,69 @@ mod tests {
         let stdin = ();
         assert_eq!(stdin.read_line().unwrap(), None);
         println!("DEBUG: unit stdin returns None");
+    }
+
+    #[test]
+    fn pipe_write_then_read() {
+        let (reader, writer) = mkpipe();
+        Stdout::write_line(&writer, "hello").unwrap();
+        Stdout::write_line(&writer, "world").unwrap();
+        drop(writer);
+        assert_eq!(reader.read_line().unwrap(), Some("hello".to_string()));
+        assert_eq!(reader.read_line().unwrap(), Some("world".to_string()));
+        assert_eq!(reader.read_line().unwrap(), None);
+        println!("DEBUG: pipe write then read works");
+    }
+
+    #[test]
+    fn pipe_partial_line_on_close() {
+        let (reader, writer) = mkpipe();
+        Stdout::write_str(&writer, "no newline").unwrap();
+        drop(writer);
+        assert_eq!(reader.read_line().unwrap(), Some("no newline".to_string()));
+        assert_eq!(reader.read_line().unwrap(), None);
+        println!("DEBUG: pipe returns partial line on close");
+    }
+
+    #[test]
+    fn pipe_empty_returns_none_after_close() {
+        let (reader, writer) = mkpipe();
+        drop(writer);
+        assert_eq!(reader.read_line().unwrap(), None);
+        println!("DEBUG: empty pipe returns None after writer dropped");
+    }
+
+    #[test]
+    fn pipe_multiple_writers() {
+        let (reader, writer1) = mkpipe();
+        let writer2 = writer1.clone();
+        Stdout::write_line(&writer1, "from writer1").unwrap();
+        drop(writer1);
+        // Reader should not see EOF yet because writer2 is still alive
+        assert_eq!(
+            reader.read_line().unwrap(),
+            Some("from writer1".to_string())
+        );
+        Stdout::write_line(&writer2, "from writer2").unwrap();
+        drop(writer2);
+        assert_eq!(
+            reader.read_line().unwrap(),
+            Some("from writer2".to_string())
+        );
+        assert_eq!(reader.read_line().unwrap(), None);
+        println!("DEBUG: multiple writers work correctly");
+    }
+
+    #[test]
+    fn pipe_interleaved_write() {
+        let (reader, writer) = mkpipe();
+        Stdout::write_str(&writer, "hel").unwrap();
+        Stdout::write_str(&writer, "lo\nwor").unwrap();
+        Stdout::write_str(&writer, "ld\n").unwrap();
+        drop(writer);
+        assert_eq!(reader.read_line().unwrap(), Some("hello".to_string()));
+        assert_eq!(reader.read_line().unwrap(), Some("world".to_string()));
+        assert_eq!(reader.read_line().unwrap(), None);
+        println!("DEBUG: interleaved writes work correctly");
     }
 }

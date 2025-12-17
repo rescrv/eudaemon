@@ -23,6 +23,8 @@ pub use eudaemonty::FileMetadata;
 pub use eudaemonty::FileType;
 pub use eudaemonty::Filesystem;
 
+pub use eudaemonty::PipeReader;
+pub use eudaemonty::PipeWriter;
 pub use eudaemonty::Stderr;
 pub use eudaemonty::Stdin;
 pub use eudaemonty::Stdout;
@@ -30,6 +32,7 @@ pub use eudaemonty::StringStderr;
 pub use eudaemonty::StringStdin;
 pub use eudaemonty::StringStdout;
 pub use eudaemonty::TimeSpec;
+pub use eudaemonty::mkpipe;
 
 /// A filesystem backed by eudaemonfs using in-memory storage.
 pub type EudaemonFilesystem<T> = SyncMutFilesystem<Lfs<MemoryBlockDevice, T>>;

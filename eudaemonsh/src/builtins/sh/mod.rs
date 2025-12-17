@@ -1,4 +1,7 @@
-use crate::{Command, Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{
+    Command, Environment, Error, ExitCode, Filesystem, FsError, PipeReader, Stderr, Stdin, Stdout,
+    mkpipe,
+};
 
 /// The sh builtin: execute shell commands.
 ///
@@ -108,43 +111,80 @@ where
     run_command_chain(&commands, env)
 }
 
-/// Operator between commands in a chain.
+/// Operator between pipelines in a chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChainOp {
-    /// Execute next command only if previous succeeded (&&).
+    /// Execute next pipeline only if previous succeeded (&&).
     And,
-    /// Execute next command only if previous failed (||).
+    /// Execute next pipeline only if previous failed (||).
     Or,
 }
 
-/// A single command in a chain with its following operator.
+/// A pipeline is a sequence of commands connected by pipes.
 #[derive(Debug)]
-struct ChainedCommand {
-    /// Arguments for this command.
-    args: Vec<String>,
-    /// Operator to next command, if any.
+struct Pipeline {
+    /// Commands in the pipeline, executed left-to-right with stdout->stdin connections.
+    commands: Vec<Vec<String>>,
+}
+
+/// A pipeline in a chain with its following operator.
+#[derive(Debug)]
+struct ChainedPipeline {
+    /// The pipeline to execute.
+    pipeline: Pipeline,
+    /// Operator to next pipeline, if any.
     next_op: Option<ChainOp>,
 }
 
-/// Parse a list of arguments into a chain of commands separated by && and ||.
-fn parse_command_chain(args: &[String]) -> Vec<ChainedCommand> {
+/// Parse a list of arguments into a chain of pipelines separated by && and ||.
+///
+/// Each pipeline consists of commands separated by |.
+fn parse_command_chain(args: &[String]) -> Vec<ChainedPipeline> {
+    let mut pipelines = Vec::new();
+    let mut current_pipeline_args = Vec::new();
+
+    for arg in args {
+        if arg == "&&" {
+            if !current_pipeline_args.is_empty() {
+                pipelines.push(ChainedPipeline {
+                    pipeline: parse_pipeline(&current_pipeline_args),
+                    next_op: Some(ChainOp::And),
+                });
+                current_pipeline_args = Vec::new();
+            }
+        } else if arg == "||" {
+            if !current_pipeline_args.is_empty() {
+                pipelines.push(ChainedPipeline {
+                    pipeline: parse_pipeline(&current_pipeline_args),
+                    next_op: Some(ChainOp::Or),
+                });
+                current_pipeline_args = Vec::new();
+            }
+        } else {
+            current_pipeline_args.push(arg.clone());
+        }
+    }
+
+    // Add final pipeline
+    if !current_pipeline_args.is_empty() {
+        pipelines.push(ChainedPipeline {
+            pipeline: parse_pipeline(&current_pipeline_args),
+            next_op: None,
+        });
+    }
+
+    pipelines
+}
+
+/// Parse arguments into a pipeline (commands separated by |).
+fn parse_pipeline(args: &[String]) -> Pipeline {
     let mut commands = Vec::new();
     let mut current_args = Vec::new();
 
     for arg in args {
-        if arg == "&&" {
+        if arg == "|" {
             if !current_args.is_empty() {
-                commands.push(ChainedCommand {
-                    args: std::mem::take(&mut current_args),
-                    next_op: Some(ChainOp::And),
-                });
-            }
-        } else if arg == "||" {
-            if !current_args.is_empty() {
-                commands.push(ChainedCommand {
-                    args: std::mem::take(&mut current_args),
-                    next_op: Some(ChainOp::Or),
-                });
+                commands.push(std::mem::take(&mut current_args));
             }
         } else {
             current_args.push(arg.clone());
@@ -153,18 +193,15 @@ fn parse_command_chain(args: &[String]) -> Vec<ChainedCommand> {
 
     // Add final command
     if !current_args.is_empty() {
-        commands.push(ChainedCommand {
-            args: current_args,
-            next_op: None,
-        });
+        commands.push(current_args);
     }
 
-    commands
+    Pipeline { commands }
 }
 
-/// Run a chain of commands respecting && and || operators.
+/// Run a chain of pipelines respecting && and || operators.
 fn run_command_chain<SI, SO, SE, FS>(
-    commands: &[ChainedCommand],
+    pipelines: &[ChainedPipeline],
     env: &Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
@@ -173,31 +210,20 @@ where
     SE: Stderr,
     FS: Filesystem + 'static,
 {
-    if commands.is_empty() {
+    if pipelines.is_empty() {
         return Ok(ExitCode::from(0));
     }
 
-    // Run first command unconditionally
-    let first = &commands[0];
-    if first.args.is_empty() {
-        return Ok(ExitCode::from(0));
-    }
+    // Run first pipeline unconditionally
+    let first = &pipelines[0];
+    let mut last_exit = run_pipeline(&first.pipeline, env)?;
 
-    let argv0 = first.args[0].clone();
-    let cmd_env = env.dup().with_args(first.args.clone());
-    let command = Command::new(&argv0, cmd_env)?;
-    let mut last_exit = command.run()?;
+    // Process remaining pipelines based on operators
+    for i in 1..pipelines.len() {
+        let prev_op = pipelines[i - 1].next_op;
+        let pipeline = &pipelines[i];
 
-    // Process remaining commands based on operators
-    for i in 1..commands.len() {
-        let prev_op = commands[i - 1].next_op;
-        let cmd = &commands[i];
-
-        if cmd.args.is_empty() {
-            continue;
-        }
-
-        // Decide whether to run this command based on previous exit code and operator
+        // Decide whether to run this pipeline based on previous exit code and operator
         let should_run = match prev_op {
             Some(ChainOp::And) => last_exit.code() == 0,
             Some(ChainOp::Or) => last_exit.code() != 0,
@@ -205,11 +231,109 @@ where
         };
 
         if should_run {
-            let argv0 = cmd.args[0].clone();
-            let cmd_env = env.dup().with_args(cmd.args.clone());
+            last_exit = run_pipeline(&pipeline.pipeline, env)?;
+        }
+    }
+
+    Ok(last_exit)
+}
+
+/// Run a pipeline of commands connected by pipes.
+fn run_pipeline<SI, SO, SE, FS>(
+    pipeline: &Pipeline,
+    env: &Environment<SI, SO, SE, FS>,
+) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem + 'static,
+{
+    if pipeline.commands.is_empty() {
+        return Ok(ExitCode::from(0));
+    }
+
+    // Single command - no pipes needed
+    if pipeline.commands.len() == 1 {
+        let args = &pipeline.commands[0];
+        if args.is_empty() {
+            return Ok(ExitCode::from(0));
+        }
+        let argv0 = args[0].clone();
+        let cmd_env = env.dup().with_args(args.clone());
+        let command = Command::new(&argv0, cmd_env)?;
+        return command.run();
+    }
+
+    // Multiple commands - connect them with pipes
+    // We run each command sequentially, passing output through pipes
+    let mut last_exit = ExitCode::from(0);
+    let mut current_reader: Option<PipeReader> = None;
+
+    for (i, args) in pipeline.commands.iter().enumerate() {
+        if args.is_empty() {
+            continue;
+        }
+
+        let is_last = i == pipeline.commands.len() - 1;
+        let argv0 = args[0].clone();
+
+        // Create pipe for output (unless this is the last command)
+        let (next_reader, writer) = if is_last {
+            (None, None)
+        } else {
+            let (r, w) = mkpipe();
+            (Some(r), Some(w))
+        };
+
+        // Build environment with appropriate stdin/stdout
+        if let Some(reader) = current_reader.take() {
+            if let Some(writer) = writer {
+                // Middle command: read from pipe, write to pipe
+                let cmd_env = Environment {
+                    stdin: reader,
+                    stdout: writer,
+                    stderr: env.stderr.dup(),
+                    fs: env.fs.dup(),
+                    env: env.env.clone(),
+                    args: args.clone(),
+                    cwd: env.cwd.clone(),
+                    exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                };
+                let command = Command::new(&argv0, cmd_env)?;
+                last_exit = command.run()?;
+            } else {
+                // Last command: read from pipe, write to original stdout
+                let cmd_env = Environment {
+                    stdin: reader,
+                    stdout: env.stdout.dup(),
+                    stderr: env.stderr.dup(),
+                    fs: env.fs.dup(),
+                    env: env.env.clone(),
+                    args: args.clone(),
+                    cwd: env.cwd.clone(),
+                    exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                };
+                let command = Command::new(&argv0, cmd_env)?;
+                last_exit = command.run()?;
+            }
+        } else if let Some(writer) = writer {
+            // First command: read from original stdin, write to pipe
+            let cmd_env = Environment {
+                stdin: env.stdin.dup(),
+                stdout: writer,
+                stderr: env.stderr.dup(),
+                fs: env.fs.dup(),
+                env: env.env.clone(),
+                args: args.clone(),
+                cwd: env.cwd.clone(),
+                exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+            };
             let command = Command::new(&argv0, cmd_env)?;
             last_exit = command.run()?;
         }
+
+        current_reader = next_reader;
     }
 
     Ok(last_exit)
@@ -553,5 +677,88 @@ mod tests {
         println!("stderr: {:?}", stderr);
         assert_eq!(0, result.code());
         assert_eq!("/\ndone\n", stdout);
+    }
+
+    // ========================================================================
+    // pipe tests
+    // ========================================================================
+
+    #[test]
+    fn pipe_echo_to_cat() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo hello | cat".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn pipe_cat_file_to_wc() {
+        let env = make_test_env(vec!["unused"]);
+        env.fs.add_file("test.txt", "one\ntwo\nthree\n");
+        let result = run("cat test.txt | wc -l".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert!(
+            stdout.trim() == "3",
+            "expected '3', got '{}'",
+            stdout.trim()
+        );
+    }
+
+    #[test]
+    fn pipe_three_commands() {
+        let env = make_test_env(vec!["unused"]);
+        env.fs.add_file("test.txt", "cherry\napple\nbanana\n");
+        let result = run("cat test.txt | sort | head -n 2".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("apple\nbanana\n", stdout);
+    }
+
+    #[test]
+    fn pipe_with_grep() {
+        let env = make_test_env(vec!["unused"]);
+        env.fs
+            .add_file("test.txt", "apple\nbanana\napricot\ncherry\n");
+        let result = run("cat test.txt | grep ap".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("apple\napricot\n", stdout);
+    }
+
+    #[test]
+    fn pipe_combined_with_and() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo hello | cat && echo done".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\ndone\n", stdout);
+    }
+
+    #[test]
+    fn pipe_exit_code_from_last_command() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo hello | false".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
     }
 }
