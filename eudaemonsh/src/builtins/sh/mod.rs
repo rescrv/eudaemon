@@ -118,6 +118,8 @@ enum ChainOp {
     And,
     /// Execute next pipeline only if previous failed (||).
     Or,
+    /// Execute next pipeline unconditionally (;).
+    Seq,
 }
 
 /// A pipeline is a sequence of commands connected by pipes.
@@ -159,6 +161,14 @@ fn parse_command_chain(args: &[String]) -> Result<Vec<ChainedPipeline>, Error> {
                 pipelines.push(ChainedPipeline {
                     pipeline: parse_pipeline(&current_pipeline_args)?,
                     next_op: Some(ChainOp::Or),
+                });
+                current_pipeline_args = Vec::new();
+            }
+        } else if arg == ";" {
+            if !current_pipeline_args.is_empty() {
+                pipelines.push(ChainedPipeline {
+                    pipeline: parse_pipeline(&current_pipeline_args)?,
+                    next_op: Some(ChainOp::Seq),
                 });
                 current_pipeline_args = Vec::new();
             }
@@ -269,6 +279,7 @@ where
         let should_run = match prev_op {
             Some(ChainOp::And) => last_exit.code() == 0,
             Some(ChainOp::Or) => last_exit.code() != 0,
+            Some(ChainOp::Seq) => true,
             None => true,
         };
 
@@ -743,6 +754,54 @@ mod tests {
         println!("stderr: {:?}", stderr);
         assert_eq!(0, result.code());
         assert_eq!("fallback\nthen_this\n", stdout);
+    }
+
+    #[test]
+    fn semicolon_separates_commands() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo first ; echo second".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("first\nsecond\n", stdout);
+    }
+
+    #[test]
+    fn semicolon_runs_after_failure() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("false ; echo still_runs".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("still_runs\n", stdout);
+    }
+
+    #[test]
+    fn multiple_semicolons() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo one ; echo two ; echo three".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("one\ntwo\nthree\n", stdout);
+    }
+
+    #[test]
+    fn semicolon_with_and_chain() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo first ; true && echo second".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("first\nsecond\n", stdout);
     }
 
     #[test]
