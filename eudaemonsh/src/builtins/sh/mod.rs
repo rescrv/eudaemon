@@ -1,6 +1,6 @@
 use crate::{
-    Command, Environment, Error, ExitCode, Filesystem, FsError, PipeReader, Stderr, Stdin, Stdout,
-    mkpipe,
+    Command, Environment, Error, ExitCode, FileStdout, Filesystem, FsError, PipeReader, Stderr,
+    Stdin, Stdout, mkpipe, resolve_path,
 };
 
 /// The sh builtin: execute shell commands.
@@ -107,7 +107,7 @@ where
     }
 
     // Parse into commands separated by && and ||
-    let commands = parse_command_chain(&args);
+    let commands = parse_command_chain(&args)?;
     run_command_chain(&commands, env)
 }
 
@@ -125,6 +125,8 @@ enum ChainOp {
 struct Pipeline {
     /// Commands in the pipeline, executed left-to-right with stdout->stdin connections.
     commands: Vec<Vec<String>>,
+    /// Output redirection target, if any (from `>`).
+    redirect_stdout: Option<String>,
 }
 
 /// A pipeline in a chain with its following operator.
@@ -139,7 +141,7 @@ struct ChainedPipeline {
 /// Parse a list of arguments into a chain of pipelines separated by && and ||.
 ///
 /// Each pipeline consists of commands separated by |.
-fn parse_command_chain(args: &[String]) -> Vec<ChainedPipeline> {
+fn parse_command_chain(args: &[String]) -> Result<Vec<ChainedPipeline>, Error> {
     let mut pipelines = Vec::new();
     let mut current_pipeline_args = Vec::new();
 
@@ -147,7 +149,7 @@ fn parse_command_chain(args: &[String]) -> Vec<ChainedPipeline> {
         if arg == "&&" {
             if !current_pipeline_args.is_empty() {
                 pipelines.push(ChainedPipeline {
-                    pipeline: parse_pipeline(&current_pipeline_args),
+                    pipeline: parse_pipeline(&current_pipeline_args)?,
                     next_op: Some(ChainOp::And),
                 });
                 current_pipeline_args = Vec::new();
@@ -155,7 +157,7 @@ fn parse_command_chain(args: &[String]) -> Vec<ChainedPipeline> {
         } else if arg == "||" {
             if !current_pipeline_args.is_empty() {
                 pipelines.push(ChainedPipeline {
-                    pipeline: parse_pipeline(&current_pipeline_args),
+                    pipeline: parse_pipeline(&current_pipeline_args)?,
                     next_op: Some(ChainOp::Or),
                 });
                 current_pipeline_args = Vec::new();
@@ -168,16 +170,18 @@ fn parse_command_chain(args: &[String]) -> Vec<ChainedPipeline> {
     // Add final pipeline
     if !current_pipeline_args.is_empty() {
         pipelines.push(ChainedPipeline {
-            pipeline: parse_pipeline(&current_pipeline_args),
+            pipeline: parse_pipeline(&current_pipeline_args)?,
             next_op: None,
         });
     }
 
-    pipelines
+    Ok(pipelines)
 }
 
 /// Parse arguments into a pipeline (commands separated by |).
-fn parse_pipeline(args: &[String]) -> Pipeline {
+///
+/// Also extracts output redirection (`>`) from the last command.
+fn parse_pipeline(args: &[String]) -> Result<Pipeline, Error> {
     let mut commands = Vec::new();
     let mut current_args = Vec::new();
 
@@ -196,7 +200,45 @@ fn parse_pipeline(args: &[String]) -> Pipeline {
         commands.push(current_args);
     }
 
-    Pipeline { commands }
+    // Extract output redirection from the last command
+    let redirect_stdout = if let Some(last_cmd) = commands.last_mut() {
+        extract_output_redirection(last_cmd)?
+    } else {
+        None
+    };
+
+    Ok(Pipeline {
+        commands,
+        redirect_stdout,
+    })
+}
+
+/// Extract output redirection (`>` or `> file`) from command arguments.
+///
+/// Returns the redirection target if found, and removes the `>` and target from args.
+fn extract_output_redirection(args: &mut Vec<String>) -> Result<Option<String>, Error> {
+    let mut redirect_idx = None;
+    for (i, arg) in args.iter().enumerate() {
+        if arg == ">" {
+            redirect_idx = Some(i);
+            break;
+        }
+    }
+
+    if let Some(idx) = redirect_idx {
+        if idx + 1 < args.len() {
+            let target = args.remove(idx + 1);
+            args.remove(idx);
+            Ok(Some(target))
+        } else {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "syntax error: no file after >",
+            )))
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 /// Run a chain of pipelines respecting && and || operators.
@@ -260,6 +302,25 @@ where
             return Ok(ExitCode::from(0));
         }
         let argv0 = args[0].clone();
+
+        // Handle output redirection
+        if let Some(ref target) = pipeline.redirect_stdout {
+            let path = resolve_path(env.cwd.as_str(), target);
+            let file_stdout = FileStdout::new(env.fs.dup(), path);
+            let cmd_env = Environment {
+                stdin: env.stdin.dup(),
+                stdout: file_stdout,
+                stderr: env.stderr.dup(),
+                fs: env.fs.dup(),
+                env: env.env.clone(),
+                args: args.clone(),
+                cwd: env.cwd.clone(),
+                exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+            };
+            let command = Command::new(&argv0, cmd_env)?;
+            return command.run();
+        }
+
         let cmd_env = env.dup().with_args(args.clone());
         let command = Command::new(&argv0, cmd_env)?;
         return command.run();
@@ -303,19 +364,36 @@ where
                 let command = Command::new(&argv0, cmd_env)?;
                 last_exit = command.run()?;
             } else {
-                // Last command: read from pipe, write to original stdout
-                let cmd_env = Environment {
-                    stdin: reader,
-                    stdout: env.stdout.dup(),
-                    stderr: env.stderr.dup(),
-                    fs: env.fs.dup(),
-                    env: env.env.clone(),
-                    args: args.clone(),
-                    cwd: env.cwd.clone(),
-                    exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
-                };
-                let command = Command::new(&argv0, cmd_env)?;
-                last_exit = command.run()?;
+                // Last command: read from pipe, write to stdout (or file)
+                if let Some(ref target) = pipeline.redirect_stdout {
+                    let path = resolve_path(env.cwd.as_str(), target);
+                    let file_stdout = FileStdout::new(env.fs.dup(), path);
+                    let cmd_env = Environment {
+                        stdin: reader,
+                        stdout: file_stdout,
+                        stderr: env.stderr.dup(),
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        args: args.clone(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(&argv0, cmd_env)?;
+                    last_exit = command.run()?;
+                } else {
+                    let cmd_env = Environment {
+                        stdin: reader,
+                        stdout: env.stdout.dup(),
+                        stderr: env.stderr.dup(),
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        args: args.clone(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(&argv0, cmd_env)?;
+                    last_exit = command.run()?;
+                }
             }
         } else if let Some(writer) = writer {
             // First command: read from original stdin, write to pipe
@@ -760,5 +838,89 @@ mod tests {
         println!("stdout: {:?}", stdout);
         println!("stderr: {:?}", stderr);
         assert_eq!(1, result.code());
+    }
+
+    // ========================================================================
+    // output redirection tests
+    // ========================================================================
+
+    #[test]
+    fn redirect_echo_to_file() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo hello > /output.txt".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("hello\n", contents);
+    }
+
+    #[test]
+    fn redirect_cat_to_file() {
+        let env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/input.txt", "file contents\n");
+        let result = run("cat /input.txt > /output.txt".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("file contents\n", contents);
+    }
+
+    #[test]
+    fn redirect_pipeline_to_file() {
+        let env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/input.txt", "cherry\napple\nbanana\n");
+        let result = run("cat /input.txt | sort > /output.txt".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("apple\nbanana\ncherry\n", contents);
+    }
+
+    #[test]
+    fn redirect_with_and_chain() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo hello > /output.txt && echo done".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("done\n", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("hello\n", contents);
+    }
+
+    #[test]
+    fn redirect_no_target_is_error() {
+        let env = make_test_env(vec!["unused"]);
+        let result = run("echo hello >".to_string(), &env);
+        println!("result: {:?}", result);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn redirect_relative_path() {
+        let env = crate::test_utils::TestEnvBuilder::new().cwd("/tmp").build();
+        env.fs.mkdir("/tmp").unwrap();
+        let result = run("echo hello > output.txt".to_string(), &env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        let contents = env.fs.read_to_string("/tmp/output.txt").unwrap();
+        assert_eq!("hello\n", contents);
     }
 }

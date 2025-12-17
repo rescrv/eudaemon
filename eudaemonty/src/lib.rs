@@ -162,6 +162,57 @@ impl Stdout for std::io::Stdout {
     }
 }
 
+/// A stdout that writes to a file via a filesystem.
+pub struct FileStdout<FS: Filesystem> {
+    fs: FS,
+    path: String,
+    buffer: Arc<Mutex<String>>,
+}
+
+impl<FS: Filesystem> FileStdout<FS> {
+    /// Create a new FileStdout that writes to the given path.
+    ///
+    /// The file is truncated when created and all output is buffered.
+    /// The buffer is flushed to the file when the last reference is dropped.
+    pub fn new(fs: FS, path: String) -> Self {
+        Self {
+            fs,
+            path,
+            buffer: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
+    /// Flush the buffer to the file.
+    pub fn flush(&self) -> Result<(), Error> {
+        let buffer = self.buffer.lock().unwrap();
+        self.fs.write_string(&self.path, &buffer)
+    }
+}
+
+impl<FS: Filesystem> Stdout for FileStdout<FS> {
+    fn dup(&self) -> Self {
+        Self {
+            fs: self.fs.dup(),
+            path: self.path.clone(),
+            buffer: Arc::clone(&self.buffer),
+        }
+    }
+
+    fn write_str(&self, s: &str) -> Result<(), Error> {
+        self.buffer.lock().unwrap().push_str(s);
+        Ok(())
+    }
+}
+
+impl<FS: Filesystem> Drop for FileStdout<FS> {
+    fn drop(&mut self) {
+        // Only flush if this is the last reference to the buffer
+        if Arc::strong_count(&self.buffer) == 1 {
+            let _ = self.flush();
+        }
+    }
+}
+
 ////////////////////////////////////////////// Stderr //////////////////////////////////////////////
 
 /// A trait for types that can serve as standard error.

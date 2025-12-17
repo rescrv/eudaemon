@@ -23,6 +23,7 @@ pub use eudaemonty::FileMetadata;
 pub use eudaemonty::FileType;
 pub use eudaemonty::Filesystem;
 
+pub use eudaemonty::FileStdout;
 pub use eudaemonty::PipeReader;
 pub use eudaemonty::PipeWriter;
 pub use eudaemonty::Stderr;
