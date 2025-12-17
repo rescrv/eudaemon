@@ -1375,7 +1375,13 @@ proptest! {
                             }
                         }
                         Err(Error::NoSpace) => {
-                            // Skip on NoSpace
+                            // write_file may have created/truncated the file before running out
+                            // of space. Sync reference to LFS state.
+                            if lfs.exists(&path)
+                                && let Ok(actual) = lfs.read_file(&path)
+                            {
+                                reference.files.insert(reference.absolute_path(name), actual);
+                            }
                         }
                         Err(e) => {
                             prop_assert!(false, "Op {}: unexpected error {:?}", op_idx, e);
@@ -1484,7 +1490,13 @@ proptest! {
                                 reference.files.insert(reference.absolute_path(name), data.clone());
                             }
                             Err(Error::NoSpace) => {
-                                // Skip on NoSpace
+                                // write_file truncates before writing, so on NoSpace the file
+                                // may be truncated.  Update reference to match LFS state.
+                                if let Ok(actual) = lfs.read_file(&path) {
+                                    reference
+                                        .files
+                                        .insert(reference.absolute_path(name), actual);
+                                }
                             }
                             Err(e) => {
                                 prop_assert!(false, "Op {}: unexpected write error {:?}", op_idx, e);
