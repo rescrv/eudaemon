@@ -77,9 +77,30 @@ fn build_options() -> Options {
 
 /// Preprocess arguments to convert legacy -NUM syntax to -n NUM.
 /// BSD and GNU tail support `-NUM` as shorthand for `-n NUM`.
+///
+/// This function handles a subtle case: when `-n`, `-c`, or `-b` is followed by `-NUM`,
+/// the `-NUM` should be passed through as-is (the value for that flag), not converted
+/// to `-n NUM`.
 fn preprocess_args(args: &[String]) -> Vec<String> {
     let mut result = Vec::new();
+    let mut expecting_value = false;
+
     for arg in args {
+        if expecting_value {
+            // The previous arg was -n, -c, or -b, so this arg is its value.
+            // Pass it through without transformation.
+            result.push(arg.clone());
+            expecting_value = false;
+            continue;
+        }
+
+        // Check if this arg is -n, -c, or -b (flags that expect a value)
+        if arg == "-n" || arg == "-c" || arg == "-b" {
+            result.push(arg.clone());
+            expecting_value = true;
+            continue;
+        }
+
         if let Some(rest) = arg.strip_prefix('-') {
             // Check if the rest is a valid positive integer (legacy -NUM syntax)
             if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
