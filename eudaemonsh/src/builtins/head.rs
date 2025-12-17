@@ -41,6 +41,24 @@ fn build_options() -> Options {
     opts
 }
 
+/// Preprocess arguments to convert legacy -NUM syntax to -n NUM.
+/// BSD and GNU head support `-NUM` as shorthand for `-n NUM`.
+fn preprocess_args(args: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    for arg in args {
+        if let Some(rest) = arg.strip_prefix('-') {
+            // Check if the rest is a valid positive integer (legacy -NUM syntax)
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                result.push("-n".to_string());
+                result.push(rest.to_string());
+                continue;
+            }
+        }
+        result.push(arg.clone());
+    }
+    result
+}
+
 /// The head builtin: display first lines of a file.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
@@ -51,7 +69,9 @@ where
 {
     let opts_def = build_options();
 
-    let matches = match opts_def.parse(&env.args[1..]) {
+    // Preprocess arguments to support legacy -NUM syntax
+    let preprocessed_args = preprocess_args(&env.args[1..]);
+    let matches = match opts_def.parse(&preprocessed_args) {
         Ok(m) => m,
         Err(e) => {
             env.stderr.write_line(&format!("head: {}", e))?;
@@ -655,6 +675,49 @@ mod tests {
         let stderr = env.stderr.into_string();
         println!("stderr: {:?}", stderr);
         assert!(stderr.contains("Unrecognized option"));
+    }
+
+    // ========================================================================
+    // Legacy -NUM syntax tests
+    // ========================================================================
+
+    #[test]
+    fn legacy_dash_number_syntax() {
+        let input = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";
+        let env = make_test_env_with_stdin(vec!["head", "-5"], input);
+        let result = bin(&env).unwrap();
+        println!("stdout: {:?}", env.stdout.clone().into_string());
+        println!("stderr: {:?}", env.stderr.clone().into_string());
+        assert_eq!(0, result.code());
+        assert_eq!("1\n2\n3\n4\n5\n", env.stdout.into_string());
+    }
+
+    #[test]
+    fn legacy_dash_twenty() {
+        let input: String = (1..=25).map(|i| format!("{}\n", i)).collect();
+        let env = make_test_env_with_stdin(vec!["head", "-20"], &input);
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        let expected: String = (1..=20).map(|i| format!("{}\n", i)).collect();
+        assert_eq!(expected, env.stdout.into_string());
+    }
+
+    #[test]
+    fn legacy_dash_one() {
+        let input = "first\nsecond\nthird";
+        let env = make_test_env_with_stdin(vec!["head", "-1"], input);
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!("first\n", env.stdout.into_string());
+    }
+
+    #[test]
+    fn legacy_dash_number_with_file() {
+        let env = make_test_env_with_stdin(vec!["head", "-3", "file.txt"], "");
+        env.fs.add_file("file.txt", "a\nb\nc\nd\ne\n");
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!("a\nb\nc\n", env.stdout.into_string());
     }
 
     // ========================================================================
