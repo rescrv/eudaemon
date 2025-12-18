@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["eudaemoncli",
+members = [
+    "eudaemoncli",
     "eudaemonfs",
-    "eudaemonsh", "eudaemonty",
+    "eudaemonsh",
+    "eudaemonty",
     "lispdown",
 ]
 
@@ -18,3 +20,29 @@ panic = "abort"
 [profile.test]
 debug = true
 opt-level = 2
+
+[workspace.dependencies]
+arrrg = "0.8.0"
+arrrg_derive = "0.8.0"
+async-trait = "0.1.89"
+chrono = "0.4"
+claudius = { version = "0.16.0", path = "../claudius" }
+getopts = "0.2.24"
+guacamole = "0.14.0"
+markdown = "1.0.0"
+proptest = "1.4"
+rand = "0.9"
+regex = "1.12.2"
+rustyline = { version = "15.0.0", features = ["with-file-history"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["float_roundtrip", "preserve_order"] }
+sha3 = "0.10"
+shvar = { path = "../blue/shvar" }
+tokio = { version = "1.48.0", features = ["full"] }
+toml = "0.8"
+utf8path = { version = "0.9.1", path = "../blue/utf8path" }
+
+eudaemonfs = { version = "0.1.0", path = "eudaemonfs" }
+eudaemonsh = { version = "0.1.0", path = "eudaemonsh" }
+eudaemonty = { version = "0.1.0", path = "eudaemonty" }
+lispdown = { version = "0.1.0", path = "lispdown" }

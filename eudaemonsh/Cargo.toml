@@ -4,14 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = "0.4"
-getopts = "0.2.24"
-rand = "0.9"
-regex = "1.12.2"
-rustyline = "15"
-shvar = "0.8.0"
-utf8path = "0.9.1"
+chrono = { workspace = true }
+getopts = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+rustyline = { workspace = true }
 
-eudaemonfs = { version = "0.1.0", path = "../eudaemonfs" }
-eudaemonty = { version = "0.1.0", path = "../eudaemonty" }
-lispdown = { version = "0.1.0", path = "../lispdown" }
+shvar = { workspace = true }
+utf8path = { workspace = true }
+
+eudaemonfs = { workspace = true }
+eudaemonty = { workspace = true }
+lispdown = { workspace = true }
