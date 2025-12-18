@@ -107,6 +107,7 @@ where
             stderr: env.stderr.dup(),
             fs: env.fs.dup(),
             env: new_env,
+            vars: env.vars.clone(),
             args,
             cwd: env.cwd.clone(),
             exit_signaled: env.exit_signaled.clone(),

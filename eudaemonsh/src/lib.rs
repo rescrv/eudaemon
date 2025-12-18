@@ -72,6 +72,29 @@ impl From<eudaemonty::Error> for Error {
 }
 
 /// The execution environment for a command.
+///
+/// # Variable Storage Design
+///
+/// Shell variables are stored in two separate maps:
+/// - `env`: Environment variables that are exported to child processes
+/// - `vars`: Shell-local variables that are not exported
+///
+/// During variable lookup (for expansion), shell variables (`vars`) take precedence over
+/// environment variables (`env`). This matches POSIX shell semantics where a local variable
+/// shadows an exported one of the same name.
+///
+/// The `set` builtin stores variables in `vars`. The `export` builtin moves a variable from
+/// `vars` to `env` (or marks an existing env var as exported). The `unset` builtin removes
+/// a variable from both maps.
+///
+/// This two-map approach was chosen over an enum-based single map because:
+/// 1. It maintains a clear separation between exported and non-exported variables
+/// 2. The `env` map can be passed directly to child processes without filtering
+/// 3. It avoids the overhead of copying/filtering when creating variable providers for shvar
+///
+/// Both maps are plain `HashMap`s (not shared via `Arc<Mutex<>>`). The shell's `run` function
+/// handles `set`, `unset`, and `export` specially by mutating its own copy of the environment
+/// before passing snapshots to child commands.
 pub struct Environment<SI, SO, SE, FS>
 where
     SI: Stdin,
@@ -87,8 +110,12 @@ where
     pub stderr: SE,
     /// Filesystem access.
     pub fs: FS,
-    /// Environment variables.
+    /// Environment variables (exported, passed to child processes).
     pub env: HashMap<String, String>,
+    /// Shell-local variables (not exported, not passed to child processes).
+    ///
+    /// These take precedence over `env` during variable expansion.
+    pub vars: HashMap<String, String>,
     /// Command-line arguments.
     pub args: Vec<String>,
     /// Current working directory.
@@ -112,6 +139,7 @@ where
             stderr: self.stderr.dup(),
             fs: self.fs.dup(),
             env: self.env.clone(),
+            vars: self.vars.clone(),
             args: self.args.clone(),
             cwd: self.cwd.clone(),
             exit_signaled: Arc::clone(&self.exit_signaled),
@@ -445,6 +473,7 @@ pub mod test_utils {
                 stderr: StringStderr::new(),
                 fs,
                 env: self.env_vars,
+                vars: HashMap::new(),
                 args: self.args,
                 cwd: Path::from(self.cwd.as_str()).into_owned(),
                 exit_signaled: Arc::new(AtomicBool::new(false)),

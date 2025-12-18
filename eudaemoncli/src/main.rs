@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use claudius::Agent;
@@ -20,6 +21,9 @@ use claudius::ToolBash20250124;
 use claudius::ToolTextEditor20250728;
 use claudius::ToolUseBlock;
 
+use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+
 use eudaemonsh::DeviceId;
 use eudaemonsh::Environment;
 use eudaemonsh::EudaemonFilesystem;
@@ -31,6 +35,35 @@ use eudaemonsh::StringStdout;
 use eudaemonsh::sh;
 
 use utf8path::Path;
+
+/// Persistent shell state that survives across bash invocations.
+struct ShellState {
+    /// Environment variables (exported, passed to child processes).
+    env: HashMap<String, String>,
+    /// Shell-local variables (not exported, not passed to child processes).
+    vars: HashMap<String, String>,
+    /// Current working directory.
+    cwd: Path<'static>,
+}
+
+impl ShellState {
+    /// Creates a new ShellState with default values.
+    fn new() -> Self {
+        Self {
+            env: HashMap::from_iter([
+                ("COLUMNS".to_string(), "120".to_string()),
+                ("HOME".to_string(), "/home/assistant".to_string()),
+                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+                ("PWD".to_string(), "/".to_string()),
+                ("SHELL".to_string(), "eudaemonsh".to_string()),
+                ("TMPDIR".to_string(), "/tmp".to_string()),
+                ("USER".to_string(), "assistant".to_string()),
+            ]),
+            vars: HashMap::new(),
+            cwd: Path::from("/"),
+        }
+    }
+}
 
 /// Time source function returning current time in milliseconds since UNIX epoch.
 fn current_time_ms() -> i64 {
@@ -221,6 +254,7 @@ fn search_recursive<FS: Filesystem>(fs: &FS, dir: &str, query: &str, results: &m
 struct EudaemonAgent {
     filesystem: EudaemonFileSystem,
     fs_for_shell: RealTimeFilesystem,
+    shell_state: Mutex<ShellState>,
 }
 
 impl EudaemonAgent {
@@ -240,6 +274,7 @@ impl EudaemonAgent {
         Self {
             filesystem,
             fs_for_shell,
+            shell_state: Mutex::new(ShellState::new()),
         }
     }
 }
@@ -410,34 +445,45 @@ impl Agent for EudaemonAgent {
         }
     }
 
-    async fn bash(&self, command: &str, _restart: bool) -> Result<String, std::io::Error> {
-        // Create an environment for the shell command
+    async fn bash(&self, command: &str, restart: bool) -> Result<String, std::io::Error> {
+        // Reset shell state if restart is requested
+        if restart {
+            let mut state = self.shell_state.lock().unwrap();
+            *state = ShellState::new();
+        }
+
+        // Create fresh stdin/stdout/stderr for this command
         let stdin = StringStdin::new("");
         let stdout = StringStdout::new();
         let stderr = StringStderr::new();
 
-        let env = Environment {
-            stdin,
-            stdout: stdout.clone(),
-            stderr: stderr.clone(),
-            fs: self.fs_for_shell.dup(),
-            env: std::collections::HashMap::from_iter([
-                ("COLUMNS".to_string(), "120".to_string()),
-                ("HOME".to_string(), "/home/assistant".to_string()),
-                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-                ("PWD".to_string(), "/".to_string()),
-                ("SHELL".to_string(), "eudaemonsh".to_string()),
-                ("TMPDIR".to_string(), "/tmp".to_string()),
-                ("USER".to_string(), "assistant".to_string()),
-            ]),
-            args: vec!["/bin/eudaemonsh".to_string()],
-            cwd: Path::from("/"),
-            exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        // Create an environment using the persistent shell state
+        let mut env = {
+            let state = self.shell_state.lock().unwrap();
+            Environment {
+                stdin,
+                stdout: stdout.clone(),
+                stderr: stderr.clone(),
+                fs: self.fs_for_shell.dup(),
+                env: state.env.clone(),
+                vars: state.vars.clone(),
+                args: vec!["/bin/eudaemonsh".to_string()],
+                cwd: state.cwd.clone(),
+                exit_signaled: Arc::new(AtomicBool::new(false)),
+            }
         };
 
         // Run the command
-        let exit_code = sh::run(command.to_string(), &env)
+        let exit_code = sh::run(command.to_string(), &mut env)
             .map_err(|e| std::io::Error::other(format!("shell error: {:?}", e)))?;
+
+        // Persist the shell state for the next invocation
+        {
+            let mut state = self.shell_state.lock().unwrap();
+            state.env = env.env;
+            state.vars = env.vars;
+            state.cwd = env.cwd;
+        }
 
         // Collect output
         let stdout_str = stdout.into_string();

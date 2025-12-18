@@ -1,7 +1,37 @@
+use std::collections::HashMap;
+
+use shvar::ExpandOptions;
+
 use crate::{
     Command, Environment, Error, ExitCode, FileStdout, Filesystem, FsError, PipeReader, Stderr,
     Stdin, Stdout, mkpipe, resolve_path,
 };
+
+/// Options for shell variable expansion.
+///
+/// Supports `$VARNAME` (bareword) and `${VARNAME}` (curly braces) syntax.
+fn shell_expand_options() -> ExpandOptions {
+    ExpandOptions {
+        bareword: true,
+        curly_braces: true,
+        parens: false,
+    }
+}
+
+/// Expand shell variables in the given input string.
+///
+/// Looks up variables in `vars` first (shell-local), then `env` (exported).
+/// Supports:
+/// - `$VARNAME` - bareword form
+/// - `${VARNAME}` - curly brace form with modifiers like `${VAR:-default}`
+fn expand(
+    input: &str,
+    vars: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+) -> Result<String, shvar::Error> {
+    // Use tuple provider: vars takes precedence over env
+    shvar::expand_with_options(shell_expand_options(), &(vars, env), input)
+}
 
 /// The sh builtin: execute shell commands.
 ///
@@ -26,6 +56,9 @@ where
         return Ok(ExitCode::from(2));
     }
 
+    // Create a mutable copy for the shell session so set/unset/export can modify variables
+    let mut shell_env = env.dup();
+
     if args[1] == "-c" {
         // sh -c command_string
         if args.len() < 3 {
@@ -34,18 +67,18 @@ where
             return Ok(ExitCode::from(2));
         }
         let command_string = &args[2];
-        run(command_string.clone(), env)
+        run(command_string.clone(), &mut shell_env)
     } else {
         // sh script_file
         let script_path = &args[1];
-        run_script(script_path, env)
+        run_script(script_path, &mut shell_env)
     }
 }
 
 /// Run a script file, executing each line.
 pub fn run_script<SI, SO, SE, FS>(
     path: &str,
-    env: &Environment<SI, SO, SE, FS>,
+    env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
     SI: Stdin,
@@ -67,7 +100,7 @@ where
 /// Run a script from a string, executing each line.
 pub fn run_string<SI, SO, SE, FS>(
     script: &str,
-    env: &Environment<SI, SO, SE, FS>,
+    env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
     SI: Stdin,
@@ -93,7 +126,7 @@ where
 /// Run a single command line with support for && and || operators.
 pub fn run<SI, SO, SE, FS>(
     command: String,
-    env: &Environment<SI, SO, SE, FS>,
+    env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
     SI: Stdin,
@@ -101,14 +134,104 @@ where
     SE: Stderr,
     FS: Filesystem + 'static,
 {
-    let args = shvar::split(&command)?;
+    let expanded = expand(&command, &env.vars, &env.env)?;
+    let args = shvar::split(&expanded)?;
     if args.is_empty() || args[0].is_empty() {
         return Err(Error::EmptyCommand);
+    }
+
+    // Handle shell builtins that modify state
+    if args[0] == "set" {
+        return handle_set(&args, env);
+    }
+    if args[0] == "unset" {
+        return handle_unset(&args, env);
+    }
+    if args[0] == "export" {
+        return handle_export(&args, env);
     }
 
     // Parse into commands separated by && and ||
     let commands = parse_command_chain(&args)?;
     run_command_chain(&commands, env)
+}
+
+/// Handle the `set` builtin: set shell variables.
+///
+/// Usage: set NAME=VALUE ...
+fn handle_set<SI, SO, SE, FS>(
+    args: &[String],
+    env: &mut Environment<SI, SO, SE, FS>,
+) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    for arg in args.iter().skip(1) {
+        if let Some((name, value)) = arg.split_once('=') {
+            env.vars.insert(name.to_string(), value.to_string());
+        } else {
+            env.stderr
+                .write_line(&format!("set: {}: not in NAME=VALUE format", arg))?;
+            return Ok(ExitCode::from(1));
+        }
+    }
+    Ok(ExitCode::from(0))
+}
+
+/// Handle the `unset` builtin: remove shell and environment variables.
+///
+/// Usage: unset NAME ...
+fn handle_unset<SI, SO, SE, FS>(
+    args: &[String],
+    env: &mut Environment<SI, SO, SE, FS>,
+) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    for name in args.iter().skip(1) {
+        env.vars.remove(name);
+        env.env.remove(name);
+    }
+    Ok(ExitCode::from(0))
+}
+
+/// Handle the `export` builtin: export shell variables to the environment.
+///
+/// Usage: export NAME ...
+///        export NAME=VALUE ...
+///
+/// If NAME=VALUE is given, sets the variable and exports it.
+/// If just NAME is given, moves the variable from vars to env (if it exists in vars).
+fn handle_export<SI, SO, SE, FS>(
+    args: &[String],
+    env: &mut Environment<SI, SO, SE, FS>,
+) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    for arg in args.iter().skip(1) {
+        if let Some((name, value)) = arg.split_once('=') {
+            // export NAME=VALUE: set and export
+            env.vars.remove(name);
+            env.env.insert(name.to_string(), value.to_string());
+        } else {
+            // export NAME: move from vars to env if present
+            if let Some(value) = env.vars.remove(arg) {
+                env.env.insert(arg.to_string(), value);
+            }
+            // If not in vars, check if already in env (no-op) or doesn't exist (no-op)
+        }
+    }
+    Ok(ExitCode::from(0))
 }
 
 /// Operator between pipelines in a chain.
@@ -324,6 +447,7 @@ where
                 stderr: env.stderr.dup(),
                 fs: env.fs.dup(),
                 env: env.env.clone(),
+                vars: env.vars.clone(),
                 args: args.clone(),
                 cwd: env.cwd.clone(),
                 exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -368,6 +492,7 @@ where
                     stderr: env.stderr.dup(),
                     fs: env.fs.dup(),
                     env: env.env.clone(),
+                    vars: env.vars.clone(),
                     args: args.clone(),
                     cwd: env.cwd.clone(),
                     exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -385,6 +510,7 @@ where
                         stderr: env.stderr.dup(),
                         fs: env.fs.dup(),
                         env: env.env.clone(),
+                        vars: env.vars.clone(),
                         args: args.clone(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -398,6 +524,7 @@ where
                         stderr: env.stderr.dup(),
                         fs: env.fs.dup(),
                         env: env.env.clone(),
+                        vars: env.vars.clone(),
                         args: args.clone(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -414,6 +541,7 @@ where
                 stderr: env.stderr.dup(),
                 fs: env.fs.dup(),
                 env: env.env.clone(),
+                vars: env.vars.clone(),
                 args: args.clone(),
                 cwd: env.cwd.clone(),
                 exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -500,25 +628,25 @@ mod tests {
 
     #[test]
     fn run_cat() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "hello\n");
-        let result = run("cat test.txt".to_string(), &env).unwrap();
+        let result = run("cat test.txt".to_string(), &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
     }
 
     #[test]
     fn run_empty_command() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("".to_string(), &env);
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("".to_string(), &mut env);
         println!("result: {:?}", result);
         assert!(matches!(result, Err(Error::EmptyCommand)));
     }
 
     #[test]
     fn run_unknown_binary() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("nonexistent".to_string(), &env);
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("nonexistent".to_string(), &mut env);
         assert!(matches!(result, Err(Error::UnknownBinary(_))));
     }
 
@@ -528,76 +656,76 @@ mod tests {
 
     #[test]
     fn run_string_empty_script() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("", &mut env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn run_string_comment_only() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("# just a comment", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("# just a comment", &mut env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn run_string_shebang_only() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("#!/bin/sh", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("#!/bin/sh", &mut env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn run_string_single_command() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "hello\n");
-        let result = run_string("cat test.txt", &env).unwrap();
+        let result = run_string("cat test.txt", &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("hello\n", env.stdout.into_string());
     }
 
     #[test]
     fn run_string_multiple_commands() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
-        let result = run_string("cat a.txt\ncat b.txt", &env).unwrap();
+        let result = run_string("cat a.txt\ncat b.txt", &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("aaa\nbbb\n", env.stdout.into_string());
     }
 
     #[test]
     fn run_string_skips_blank_lines() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
-        let result = run_string("\n\ncat a.txt\n\n", &env).unwrap();
+        let result = run_string("\n\ncat a.txt\n\n", &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("aaa\n", env.stdout.into_string());
     }
 
     #[test]
     fn run_string_skips_comments() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
-        let result = run_string("# comment\ncat a.txt\n# another comment", &env).unwrap();
+        let result = run_string("# comment\ncat a.txt\n# another comment", &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("aaa\n", env.stdout.into_string());
     }
 
     #[test]
     fn run_string_with_shebang() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
-        let result = run_string("#!/bin/sh\ncat a.txt", &env).unwrap();
+        let result = run_string("#!/bin/sh\ncat a.txt", &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("aaa\n", env.stdout.into_string());
     }
 
     #[test]
     fn run_string_returns_last_exit_code() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
-        let result = run_string("cat a.txt\ncat nonexistent.txt", &env).unwrap();
+        let result = run_string("cat a.txt\ncat nonexistent.txt", &mut env).unwrap();
         assert_eq!(1, result.code());
     }
 
@@ -607,64 +735,64 @@ mod tests {
 
     #[test]
     fn exit_terminates_script() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("exit 0\necho should_not_appear", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("exit 0\necho should_not_appear", &mut env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("", env.stdout.into_string());
     }
 
     #[test]
     fn exit_with_code_terminates_script() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("exit 42\necho should_not_appear", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("exit 42\necho should_not_appear", &mut env).unwrap();
         assert_eq!(42, result.code());
         assert_eq!("", env.stdout.into_string());
     }
 
     #[test]
     fn exit_terminates_after_other_commands() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("echo before\nexit 5\necho after", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("echo before\nexit 5\necho after", &mut env).unwrap();
         assert_eq!(5, result.code());
         assert_eq!("before\n", env.stdout.into_string());
     }
 
     #[test]
     fn exit_in_middle_of_script() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("a.txt", "aaa\n");
         env.fs.add_file("b.txt", "bbb\n");
-        let result = run_string("cat a.txt\nexit 3\ncat b.txt", &env).unwrap();
+        let result = run_string("cat a.txt\nexit 3\ncat b.txt", &mut env).unwrap();
         assert_eq!(3, result.code());
         assert_eq!("aaa\n", env.stdout.into_string());
     }
 
     #[test]
     fn true_script_exits_zero() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("#!/bin/sh\nexit 0", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("#!/bin/sh\nexit 0", &mut env).unwrap();
         assert_eq!(0, result.code());
     }
 
     #[test]
     fn false_script_exits_one() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("#!/bin/sh\nexit 1", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("#!/bin/sh\nexit 1", &mut env).unwrap();
         assert_eq!(1, result.code());
     }
 
     #[test]
     fn multiple_exits_uses_first() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run_string("exit 7\nexit 8\nexit 9", &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("exit 7\nexit 8\nexit 9", &mut env).unwrap();
         assert_eq!(7, result.code());
     }
 
     #[test]
     fn exit_signal_persists() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         assert!(!env.is_exit_signaled());
-        let _ = run_string("exit 0", &env).unwrap();
+        let _ = run_string("exit 0", &mut env).unwrap();
         assert!(env.is_exit_signaled());
     }
 
@@ -674,8 +802,8 @@ mod tests {
 
     #[test]
     fn and_chain_both_succeed() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("true && echo success".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("true && echo success".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -686,8 +814,8 @@ mod tests {
 
     #[test]
     fn and_chain_first_fails() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("false && echo should_not_appear".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("false && echo should_not_appear".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -698,8 +826,8 @@ mod tests {
 
     #[test]
     fn or_chain_first_succeeds() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("true || echo should_not_appear".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("true || echo should_not_appear".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -710,8 +838,8 @@ mod tests {
 
     #[test]
     fn or_chain_first_fails() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("false || echo fallback".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("false || echo fallback".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -722,8 +850,8 @@ mod tests {
 
     #[test]
     fn multiple_and_chain() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("true && echo one && echo two".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("true && echo one && echo two".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -734,8 +862,12 @@ mod tests {
 
     #[test]
     fn and_chain_stops_on_failure() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("true && false && echo should_not_appear".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(
+            "true && false && echo should_not_appear".to_string(),
+            &mut env,
+        )
+        .unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -746,8 +878,12 @@ mod tests {
 
     #[test]
     fn mixed_and_or_chain() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("false || echo fallback && echo then_this".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(
+            "false || echo fallback && echo then_this".to_string(),
+            &mut env,
+        )
+        .unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -758,8 +894,8 @@ mod tests {
 
     #[test]
     fn semicolon_separates_commands() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo first ; echo second".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo first ; echo second".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -770,8 +906,8 @@ mod tests {
 
     #[test]
     fn semicolon_runs_after_failure() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("false ; echo still_runs".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("false ; echo still_runs".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -782,8 +918,8 @@ mod tests {
 
     #[test]
     fn multiple_semicolons() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo one ; echo two ; echo three".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo one ; echo two ; echo three".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -794,8 +930,8 @@ mod tests {
 
     #[test]
     fn semicolon_with_and_chain() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo first ; true && echo second".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo first ; true && echo second".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -806,8 +942,8 @@ mod tests {
 
     #[test]
     fn and_with_pwd() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("pwd && echo done".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("pwd && echo done".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -822,8 +958,8 @@ mod tests {
 
     #[test]
     fn pipe_echo_to_cat() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo hello | cat".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello | cat".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -834,9 +970,9 @@ mod tests {
 
     #[test]
     fn pipe_cat_file_to_wc() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "one\ntwo\nthree\n");
-        let result = run("cat test.txt | wc -l".to_string(), &env).unwrap();
+        let result = run("cat test.txt | wc -l".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -851,9 +987,9 @@ mod tests {
 
     #[test]
     fn pipe_three_commands() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "cherry\napple\nbanana\n");
-        let result = run("cat test.txt | sort | head -n 2".to_string(), &env).unwrap();
+        let result = run("cat test.txt | sort | head -n 2".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -864,10 +1000,10 @@ mod tests {
 
     #[test]
     fn pipe_with_grep() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs
             .add_file("test.txt", "apple\nbanana\napricot\ncherry\n");
-        let result = run("cat test.txt | grep ap".to_string(), &env).unwrap();
+        let result = run("cat test.txt | grep ap".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -878,8 +1014,8 @@ mod tests {
 
     #[test]
     fn pipe_combined_with_and() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo hello | cat && echo done".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello | cat && echo done".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -890,8 +1026,8 @@ mod tests {
 
     #[test]
     fn pipe_exit_code_from_last_command() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo hello | false".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello | false".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -905,8 +1041,8 @@ mod tests {
 
     #[test]
     fn redirect_echo_to_file() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo hello > /output.txt".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello > /output.txt".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -919,9 +1055,9 @@ mod tests {
 
     #[test]
     fn redirect_cat_to_file() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("/input.txt", "file contents\n");
-        let result = run("cat /input.txt > /output.txt".to_string(), &env).unwrap();
+        let result = run("cat /input.txt > /output.txt".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -934,9 +1070,9 @@ mod tests {
 
     #[test]
     fn redirect_pipeline_to_file() {
-        let env = make_test_env(vec!["unused"]);
+        let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("/input.txt", "cherry\napple\nbanana\n");
-        let result = run("cat /input.txt | sort > /output.txt".to_string(), &env).unwrap();
+        let result = run("cat /input.txt | sort > /output.txt".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -949,8 +1085,12 @@ mod tests {
 
     #[test]
     fn redirect_with_and_chain() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo hello > /output.txt && echo done".to_string(), &env).unwrap();
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(
+            "echo hello > /output.txt && echo done".to_string(),
+            &mut env,
+        )
+        .unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -963,17 +1103,17 @@ mod tests {
 
     #[test]
     fn redirect_no_target_is_error() {
-        let env = make_test_env(vec!["unused"]);
-        let result = run("echo hello >".to_string(), &env);
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello >".to_string(), &mut env);
         println!("result: {:?}", result);
         assert!(result.is_err());
     }
 
     #[test]
     fn redirect_relative_path() {
-        let env = crate::test_utils::TestEnvBuilder::new().cwd("/tmp").build();
+        let mut env = crate::test_utils::TestEnvBuilder::new().cwd("/tmp").build();
         env.fs.mkdir("/tmp").unwrap();
-        let result = run("echo hello > output.txt".to_string(), &env).unwrap();
+        let result = run("echo hello > output.txt".to_string(), &mut env).unwrap();
         let stdout = env.stdout.into_string();
         let stderr = env.stderr.into_string();
         println!("stdout: {:?}", stdout);
@@ -981,5 +1121,354 @@ mod tests {
         assert_eq!(0, result.code());
         let contents = env.fs.read_to_string("/tmp/output.txt").unwrap();
         assert_eq!("hello\n", contents);
+    }
+
+    // ========================================================================
+    // variable expansion tests
+    // ========================================================================
+
+    #[test]
+    fn expand_bareword_variable() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("GREETING", "hello")
+            .build();
+        let result = run("echo $GREETING".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn expand_curly_brace_variable() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("NAME", "world")
+            .build();
+        let result = run("echo ${NAME}".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("world\n", stdout);
+    }
+
+    #[test]
+    fn expand_multiple_variables() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("FIRST", "hello")
+            .env_var("SECOND", "world")
+            .build();
+        let result = run("echo $FIRST $SECOND".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello world\n", stdout);
+    }
+
+    #[test]
+    fn expand_mixed_syntax() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("A", "alpha")
+            .env_var("B", "beta")
+            .build();
+        let result = run("echo $A and ${B}".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("alpha and beta\n", stdout);
+    }
+
+    #[test]
+    fn expand_undefined_variable_is_empty() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo prefix$UNDEFINED suffix".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("prefix suffix\n", stdout);
+    }
+
+    #[test]
+    fn expand_variable_in_pipeline() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("MSG", "hello world")
+            .build();
+        let result = run("echo $MSG | cat".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello world\n", stdout);
+    }
+
+    #[test]
+    fn expand_variable_with_and_chain() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("VAR", "value")
+            .build();
+        let result = run("echo $VAR && echo done".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("value\ndone\n", stdout);
+    }
+
+    #[test]
+    fn expand_variable_as_filename() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("FILE", "test.txt")
+            .build();
+        env.fs.add_file("test.txt", "file contents\n");
+        let result = run("cat $FILE".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("file contents\n", stdout);
+    }
+
+    #[test]
+    fn expand_curly_brace_default_value() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo ${MISSING:-default}".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("default\n", stdout);
+    }
+
+    #[test]
+    fn expand_curly_brace_default_not_used_when_set() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("PRESENT", "actual")
+            .build();
+        let result = run("echo ${PRESENT:-default}".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("actual\n", stdout);
+    }
+
+    // ========================================================================
+    // set builtin tests
+    // ========================================================================
+
+    #[test]
+    fn set_single_variable() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("set FOO=bar".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"bar".to_string()), env.vars.get("FOO"));
+    }
+
+    #[test]
+    fn set_variable_then_expand() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("set GREETING=hello\necho $GREETING", &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn set_multiple_variables() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("set A=alpha B=beta".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"alpha".to_string()), env.vars.get("A"));
+        assert_eq!(Some(&"beta".to_string()), env.vars.get("B"));
+    }
+
+    #[test]
+    fn set_variable_with_equals_in_value() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("set EQUATION=a=b".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"a=b".to_string()), env.vars.get("EQUATION"));
+    }
+
+    #[test]
+    fn set_overwrites_existing_var() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("set X=old".to_string(), &mut env).unwrap();
+        let _ = run("set X=new".to_string(), &mut env).unwrap();
+        assert_eq!(Some(&"new".to_string()), env.vars.get("X"));
+    }
+
+    #[test]
+    fn set_invalid_format_returns_error() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("set NOEQUALS".to_string(), &mut env).unwrap();
+        assert_eq!(1, result.code());
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert!(stderr.contains("not in NAME=VALUE format"));
+    }
+
+    #[test]
+    fn set_shell_var_shadows_env_var() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("VAR", "from_env")
+            .build();
+        let _ = run("set VAR=from_shell".to_string(), &mut env).unwrap();
+        let result = run("echo $VAR".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        println!("stdout: {:?}", stdout);
+        assert_eq!(0, result.code());
+        assert_eq!("from_shell\n", stdout);
+    }
+
+    // ========================================================================
+    // unset builtin tests
+    // ========================================================================
+
+    #[test]
+    fn unset_shell_variable() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("set FOO=bar".to_string(), &mut env).unwrap();
+        assert!(env.vars.contains_key("FOO"));
+        let result = run("unset FOO".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(!env.vars.contains_key("FOO"));
+    }
+
+    #[test]
+    fn unset_env_variable() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("MYVAR", "value")
+            .build();
+        assert!(env.env.contains_key("MYVAR"));
+        let result = run("unset MYVAR".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(!env.env.contains_key("MYVAR"));
+    }
+
+    #[test]
+    fn unset_multiple_variables() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("set A=1 B=2 C=3".to_string(), &mut env).unwrap();
+        let result = run("unset A C".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(!env.vars.contains_key("A"));
+        assert!(env.vars.contains_key("B"));
+        assert!(!env.vars.contains_key("C"));
+    }
+
+    #[test]
+    fn unset_nonexistent_is_ok() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("unset NONEXISTENT".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+    }
+
+    #[test]
+    fn unset_removes_from_both_vars_and_env() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("DUP", "env_value")
+            .build();
+        env.vars.insert("DUP".to_string(), "var_value".to_string());
+        let result = run("unset DUP".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(!env.vars.contains_key("DUP"));
+        assert!(!env.env.contains_key("DUP"));
+    }
+
+    // ========================================================================
+    // export builtin tests
+    // ========================================================================
+
+    #[test]
+    fn export_with_value() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("export FOO=bar".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"bar".to_string()), env.env.get("FOO"));
+        assert!(!env.vars.contains_key("FOO"));
+    }
+
+    #[test]
+    fn export_existing_shell_var() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("set MYVAR=myvalue".to_string(), &mut env).unwrap();
+        assert!(env.vars.contains_key("MYVAR"));
+        assert!(!env.env.contains_key("MYVAR"));
+        let result = run("export MYVAR".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(!env.vars.contains_key("MYVAR"));
+        assert_eq!(Some(&"myvalue".to_string()), env.env.get("MYVAR"));
+    }
+
+    #[test]
+    fn export_nonexistent_var_is_noop() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("export NONEXISTENT".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert!(!env.vars.contains_key("NONEXISTENT"));
+        assert!(!env.env.contains_key("NONEXISTENT"));
+    }
+
+    #[test]
+    fn export_multiple_vars() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("set A=1 B=2".to_string(), &mut env).unwrap();
+        let result = run("export A B".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"1".to_string()), env.env.get("A"));
+        assert_eq!(Some(&"2".to_string()), env.env.get("B"));
+    }
+
+    #[test]
+    fn export_with_value_overwrites_existing() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("VAR", "old")
+            .build();
+        let result = run("export VAR=new".to_string(), &mut env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"new".to_string()), env.env.get("VAR"));
+    }
+
+    #[test]
+    fn exported_var_is_visible() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("export MSG=hello".to_string(), &mut env).unwrap();
+        let result = run("echo $MSG".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        println!("stdout: {:?}", stdout);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn set_then_export_workflow() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("set VAR=value\nexport VAR\necho $VAR", &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("value\n", stdout);
+        assert_eq!(Some(&"value".to_string()), env.env.get("VAR"));
+        assert!(!env.vars.contains_key("VAR"));
     }
 }

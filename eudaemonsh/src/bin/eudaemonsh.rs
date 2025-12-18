@@ -52,7 +52,7 @@ fn main() {
         }
     };
 
-    let env: Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, _> = Environment {
+    let mut env: Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, _> = Environment {
         stdin: std::io::stdin(),
         stdout: std::io::stdout(),
         stderr: std::io::stderr(),
@@ -66,6 +66,7 @@ fn main() {
             ("TMPDIR".to_string(), "/tmp".to_string()),
             ("USER".to_string(), "assistant".to_string()),
         ]),
+        vars: HashMap::new(),
         args: vec!["/bin/eudaemonsh".to_string()],
         cwd: Path::from("/"),
         exit_signaled: Arc::new(AtomicBool::new(false)),
@@ -93,7 +94,7 @@ fn main() {
                 }
                 let _ = rl.add_history_entry(line);
 
-                match sh::run(line.to_string(), &env) {
+                match sh::run(line.to_string(), &mut env) {
                     Ok(_exit_code) => {}
                     Err(e) => {
                         eprintln!("eudaemonsh: {:?}", e);

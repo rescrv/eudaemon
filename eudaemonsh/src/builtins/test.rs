@@ -637,6 +637,7 @@ mod tests {
             stderr: StringStderr::new(),
             fs,
             env: std::collections::HashMap::new(),
+            vars: std::collections::HashMap::new(),
             args: args.into_iter().map(|s| s.to_string()).collect(),
             cwd: utf8path::Path::from("/"),
             exit_signaled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
