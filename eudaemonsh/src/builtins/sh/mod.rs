@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use shvar::ExpandOptions;
+use utf8path::Path;
 
 use crate::{
     Command, Environment, Error, ExitCode, FileStdout, Filesystem, FsError, PipeReader, Stderr,
@@ -140,17 +141,6 @@ where
         return Err(Error::EmptyCommand);
     }
 
-    // Handle shell builtins that modify state
-    if args[0] == "set" {
-        return handle_set(&args, env);
-    }
-    if args[0] == "unset" {
-        return handle_unset(&args, env);
-    }
-    if args[0] == "export" {
-        return handle_export(&args, env);
-    }
-
     // Parse into commands separated by && and ||
     let commands = parse_command_chain(&args)?;
     run_command_chain(&commands, env)
@@ -232,6 +222,55 @@ where
         }
     }
     Ok(ExitCode::from(0))
+}
+
+/// Handle the `cd` builtin: change the current working directory.
+///
+/// Usage: cd [directory]
+///
+/// If directory is omitted, changes to the home directory (from $HOME).
+/// If $HOME is not set and no directory is given, returns an error.
+fn handle_cd<SI, SO, SE, FS>(
+    args: &[String],
+    env: &mut Environment<SI, SO, SE, FS>,
+) -> Result<ExitCode, Error>
+where
+    SI: Stdin,
+    SO: Stdout,
+    SE: Stderr,
+    FS: Filesystem,
+{
+    let target = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        // No argument: go to $HOME
+        if let Some(home) = env.env.get("HOME").or_else(|| env.vars.get("HOME")) {
+            home.clone()
+        } else {
+            env.stderr.write_line("cd: HOME not set")?;
+            return Ok(ExitCode::from(1));
+        }
+    };
+
+    // Resolve the path relative to current directory
+    let new_path = resolve_path(env.cwd.as_str(), &target);
+
+    // Check if the target exists
+    if !env.fs.exists(&new_path) {
+        env.stderr
+            .write_line(&format!("cd: {}: No such file or directory", target))?;
+        return Ok(ExitCode::from(1));
+    }
+
+    // Check if the target is a directory
+    if env.fs.is_dir(&new_path) {
+        env.cwd = Path::from(new_path.as_str()).into_owned();
+        Ok(ExitCode::from(0))
+    } else {
+        env.stderr
+            .write_line(&format!("cd: {}: Not a directory", target))?;
+        Ok(ExitCode::from(1))
+    }
 }
 
 /// Operator between pipelines in a chain.
@@ -377,7 +416,7 @@ fn extract_output_redirection(args: &mut Vec<String>) -> Result<Option<String>, 
 /// Run a chain of pipelines respecting && and || operators.
 fn run_command_chain<SI, SO, SE, FS>(
     pipelines: &[ChainedPipeline],
-    env: &Environment<SI, SO, SE, FS>,
+    env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
     SI: Stdin,
@@ -417,7 +456,7 @@ where
 /// Run a pipeline of commands connected by pipes.
 fn run_pipeline<SI, SO, SE, FS>(
     pipeline: &Pipeline,
-    env: &Environment<SI, SO, SE, FS>,
+    env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
     SI: Stdin,
@@ -435,6 +474,21 @@ where
         if args.is_empty() {
             return Ok(ExitCode::from(0));
         }
+
+        // Handle shell builtins that modify state (these can't go in a pipeline with other commands)
+        if args[0] == "cd" {
+            return handle_cd(args, env);
+        }
+        if args[0] == "set" {
+            return handle_set(args, env);
+        }
+        if args[0] == "unset" {
+            return handle_unset(args, env);
+        }
+        if args[0] == "export" {
+            return handle_export(args, env);
+        }
+
         let argv0 = args[0].clone();
 
         // Handle output redirection
@@ -1470,5 +1524,218 @@ mod tests {
         assert_eq!("value\n", stdout);
         assert_eq!(Some(&"value".to_string()), env.env.get("VAR"));
         assert!(!env.vars.contains_key("VAR"));
+    }
+
+    // ========================================================================
+    // cd builtin tests
+    // ========================================================================
+
+    #[test]
+    fn cd_to_existing_directory() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let result = run("cd /home".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_to_nonexistent_directory() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("cd /nonexistent".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert!(stderr.contains("No such file or directory"));
+        assert_eq!("/", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_to_file_not_directory() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/myfile.txt", "contents");
+        let result = run("cd /myfile.txt".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert!(stderr.contains("Not a directory"));
+        assert_eq!("/", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_relative_path() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        env.fs.mkdir("/home/user").unwrap();
+        let _ = run("cd /home".to_string(), &mut env).unwrap();
+        let result = run("cd user".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home/user", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_with_dotdot() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        env.fs.mkdir("/home/user").unwrap();
+        let _ = run("cd /home/user".to_string(), &mut env).unwrap();
+        let result = run("cd ..".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_with_dot() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let _ = run("cd /home".to_string(), &mut env).unwrap();
+        let result = run("cd .".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_no_args_uses_home() {
+        let mut env = crate::test_utils::TestEnvBuilder::new()
+            .env_var("HOME", "/home/user")
+            .build();
+        env.fs.mkdir("/home").unwrap();
+        env.fs.mkdir("/home/user").unwrap();
+        let result = run("cd".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home/user", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_no_args_home_not_set() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("cd".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert!(stderr.contains("HOME not set"));
+    }
+
+    #[test]
+    fn cd_affects_subsequent_pwd() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let _ = run("cd /home".to_string(), &mut env).unwrap();
+        let result = run("pwd".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home\n", stdout);
+    }
+
+    #[test]
+    fn cd_in_script() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        env.fs.mkdir("/home/user").unwrap();
+        let result = run_string("cd /home\npwd\ncd user\npwd", &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home\n/home/user\n", stdout);
+    }
+
+    #[test]
+    fn cd_with_and_chain() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let result = run("cd /home && pwd".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home\n", stdout);
+    }
+
+    #[test]
+    fn cd_failure_stops_and_chain() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(
+            "cd /nonexistent && echo should_not_appear".to_string(),
+            &mut env,
+        )
+        .unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert_eq!("", stdout);
+        assert!(stderr.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn cd_in_pipeline_fails() {
+        // cd in a pipeline fails because it's a shell builtin that modifies state
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let result = run("echo hello | cd /home".to_string(), &mut env);
+        println!("result: {:?}", result);
+        // cd in a pipe is an error - it's not a regular command
+        assert!(result.is_err());
+        // cwd should be unchanged
+        assert_eq!("/", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_later_in_and_chain() {
+        // cd can appear later in a && chain
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let result = run("echo hello && cd /home && pwd".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n/home\n", stdout);
+        assert_eq!("/home", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_later_in_or_chain() {
+        // cd can appear in || chain when previous command fails
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let result = run("false || cd /home".to_string(), &mut env).unwrap();
+        let stderr = env.stderr.into_string();
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("/home", env.cwd.as_str());
+    }
+
+    #[test]
+    fn cd_later_in_semicolon_chain() {
+        // cd can appear after semicolon
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.mkdir("/home").unwrap();
+        let result = run("echo first ; cd /home ; pwd".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("first\n/home\n", stdout);
+        assert_eq!("/home", env.cwd.as_str());
     }
 }

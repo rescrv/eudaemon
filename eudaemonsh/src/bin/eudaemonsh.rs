@@ -22,6 +22,7 @@ use utf8path::Path;
 use eudaemonsh::Environment;
 use eudaemonsh::FileBackedEudaemonFilesystem;
 use eudaemonsh::FileLfsExt;
+use eudaemonsh::Filesystem;
 use eudaemonsh::sh;
 
 /// Returns the current time in milliseconds since UNIX epoch.
@@ -52,6 +53,12 @@ fn main() {
         }
     };
 
+    // Ensure the home directory exists.
+    if let Err(e) = fs.mkdir_all("/home/assistant") {
+        eprintln!("eudaemonsh: failed to create home directory: {:?}", e);
+        std::process::exit(1);
+    }
+
     let mut env: Environment<std::io::Stdin, std::io::Stdout, std::io::Stderr, _> = Environment {
         stdin: std::io::stdin(),
         stdout: std::io::stdout(),
@@ -61,14 +68,14 @@ fn main() {
             ("COLUMNS".to_string(), "120".to_string()),
             ("HOME".to_string(), "/home/assistant".to_string()),
             ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-            ("PWD".to_string(), "/".to_string()),
+            ("PWD".to_string(), "/home/assistant".to_string()),
             ("SHELL".to_string(), "eudaemonsh".to_string()),
             ("TMPDIR".to_string(), "/tmp".to_string()),
             ("USER".to_string(), "assistant".to_string()),
         ]),
         vars: HashMap::new(),
         args: vec!["/bin/eudaemonsh".to_string()],
-        cwd: Path::from("/"),
+        cwd: Path::from("/home/assistant"),
         exit_signaled: Arc::new(AtomicBool::new(false)),
     };
 
