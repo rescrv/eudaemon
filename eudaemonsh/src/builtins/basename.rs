@@ -3,7 +3,7 @@
 use getopts::Options;
 use utf8path::Path;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -26,9 +26,9 @@ fn build_options() -> Options {
 /// it is removed from the result.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();

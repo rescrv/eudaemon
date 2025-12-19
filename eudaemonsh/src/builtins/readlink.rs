@@ -4,7 +4,7 @@ use getopts::Options;
 use utf8path::Component;
 use utf8path::Path;
 
-use crate::{Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, FileType, Filesystem, StdioIn, StdioOut};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -113,9 +113,9 @@ fn canonicalize_components<FS: Filesystem>(
 /// is not printed.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -188,11 +188,11 @@ mod tests {
     use super::*;
     use crate::TestFilesystemExt;
     use crate::test_utils::{TestEnvBuilder, TestFilesystem};
-    use crate::{StringStderr, StringStdin, StringStdout};
+    use crate::{StringStdioIn, StringStdioOut};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         let env = TestEnvBuilder::new().args(args).cwd("/home/user").build();
         env.fs.add_directory("/home");
         env.fs.add_directory("/home/user");

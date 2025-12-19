@@ -1,6 +1,6 @@
 //! The yes utility: be repetitively affirmative.
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// Default number of lines to output when no limit is specified.
 const DEFAULT_COUNT: u64 = 1000;
@@ -14,9 +14,9 @@ const DEFAULT_COUNT: u64 = 1000;
 /// For safety in a virtual shell environment, defaults to 1000 lines.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let expletive = if env.args.len() > 1 {

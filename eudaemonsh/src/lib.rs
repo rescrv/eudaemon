@@ -23,15 +23,14 @@ pub use eudaemonty::FileMetadata;
 pub use eudaemonty::FileType;
 pub use eudaemonty::Filesystem;
 
-pub use eudaemonty::FileStdout;
+pub use eudaemonty::FileAppendStdioOut;
+pub use eudaemonty::FileStdioOut;
 pub use eudaemonty::PipeReader;
 pub use eudaemonty::PipeWriter;
-pub use eudaemonty::Stderr;
-pub use eudaemonty::Stdin;
-pub use eudaemonty::Stdout;
-pub use eudaemonty::StringStderr;
-pub use eudaemonty::StringStdin;
-pub use eudaemonty::StringStdout;
+pub use eudaemonty::StdioIn;
+pub use eudaemonty::StdioOut;
+pub use eudaemonty::StringStdioIn;
+pub use eudaemonty::StringStdioOut;
 pub use eudaemonty::TimeSpec;
 pub use eudaemonty::mkpipe;
 
@@ -97,9 +96,9 @@ impl From<eudaemonty::Error> for Error {
 /// before passing snapshots to child commands.
 pub struct Environment<SI, SO, SE, FS>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     /// Standard input.
@@ -126,9 +125,9 @@ where
 
 impl<SI, SO, SE, FS> Environment<SI, SO, SE, FS>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     /// Duplicate the environment.
@@ -188,9 +187,9 @@ impl std::fmt::Display for ExitCode {
 #[allow(clippy::type_complexity)]
 pub struct Command<SI, SO, SE, FS>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     env: Environment<SI, SO, SE, FS>,
@@ -199,9 +198,9 @@ where
 
 impl<SI, SO, SE, FS> Command<SI, SO, SE, FS>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     /// Create a new command from a binary name and environment.
@@ -376,9 +375,8 @@ pub mod test_utils {
     use crate::Environment;
     use crate::EudaemonFilesystem;
     use crate::MemoryLfsExt;
-    use crate::StringStderr;
-    use crate::StringStdin;
-    use crate::StringStdout;
+    use crate::StringStdioIn;
+    use crate::StringStdioOut;
 
     /// Time source function that always returns zero (for deterministic tests).
     fn zero_time() -> i64 {
@@ -459,7 +457,9 @@ pub mod test_utils {
         }
 
         /// Build the test environment.
-        pub fn build(self) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+        pub fn build(
+            self,
+        ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
             let fs = EudaemonFilesystem::new_memory(
                 self.fs_size_blocks * 4096,
                 DeviceId::new(1),
@@ -468,9 +468,9 @@ pub mod test_utils {
             .expect("failed to create EudaemonFilesystem for test");
 
             Environment {
-                stdin: StringStdin::new(&self.stdin),
-                stdout: StringStdout::new(),
-                stderr: StringStderr::new(),
+                stdin: StringStdioIn::new(&self.stdin),
+                stdout: StringStdioOut::new(),
+                stderr: StringStdioOut::new(),
                 fs,
                 env: self.env_vars,
                 vars: HashMap::new(),
@@ -487,7 +487,7 @@ pub mod test_utils {
     /// a test environment with only command-line arguments.
     pub fn make_test_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         TestEnvBuilder::new().args(args).build()
     }
 
@@ -497,7 +497,7 @@ pub mod test_utils {
     pub fn make_test_env_with_stdin(
         args: Vec<&str>,
         stdin: &str,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         TestEnvBuilder::new().args(args).stdin(stdin).build()
     }
 }

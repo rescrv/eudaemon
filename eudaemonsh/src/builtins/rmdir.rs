@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -12,9 +12,9 @@ fn build_options() -> Options {
 /// The rmdir builtin: remove empty directories.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -72,9 +72,9 @@ fn rm_path<SI, SO, SE, FS>(
     verbose: bool,
 ) -> Result<(), ()>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut path = path.trim_end_matches('/').to_string();
@@ -120,11 +120,11 @@ fn fs_error_message(e: &FsError) -> String {
 mod tests {
     use super::*;
     use crate::test_utils::{TestEnvBuilder, TestFilesystem};
-    use crate::{StringStderr, StringStdin, StringStdout};
+    use crate::{StringStdioIn, StringStdioOut};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         TestEnvBuilder::new().args(args).build()
     }
 

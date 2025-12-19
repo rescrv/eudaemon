@@ -1,6 +1,6 @@
 //! The uname builtin: print eudaemonsh system identification.
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// Synshell version, pulled from Cargo.toml at compile time.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -23,9 +23,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// This command is designed for an LLM to identify the eudaemonsh environment it's operating in.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut args = env.args[1..].iter().peekable();

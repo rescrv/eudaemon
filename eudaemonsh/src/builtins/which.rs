@@ -1,6 +1,6 @@
 //! The which builtin: locate a command.
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// Known command paths for builtins.
 const KNOWN_COMMANDS: &[(&str, &str)] = &[
@@ -72,9 +72,9 @@ const KNOWN_COMMANDS: &[(&str, &str)] = &[
 /// Returns 0 if all commands are found, 1 if one or more are not found.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut args = env.args[1..].iter().peekable();

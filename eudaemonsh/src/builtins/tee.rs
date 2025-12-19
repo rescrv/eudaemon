@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -16,9 +16,9 @@ fn build_options() -> Options {
 /// The tee builtin: duplicate standard input to stdout and zero or more files.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();

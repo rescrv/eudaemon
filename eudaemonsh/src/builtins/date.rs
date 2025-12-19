@@ -12,9 +12,8 @@ use crate::Environment;
 use crate::Error;
 use crate::ExitCode;
 use crate::Filesystem;
-use crate::Stderr;
-use crate::Stdin;
-use crate::Stdout;
+use crate::StdioIn;
+use crate::StdioOut;
 
 /// ISO 8601 format precision levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,9 +105,9 @@ fn build_options() -> Options {
 /// The date builtin: display date and time.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();

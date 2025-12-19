@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, FsError, Stderr, Stdin, Stdout,
+    Environment, Error, ExitCode, FileType, Filesystem, FsError, StdioIn, StdioOut,
     fs_error_message,
 };
 
@@ -62,9 +62,9 @@ struct CpConfig {
 /// The cp builtin: copy files.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -201,9 +201,9 @@ fn is_source_dir<SI, SO, SE, FS>(
     config: &CpConfig,
 ) -> bool
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let stat = if config.follow_cli_symlinks || config.follow_all_symlinks {
@@ -223,9 +223,9 @@ fn copy_file_to_file<SI, SO, SE, FS>(
     target: &str,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Check if source exists and get its type
@@ -296,9 +296,9 @@ fn copy_to_dir<SI, SO, SE, FS>(
     target_is_dir: bool,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Get source stat
@@ -352,9 +352,9 @@ fn copy_tree<SI, SO, SE, FS>(
     target: &str,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // BFS traversal to copy directory tree
@@ -487,9 +487,9 @@ fn do_copy<SI, SO, SE, FS>(
     target: &str,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     if config.link {
@@ -539,11 +539,11 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestEnvBuilder, TestFilesystem};
-    use crate::{StringStderr, StringStdin, StringStdout};
+    use crate::{StringStdioIn, StringStdioOut};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         TestEnvBuilder::new().args(args).build()
     }
 

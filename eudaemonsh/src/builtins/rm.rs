@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, FsError, Stderr, Stdin, Stdout,
+    Environment, Error, ExitCode, FileType, Filesystem, FsError, StdioIn, StdioOut,
     fs_error_message,
 };
 
@@ -24,9 +24,9 @@ fn build_options() -> Options {
 /// The rm builtin: remove files and directories.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let prog_name = env
@@ -113,9 +113,9 @@ fn remove_path<SI, SO, SE, FS>(
     opts: &RmOptions,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Strip trailing slashes for consistency (but preserve "/" detection already done)
@@ -158,9 +158,9 @@ fn remove_file<SI, SO, SE, FS>(
     opts: &RmOptions,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     env.fs.unlink(path).map_err(|e| {
@@ -184,9 +184,9 @@ fn remove_single_dir<SI, SO, SE, FS>(
     opts: &RmOptions,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     env.fs.rmdir(path).map_err(|e| fs_error_message(&e))?;
@@ -205,9 +205,9 @@ fn remove_tree<SI, SO, SE, FS>(
     opts: &RmOptions,
 ) -> Result<(), String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Post-order traversal: collect all paths, then remove in reverse order
@@ -287,9 +287,9 @@ where
 /// Handle the unlink command mode.
 fn unlink_mode<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let args: Vec<&str> = env.args.iter().skip(1).map(|s| s.as_str()).collect();
@@ -348,11 +348,11 @@ fn is_not_found(e: &FsError) -> bool {
 mod tests {
     use super::*;
     use crate::test_utils::{TestEnvBuilder, TestFilesystem};
-    use crate::{StringStderr, StringStdin, StringStdout};
+    use crate::{StringStdioIn, StringStdioOut};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         TestEnvBuilder::new().args(args).build()
     }
 

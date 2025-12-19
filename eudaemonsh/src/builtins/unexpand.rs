@@ -3,7 +3,7 @@
 use getopts::Options;
 
 use super::expand::TabStops;
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -20,9 +20,9 @@ fn build_options() -> Options {
 /// The unexpand builtin: convert spaces to tabs.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -72,9 +72,9 @@ fn unexpand_stdin<SI, SO, SE, FS>(
     all: bool,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     while let Some(line) = env.stdin.read_line()? {
@@ -91,9 +91,9 @@ fn unexpand_file<SI, SO, SE, FS>(
     all: bool,
 ) -> Result<(), i8>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match env.fs.read_to_string(path) {

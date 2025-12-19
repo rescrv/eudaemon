@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Default line width.
 const DEFAULT_WIDTH: usize = 80;
@@ -42,9 +42,9 @@ fn build_options() -> Options {
 /// The fold builtin: wrap lines to a specified width.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -101,9 +101,9 @@ fn fold_stdin<SI, SO, SE, FS>(
     opts: &FoldOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     while let Some(line) = env.stdin.read_line()? {
@@ -118,9 +118,9 @@ fn fold_file<SI, SO, SE, FS>(
     opts: &FoldOptions,
 ) -> Result<(), i8>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match env.fs.read_to_string(path) {
@@ -146,9 +146,9 @@ fn fold_line<SI, SO, SE, FS>(
     opts: &FoldOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     if opts.bytes {
@@ -165,9 +165,9 @@ fn fold_line_bytes<SI, SO, SE, FS>(
     opts: &FoldOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let bytes = line.as_bytes();
@@ -218,9 +218,9 @@ fn fold_line_columns<SI, SO, SE, FS>(
     opts: &FoldOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let chars: Vec<char> = line.chars().collect();

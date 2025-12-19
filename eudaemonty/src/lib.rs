@@ -2,7 +2,7 @@
 //!
 //! This crate provides the core abstractions used across eudaemon crates:
 //! - [`Filesystem`] trait for filesystem operations
-//! - [`Stdin`], [`Stdout`], [`Stderr`] traits for I/O
+//! - [`StdioIn`], [`StdioOut`] traits for I/O
 //! - Common types like [`FileType`], [`DirEntry`], [`TimeSpec`]
 
 #![deny(missing_docs)]
@@ -37,17 +37,17 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-////////////////////////////////////////////// Stdin ///////////////////////////////////////////////
+////////////////////////////////////////////// StdioIn //////////////////////////////////////////////
 
 /// A trait for types that can serve as standard input.
-pub trait Stdin {
-    /// Duplicate the stdin handle.
+pub trait StdioIn {
+    /// Duplicate the handle.
     fn dup(&self) -> Self;
-    /// Read a line from stdin, returning None at EOF.
+    /// Read a line, returning None at EOF.
     fn read_line(&self) -> Result<Option<String>, Error>;
 }
 
-impl Stdin for () {
+impl StdioIn for () {
     fn dup(&self) -> Self {}
 
     fn read_line(&self) -> Result<Option<String>, Error> {
@@ -55,19 +55,19 @@ impl Stdin for () {
     }
 }
 
-/// A stdin backed by a vector of lines.
+/// An input backed by a vector of lines.
 #[derive(Clone)]
-pub struct StringStdin(Rc<RefCell<Vec<String>>>);
+pub struct StringStdioIn(Rc<RefCell<Vec<String>>>);
 
-impl StringStdin {
-    /// Create a new StringStdin from a string, splitting on newlines.
+impl StringStdioIn {
+    /// Create a new StringStdioIn from a string, splitting on newlines.
     pub fn new(input: &str) -> Self {
         let lines: Vec<String> = input.lines().rev().map(|s| s.to_string()).collect();
         Self(Rc::new(RefCell::new(lines)))
     }
 }
 
-impl Stdin for StringStdin {
+impl StdioIn for StringStdioIn {
     fn dup(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
@@ -77,7 +77,7 @@ impl Stdin for StringStdin {
     }
 }
 
-impl Stdin for std::io::Stdin {
+impl StdioIn for std::io::Stdin {
     fn dup(&self) -> Self {
         std::io::stdin()
     }
@@ -96,22 +96,22 @@ impl Stdin for std::io::Stdin {
     }
 }
 
-////////////////////////////////////////////// Stdout //////////////////////////////////////////////
+////////////////////////////////////////////// StdioOut /////////////////////////////////////////////
 
-/// A trait for types that can serve as standard output.
-pub trait Stdout {
-    /// Duplicate the stdout handle.
+/// A trait for types that can serve as output (stdout or stderr).
+pub trait StdioOut {
+    /// Duplicate the handle.
     fn dup(&self) -> Self;
-    /// Write a string to stdout.
+    /// Write a string.
     fn write_str(&self, s: &str) -> Result<(), Error>;
-    /// Write a string followed by a newline to stdout.
+    /// Write a string followed by a newline.
     fn write_line(&self, s: &str) -> Result<(), Error> {
         self.write_str(s)?;
         self.write_str("\n")
     }
 }
 
-impl Stdout for () {
+impl StdioOut for () {
     fn dup(&self) -> Self {}
 
     fn write_str(&self, _s: &str) -> Result<(), Error> {
@@ -119,12 +119,12 @@ impl Stdout for () {
     }
 }
 
-/// A stdout that collects output into a string.
+/// An output that collects into a string.
 #[derive(Clone)]
-pub struct StringStdout(Rc<RefCell<String>>);
+pub struct StringStdioOut(Rc<RefCell<String>>);
 
-impl StringStdout {
-    /// Create a new empty StringStdout.
+impl StringStdioOut {
+    /// Create a new empty StringStdioOut.
     pub fn new() -> Self {
         Self(Rc::new(RefCell::new(String::new())))
     }
@@ -135,13 +135,13 @@ impl StringStdout {
     }
 }
 
-impl Default for StringStdout {
+impl Default for StringStdioOut {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Stdout for StringStdout {
+impl StdioOut for StringStdioOut {
     fn dup(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
@@ -152,7 +152,7 @@ impl Stdout for StringStdout {
     }
 }
 
-impl Stdout for std::io::Stdout {
+impl StdioOut for std::io::Stdout {
     fn dup(&self) -> Self {
         std::io::stdout()
     }
@@ -162,15 +162,25 @@ impl Stdout for std::io::Stdout {
     }
 }
 
-/// A stdout that writes to a file via a filesystem.
-pub struct FileStdout<FS: Filesystem> {
+impl StdioOut for std::io::Stderr {
+    fn dup(&self) -> Self {
+        std::io::stderr()
+    }
+
+    fn write_str(&self, s: &str) -> Result<(), Error> {
+        self.lock().write_all(s.as_bytes()).map_err(Error::Io)
+    }
+}
+
+/// An output that writes to a file via a filesystem (truncating).
+pub struct FileStdioOut<FS: Filesystem> {
     fs: FS,
     path: String,
     buffer: Arc<Mutex<String>>,
 }
 
-impl<FS: Filesystem> FileStdout<FS> {
-    /// Create a new FileStdout that writes to the given path.
+impl<FS: Filesystem> FileStdioOut<FS> {
+    /// Create a new FileStdioOut that writes to the given path.
     ///
     /// The file is truncated when created and all output is buffered.
     /// The buffer is flushed to the file when the last reference is dropped.
@@ -189,7 +199,7 @@ impl<FS: Filesystem> FileStdout<FS> {
     }
 }
 
-impl<FS: Filesystem> Stdout for FileStdout<FS> {
+impl<FS: Filesystem> StdioOut for FileStdioOut<FS> {
     fn dup(&self) -> Self {
         Self {
             fs: self.fs.dup(),
@@ -204,7 +214,7 @@ impl<FS: Filesystem> Stdout for FileStdout<FS> {
     }
 }
 
-impl<FS: Filesystem> Drop for FileStdout<FS> {
+impl<FS: Filesystem> Drop for FileStdioOut<FS> {
     fn drop(&mut self) {
         // Only flush if this is the last reference to the buffer
         if Arc::strong_count(&self.buffer) == 1 {
@@ -213,75 +223,39 @@ impl<FS: Filesystem> Drop for FileStdout<FS> {
     }
 }
 
-////////////////////////////////////////////// Stderr //////////////////////////////////////////////
+/// An output that appends to a file via a filesystem.
+///
+/// Unlike `FileStdioOut`, this writes immediately on each `write_str` call
+/// using `append_string`, so output is appended to the file incrementally.
+pub struct FileAppendStdioOut<FS: Filesystem> {
+    fs: FS,
+    path: String,
+}
 
-/// A trait for types that can serve as standard error.
-pub trait Stderr {
-    /// Duplicate the stderr handle.
-    fn dup(&self) -> Self;
-    /// Write a string to stderr.
-    fn write_str(&self, s: &str) -> Result<(), Error>;
-    /// Write a string followed by a newline to stderr.
-    fn write_line(&self, s: &str) -> Result<(), Error> {
-        self.write_str(s)?;
-        self.write_str("\n")
+impl<FS: Filesystem> FileAppendStdioOut<FS> {
+    /// Create a new FileAppendStdioOut that appends to the given path.
+    pub fn new(fs: FS, path: String) -> Self {
+        Self { fs, path }
     }
 }
 
-impl Stderr for () {
-    fn dup(&self) -> Self {}
-
-    fn write_str(&self, _s: &str) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-/// A stderr that collects output into a string.
-#[derive(Clone)]
-pub struct StringStderr(Rc<RefCell<String>>);
-
-impl StringStderr {
-    /// Create a new empty StringStderr.
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(String::new())))
-    }
-
-    /// Get the collected output as a string.
-    pub fn into_string(&self) -> String {
-        self.0.borrow().clone()
-    }
-}
-
-impl Default for StringStderr {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Stderr for StringStderr {
+impl<FS: Filesystem> StdioOut for FileAppendStdioOut<FS> {
     fn dup(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self {
+            fs: self.fs.dup(),
+            path: self.path.clone(),
+        }
     }
 
     fn write_str(&self, s: &str) -> Result<(), Error> {
-        self.0.borrow_mut().push_str(s);
-        Ok(())
-    }
-}
-
-impl Stderr for std::io::Stderr {
-    fn dup(&self) -> Self {
-        std::io::stderr()
-    }
-
-    fn write_str(&self, s: &str) -> Result<(), Error> {
-        self.lock().write_all(s.as_bytes()).map_err(Error::Io)
+        self.fs.append_string(&self.path, s)
     }
 }
 
 /////////////////////////////////////////////// Pipe /////////////////////////////////////////////////
 
 use std::collections::VecDeque;
+use std::sync::Condvar;
 
 /// Internal state for a pipe.
 struct PipeInner {
@@ -293,116 +267,129 @@ struct PipeInner {
     writer_count: usize,
 }
 
+/// Shared state between pipe reader and writer, including condvar for blocking.
+struct PipeShared {
+    /// The pipe's internal state, protected by a mutex.
+    inner: Mutex<PipeInner>,
+    /// Condition variable to wake up blocked readers.
+    condvar: Condvar,
+}
+
 /// Create a new pipe, returning the read and write ends.
 ///
-/// The write end (`PipeWriter`) implements `Stdout` and `Stderr`.
-/// The read end (`PipeReader`) implements `Stdin`.
+/// The write end (`PipeWriter`) implements `StdioOut`.
+/// The read end (`PipeReader`) implements `StdioIn`.
 ///
 /// When all `PipeWriter` handles are closed, the reader will receive EOF
 /// after draining any remaining buffered data.
 pub fn mkpipe() -> (PipeReader, PipeWriter) {
-    let inner = Arc::new(Mutex::new(PipeInner {
-        lines: VecDeque::new(),
-        partial: String::new(),
-        writer_count: 1,
-    }));
+    let shared = Arc::new(PipeShared {
+        inner: Mutex::new(PipeInner {
+            lines: VecDeque::new(),
+            partial: String::new(),
+            writer_count: 1,
+        }),
+        condvar: Condvar::new(),
+    });
     (
         PipeReader {
-            inner: Arc::clone(&inner),
+            shared: Arc::clone(&shared),
         },
-        PipeWriter { inner },
+        PipeWriter { shared },
     )
 }
 
 /// The read end of a pipe.
 ///
-/// Implements `Stdin` for reading data written to the corresponding `PipeWriter`.
+/// Implements `StdioIn` for reading data written to the corresponding `PipeWriter`.
 /// Returns EOF (None) when the buffer is empty and all writers have been closed.
+/// Blocks if no data is available but writers are still active.
 #[derive(Clone)]
 pub struct PipeReader {
-    inner: Arc<Mutex<PipeInner>>,
+    shared: Arc<PipeShared>,
 }
 
-impl Stdin for PipeReader {
+impl StdioIn for PipeReader {
     fn dup(&self) -> Self {
         Self {
-            inner: Arc::clone(&self.inner),
+            shared: Arc::clone(&self.shared),
         }
     }
 
     fn read_line(&self) -> Result<Option<String>, Error> {
-        let mut inner = self.inner.lock().unwrap();
-        // Try to return a complete line first
-        if let Some(line) = inner.lines.pop_front() {
-            return Ok(Some(line));
-        }
-        // No complete lines; check if pipe is closed
-        if inner.writer_count == 0 {
-            // Return any remaining partial content as the last line
-            if inner.partial.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(std::mem::take(&mut inner.partial)))
+        let mut inner = self.shared.inner.lock().unwrap();
+        loop {
+            // Try to return a complete line first
+            if let Some(line) = inner.lines.pop_front() {
+                return Ok(Some(line));
             }
-        } else {
-            // Writers still active but no data available
-            Ok(None)
+            // No complete lines; check if pipe is closed
+            if inner.writer_count == 0 {
+                // Return any remaining partial content as the last line
+                if inner.partial.is_empty() {
+                    return Ok(None);
+                } else {
+                    return Ok(Some(std::mem::take(&mut inner.partial)));
+                }
+            }
+            // Writers still active but no data available - block until notified
+            inner = self.shared.condvar.wait(inner).unwrap();
         }
     }
 }
 
 /// The write end of a pipe.
 ///
-/// Implements `Stdout` and `Stderr` for writing data to be read by the corresponding `PipeReader`.
+/// Implements `StdioOut` for writing data to be read by the corresponding `PipeReader`.
 /// When all `PipeWriter` handles are closed (via `close()` or dropped), the reader receives EOF.
 pub struct PipeWriter {
-    inner: Arc<Mutex<PipeInner>>,
+    shared: Arc<PipeShared>,
 }
 
 impl Clone for PipeWriter {
     fn clone(&self) -> Self {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.shared.inner.lock().unwrap();
         inner.writer_count += 1;
         drop(inner);
         Self {
-            inner: Arc::clone(&self.inner),
+            shared: Arc::clone(&self.shared),
         }
     }
 }
 
 impl Drop for PipeWriter {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.shared.inner.lock().unwrap();
         inner.writer_count = inner.writer_count.saturating_sub(1);
+        // Notify readers that a writer has closed (they may now see EOF)
+        drop(inner);
+        self.shared.condvar.notify_all();
     }
 }
 
-impl Stdout for PipeWriter {
+impl StdioOut for PipeWriter {
     fn dup(&self) -> Self {
         self.clone()
     }
 
     fn write_str(&self, s: &str) -> Result<(), Error> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.shared.inner.lock().unwrap();
+        let mut had_newline = false;
         for ch in s.chars() {
             if ch == '\n' {
                 let line = std::mem::take(&mut inner.partial);
                 inner.lines.push_back(line);
+                had_newline = true;
             } else {
                 inner.partial.push(ch);
             }
         }
+        // Notify readers if we added complete lines
+        if had_newline {
+            drop(inner);
+            self.shared.condvar.notify_one();
+        }
         Ok(())
-    }
-}
-
-impl Stderr for PipeWriter {
-    fn dup(&self) -> Self {
-        self.clone()
-    }
-
-    fn write_str(&self, s: &str) -> Result<(), Error> {
-        Stdout::write_str(self, s)
     }
 }
 
@@ -1329,45 +1316,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn string_stdin_reads_lines() {
-        let stdin = StringStdin::new("line1\nline2\nline3");
-        assert_eq!(stdin.read_line().unwrap(), Some("line1".to_string()));
-        assert_eq!(stdin.read_line().unwrap(), Some("line2".to_string()));
-        assert_eq!(stdin.read_line().unwrap(), Some("line3".to_string()));
-        assert_eq!(stdin.read_line().unwrap(), None);
-        println!("DEBUG: StringStdin reads lines correctly");
+    fn string_stdio_in_reads_lines() {
+        let input = StringStdioIn::new("line1\nline2\nline3");
+        assert_eq!(input.read_line().unwrap(), Some("line1".to_string()));
+        assert_eq!(input.read_line().unwrap(), Some("line2".to_string()));
+        assert_eq!(input.read_line().unwrap(), Some("line3".to_string()));
+        assert_eq!(input.read_line().unwrap(), None);
+        println!("DEBUG: StringStdioIn reads lines correctly");
     }
 
     #[test]
-    fn string_stdout_collects_output() {
-        let stdout = StringStdout::new();
-        stdout.write_str("hello").unwrap();
-        stdout.write_line(" world").unwrap();
-        assert_eq!(stdout.into_string(), "hello world\n");
-        println!("DEBUG: StringStdout collects output correctly");
+    fn string_stdio_out_collects_output() {
+        let output = StringStdioOut::new();
+        output.write_str("hello").unwrap();
+        output.write_line(" world").unwrap();
+        assert_eq!(output.into_string(), "hello world\n");
+        println!("DEBUG: StringStdioOut collects output correctly");
     }
 
     #[test]
-    fn string_stderr_collects_output() {
-        let stderr = StringStderr::new();
-        stderr.write_str("error: ").unwrap();
-        stderr.write_line("something went wrong").unwrap();
-        assert_eq!(stderr.into_string(), "error: something went wrong\n");
-        println!("DEBUG: StringStderr collects output correctly");
-    }
-
-    #[test]
-    fn unit_stdin_returns_none() {
-        let stdin = ();
-        assert_eq!(stdin.read_line().unwrap(), None);
-        println!("DEBUG: unit stdin returns None");
+    fn unit_stdio_in_returns_none() {
+        let input: () = ();
+        assert_eq!(input.read_line().unwrap(), None);
+        println!("DEBUG: unit StdioIn returns None");
     }
 
     #[test]
     fn pipe_write_then_read() {
         let (reader, writer) = mkpipe();
-        Stdout::write_line(&writer, "hello").unwrap();
-        Stdout::write_line(&writer, "world").unwrap();
+        StdioOut::write_line(&writer, "hello").unwrap();
+        StdioOut::write_line(&writer, "world").unwrap();
         drop(writer);
         assert_eq!(reader.read_line().unwrap(), Some("hello".to_string()));
         assert_eq!(reader.read_line().unwrap(), Some("world".to_string()));
@@ -1378,7 +1356,7 @@ mod tests {
     #[test]
     fn pipe_partial_line_on_close() {
         let (reader, writer) = mkpipe();
-        Stdout::write_str(&writer, "no newline").unwrap();
+        StdioOut::write_str(&writer, "no newline").unwrap();
         drop(writer);
         assert_eq!(reader.read_line().unwrap(), Some("no newline".to_string()));
         assert_eq!(reader.read_line().unwrap(), None);
@@ -1397,14 +1375,14 @@ mod tests {
     fn pipe_multiple_writers() {
         let (reader, writer1) = mkpipe();
         let writer2 = writer1.clone();
-        Stdout::write_line(&writer1, "from writer1").unwrap();
+        StdioOut::write_line(&writer1, "from writer1").unwrap();
         drop(writer1);
         // Reader should not see EOF yet because writer2 is still alive
         assert_eq!(
             reader.read_line().unwrap(),
             Some("from writer1".to_string())
         );
-        Stdout::write_line(&writer2, "from writer2").unwrap();
+        StdioOut::write_line(&writer2, "from writer2").unwrap();
         drop(writer2);
         assert_eq!(
             reader.read_line().unwrap(),
@@ -1417,9 +1395,9 @@ mod tests {
     #[test]
     fn pipe_interleaved_write() {
         let (reader, writer) = mkpipe();
-        Stdout::write_str(&writer, "hel").unwrap();
-        Stdout::write_str(&writer, "lo\nwor").unwrap();
-        Stdout::write_str(&writer, "ld\n").unwrap();
+        StdioOut::write_str(&writer, "hel").unwrap();
+        StdioOut::write_str(&writer, "lo\nwor").unwrap();
+        StdioOut::write_str(&writer, "ld\n").unwrap();
         drop(writer);
         assert_eq!(reader.read_line().unwrap(), Some("hello".to_string()));
         assert_eq!(reader.read_line().unwrap(), Some("world".to_string()));

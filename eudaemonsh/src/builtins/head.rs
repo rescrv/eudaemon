@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout, parse_size};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut, parse_size};
 
 /// Options for the head command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,9 +83,9 @@ fn preprocess_args(args: &[String]) -> Vec<String> {
 /// The head builtin: display first lines of a file.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -183,9 +183,9 @@ fn head_stdin<SI, SO, SE, FS>(
     opts: &HeadOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut contents = String::new();
@@ -202,9 +202,9 @@ fn head_file<SI, SO, SE, FS>(
     opts: &HeadOptions,
 ) -> Result<(), i8>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match env.fs.read_to_string(path) {
@@ -222,9 +222,9 @@ fn head_string<SI, SO, SE, FS>(
     opts: &HeadOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     if let Some(bytes) = opts.bytes {
@@ -241,9 +241,9 @@ fn head_string_lines<SI, SO, SE, FS>(
     count: u64,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut remaining = count as usize;
@@ -263,9 +263,9 @@ fn head_string_bytes<SI, SO, SE, FS>(
     count: u64,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let count = count as usize;

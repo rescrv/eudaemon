@@ -1,6 +1,6 @@
 //! The pwd builtin: print working directory name.
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// The pwd builtin: write the absolute pathname of the current working directory to stdout.
 ///
@@ -15,9 +15,9 @@ use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 /// there are no symbolic links, so -L and -P behave identically.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut args = env.args[1..].iter().peekable();

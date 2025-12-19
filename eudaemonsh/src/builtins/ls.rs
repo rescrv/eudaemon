@@ -3,7 +3,7 @@
 use getopts::Options;
 
 use crate::{
-    DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout,
+    DirEntry, Environment, Error, ExitCode, FileType, Filesystem, StdioIn, StdioOut,
     format_human_size, resolve_path,
 };
 
@@ -67,9 +67,9 @@ fn build_options() -> Options {
 /// If no operands are given, the contents of the current directory are displayed.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -236,9 +236,9 @@ fn list_directory<SI, SO, SE, FS>(
     exit_code: &mut i8,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let resolved = resolve_path(env.cwd.as_str(), path);
@@ -304,9 +304,9 @@ fn print_entry<SI, SO, SE, FS>(
     opts: &LsOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut output = String::new();

@@ -4,7 +4,7 @@ use getopts::Options;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Options for the shuf command.
 #[derive(Clone, Debug, Default)]
@@ -74,9 +74,9 @@ fn parse_input_range(s: &str) -> Option<(i64, i64)> {
 /// The shuf builtin: generate random permutations.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -219,9 +219,9 @@ fn collect_input<SI, SO, SE, FS>(
     opts: &ShufOptions,
 ) -> Result<Vec<String>, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Input range mode

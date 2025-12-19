@@ -3,7 +3,7 @@
 use getopts::Options;
 use regex::Regex;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Default number of lines per output file.
 const DEFAULT_LINES: u64 = 1000;
@@ -174,9 +174,9 @@ impl FileNameGenerator {
 /// The split builtin: split a file into pieces.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -349,9 +349,9 @@ fn split_by_lines<SI, SO, SE, FS>(
     options: &SplitOptions,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut name_gen = FileNameGenerator::new(
@@ -423,9 +423,9 @@ fn split_by_bytes<SI, SO, SE, FS>(
     options: &SplitOptions,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut name_gen = FileNameGenerator::new(
@@ -475,9 +475,9 @@ fn split_into_chunks<SI, SO, SE, FS>(
     options: &SplitOptions,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let total_bytes = input.len() as u64;
@@ -503,9 +503,9 @@ fn split_by_pattern<SI, SO, SE, FS>(
     options: &SplitOptions,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut name_gen = FileNameGenerator::new(

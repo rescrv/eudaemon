@@ -2,7 +2,7 @@
 //!
 //! Evaluates conditional expressions and returns 0 (true) or 1 (false).
 
-use crate::{Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, FileType, Filesystem, StdioIn, StdioOut};
 
 /// Token types for the test grammar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -552,9 +552,9 @@ fn int_cmp(s1: &str, s2: &str) -> Option<std::cmp::Ordering> {
 /// Returns 0 if the expression is true, 1 if false, >1 on error.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let args = &env.args;
@@ -610,7 +610,7 @@ mod tests {
     use super::*;
     use crate::TestFilesystemExt;
     use crate::test_utils::{TestFilesystem, make_test_env};
-    use crate::{MemoryLfsExt, StringStderr, StringStdin, StringStdout};
+    use crate::{MemoryLfsExt, StringStdioIn, StringStdioOut};
 
     use eudaemonfs::DeviceId;
 
@@ -630,11 +630,11 @@ mod tests {
     fn make_env_with_fs(
         args: Vec<&str>,
         fs: TestFilesystem,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         Environment {
-            stdin: StringStdin::new(""),
-            stdout: StringStdout::new(),
-            stderr: StringStderr::new(),
+            stdin: StringStdioIn::new(""),
+            stdout: StringStdioOut::new(),
+            stderr: StringStdioOut::new(),
             fs,
             env: std::collections::HashMap::new(),
             vars: std::collections::HashMap::new(),

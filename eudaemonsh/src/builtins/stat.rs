@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout};
+use crate::{DirEntry, Environment, Error, ExitCode, FileType, Filesystem, StdioIn, StdioOut};
 
 /// Default format string.
 const DEF_FORMAT: &str = "%d %i %Sp %l %Su %Sg %r %z \"%Sa\" \"%Sm\" \"%Sc\" %k %b %N";
@@ -262,9 +262,9 @@ fn process_format<SI, SO, SE, FS>(
     opts: &StatOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut output = String::new();
@@ -569,9 +569,9 @@ fn format_symlink_target<SI, SO, SE, FS>(
     fmt: OutputFormat,
 ) -> String
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     if file_type != FileType::Symlink {
@@ -636,9 +636,9 @@ fn apply_width(
 /// If no operands are given, displays information about stdin (not supported).
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();

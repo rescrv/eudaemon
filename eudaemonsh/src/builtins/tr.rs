@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// Options for the tr command.
 #[derive(Clone, Debug, Default)]
@@ -367,9 +367,9 @@ fn build_options() -> Options {
 /// The tr builtin: translate, squeeze, and/or delete characters.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -460,9 +460,9 @@ fn tr_delete<SI, SO, SE, FS>(
     set1: &CharSet,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let delete_set = set1.to_set();
@@ -487,9 +487,9 @@ fn tr_delete_squeeze<SI, SO, SE, FS>(
     set2: &CharSet,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let delete_set = set1.to_set();
@@ -521,9 +521,9 @@ fn tr_squeeze_only<SI, SO, SE, FS>(
     set1: &CharSet,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let squeeze_set = set1.to_set();
@@ -553,9 +553,9 @@ fn tr_translate<SI, SO, SE, FS>(
     squeeze: bool,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut map = std::collections::HashMap::new();

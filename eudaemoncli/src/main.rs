@@ -29,9 +29,8 @@ use eudaemonsh::Environment;
 use eudaemonsh::EudaemonFilesystem;
 use eudaemonsh::Filesystem;
 use eudaemonsh::MemoryLfsExt;
-use eudaemonsh::StringStderr;
-use eudaemonsh::StringStdin;
-use eudaemonsh::StringStdout;
+use eudaemonsh::StringStdioIn;
+use eudaemonsh::StringStdioOut;
 use eudaemonsh::sh;
 
 use utf8path::Path;
@@ -453,9 +452,9 @@ impl Agent for EudaemonAgent {
         }
 
         // Create fresh stdin/stdout/stderr for this command
-        let stdin = StringStdin::new("");
-        let stdout = StringStdout::new();
-        let stderr = StringStderr::new();
+        let stdin = StringStdioIn::new("");
+        let stdout = StringStdioOut::new();
+        let stderr = StringStdioOut::new();
 
         // Create an environment using the persistent shell state
         let mut env = {
@@ -473,8 +472,8 @@ impl Agent for EudaemonAgent {
             }
         };
 
-        // Run the command
-        let exit_code = sh::run(command.to_string(), &mut env)
+        // Run the command (use run_string to handle multi-line scripts with newlines)
+        let exit_code = sh::run_string(command, &mut env)
             .map_err(|e| std::io::Error::other(format!("shell error: {:?}", e)))?;
 
         // Persist the shell state for the next invocation

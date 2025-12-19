@@ -4,8 +4,8 @@ use shvar::ExpandOptions;
 use utf8path::Path;
 
 use crate::{
-    Command, Environment, Error, ExitCode, FileStdout, Filesystem, FsError, PipeReader, Stderr,
-    Stdin, Stdout, mkpipe, resolve_path,
+    Command, Environment, Error, ExitCode, FileAppendStdioOut, FileStdioOut, Filesystem, FsError,
+    PipeReader, StdioIn, StdioOut, mkpipe, resolve_path,
 };
 
 /// Options for shell variable expansion.
@@ -41,9 +41,9 @@ fn expand(
 ///   sh script_file [argument...]
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     let args = &env.args;
@@ -82,9 +82,9 @@ pub fn run_script<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     let contents = match env.fs.read_to_string(path) {
@@ -104,9 +104,9 @@ pub fn run_string<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     let mut last_exit = ExitCode::from(0);
@@ -130,9 +130,9 @@ pub fn run<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     let expanded = expand(&command, &env.vars, &env.env)?;
@@ -154,9 +154,9 @@ fn handle_set<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     for arg in args.iter().skip(1) {
@@ -179,9 +179,9 @@ fn handle_unset<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     for name in args.iter().skip(1) {
@@ -203,9 +203,9 @@ fn handle_export<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     for arg in args.iter().skip(1) {
@@ -235,9 +235,9 @@ fn handle_cd<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let target = if args.len() > 1 {
@@ -284,13 +284,42 @@ enum ChainOp {
     Seq,
 }
 
+/// Type of output redirection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RedirectMode {
+    /// Truncate and write (>).
+    Truncate,
+    /// Append (>>).
+    Append,
+}
+
+/// Output redirection specification.
+#[derive(Debug)]
+struct OutputRedirect {
+    /// The file to redirect to.
+    target: String,
+    /// Whether to truncate or append.
+    mode: RedirectMode,
+}
+
+/// Stderr redirection specification.
+#[derive(Debug)]
+enum StderrRedirect {
+    /// Redirect stderr to a file (2> or 2>>).
+    File(OutputRedirect),
+    /// Redirect stderr to stdout (2>&1).
+    ToStdout,
+}
+
 /// A pipeline is a sequence of commands connected by pipes.
 #[derive(Debug)]
 struct Pipeline {
     /// Commands in the pipeline, executed left-to-right with stdout->stdin connections.
     commands: Vec<Vec<String>>,
-    /// Output redirection target, if any (from `>`).
-    redirect_stdout: Option<String>,
+    /// Output redirection target, if any (from `>` or `>>`).
+    redirect_stdout: Option<OutputRedirect>,
+    /// Stderr redirection, if any (from `2>`, `2>>`, or `2>&1`).
+    redirect_stderr: Option<StderrRedirect>,
 }
 
 /// A pipeline in a chain with its following operator.
@@ -379,37 +408,424 @@ fn parse_pipeline(args: &[String]) -> Result<Pipeline, Error> {
         None
     };
 
+    // Extract stderr redirection from the last command
+    let redirect_stderr = if let Some(last_cmd) = commands.last_mut() {
+        extract_stderr_redirection(last_cmd)?
+    } else {
+        None
+    };
+
     Ok(Pipeline {
         commands,
         redirect_stdout,
+        redirect_stderr,
     })
 }
 
-/// Extract output redirection (`>` or `> file`) from command arguments.
+/// Extract output redirection from command arguments.
 ///
-/// Returns the redirection target if found, and removes the `>` and target from args.
-fn extract_output_redirection(args: &mut Vec<String>) -> Result<Option<String>, Error> {
-    let mut redirect_idx = None;
-    for (i, arg) in args.iter().enumerate() {
-        if arg == ">" {
-            redirect_idx = Some(i);
-            break;
+/// Handles the following forms:
+/// - `> file` or `>> file` (operator and file as separate tokens)
+/// - `>file` or `>>file` (operator attached to filename)
+/// - `arg>` or `arg>>` (operator attached to previous arg - treated as part of arg, not redirection)
+///
+/// Returns the redirection specification if found, and removes the relevant tokens from args.
+fn extract_output_redirection(args: &mut Vec<String>) -> Result<Option<OutputRedirect>, Error> {
+    // First pass: look for standalone `>` or `>>` operators
+    for i in 0..args.len() {
+        if args[i] == ">>" {
+            if i + 1 < args.len() {
+                let target = args.remove(i + 1);
+                args.remove(i);
+                return Ok(Some(OutputRedirect {
+                    target,
+                    mode: RedirectMode::Append,
+                }));
+            } else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "syntax error: no file after >>",
+                )));
+            }
+        } else if args[i] == ">" {
+            if i + 1 < args.len() {
+                let target = args.remove(i + 1);
+                args.remove(i);
+                return Ok(Some(OutputRedirect {
+                    target,
+                    mode: RedirectMode::Truncate,
+                }));
+            } else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "syntax error: no file after >",
+                )));
+            }
         }
     }
 
-    if let Some(idx) = redirect_idx {
-        if idx + 1 < args.len() {
-            let target = args.remove(idx + 1);
-            args.remove(idx);
-            Ok(Some(target))
-        } else {
-            Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "syntax error: no file after >",
-            )))
+    // Second pass: look for `>>file` or `>file` (operator attached to filename)
+    for i in 0..args.len() {
+        if let Some(target) = args[i].strip_prefix(">>") {
+            if target.is_empty() {
+                // This is just `>>` with nothing after - already handled above
+                continue;
+            }
+            let target = target.to_string();
+            args.remove(i);
+            return Ok(Some(OutputRedirect {
+                target,
+                mode: RedirectMode::Append,
+            }));
+        } else if let Some(target) = args[i].strip_prefix('>') {
+            if target.is_empty() {
+                // This is just `>` with nothing after - already handled above
+                continue;
+            }
+            let target = target.to_string();
+            args.remove(i);
+            return Ok(Some(OutputRedirect {
+                target,
+                mode: RedirectMode::Truncate,
+            }));
         }
-    } else {
-        Ok(None)
+    }
+
+    Ok(None)
+}
+
+/// Extract stderr redirection from command arguments.
+///
+/// Handles the following forms:
+/// - `2>&1` (redirect stderr to stdout)
+/// - `2>file` or `2>>file` (redirect stderr to a file)
+/// - `2> file` or `2>> file` (operator and file as separate tokens)
+///
+/// Returns the redirection specification if found, and removes the relevant tokens from args.
+fn extract_stderr_redirection(args: &mut Vec<String>) -> Result<Option<StderrRedirect>, Error> {
+    // Look for 2>&1 (redirect stderr to stdout)
+    for i in 0..args.len() {
+        if args[i] == "2>&1" {
+            args.remove(i);
+            return Ok(Some(StderrRedirect::ToStdout));
+        }
+    }
+
+    // Look for standalone `2>` or `2>>` operators
+    for i in 0..args.len() {
+        if args[i] == "2>>" {
+            if i + 1 < args.len() {
+                let target = args.remove(i + 1);
+                args.remove(i);
+                return Ok(Some(StderrRedirect::File(OutputRedirect {
+                    target,
+                    mode: RedirectMode::Append,
+                })));
+            } else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "syntax error: no file after 2>>",
+                )));
+            }
+        } else if args[i] == "2>" {
+            if i + 1 < args.len() {
+                let target = args.remove(i + 1);
+                args.remove(i);
+                return Ok(Some(StderrRedirect::File(OutputRedirect {
+                    target,
+                    mode: RedirectMode::Truncate,
+                })));
+            } else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "syntax error: no file after 2>",
+                )));
+            }
+        }
+    }
+
+    // Look for `2>>file`, `2>file`, or `2>&1` attached to a token
+    for i in 0..args.len() {
+        if args[i].starts_with("2>>") {
+            let target = args[i][3..].to_string();
+            if target.is_empty() {
+                continue;
+            }
+            args.remove(i);
+            return Ok(Some(StderrRedirect::File(OutputRedirect {
+                target,
+                mode: RedirectMode::Append,
+            })));
+        } else if args[i].starts_with("2>&1") {
+            // Handle 2>&1 as part of a token (shouldn't normally happen, but be safe)
+            args.remove(i);
+            return Ok(Some(StderrRedirect::ToStdout));
+        } else if args[i].starts_with("2>") {
+            let target = args[i][2..].to_string();
+            if target.is_empty() {
+                continue;
+            }
+            args.remove(i);
+            return Ok(Some(StderrRedirect::File(OutputRedirect {
+                target,
+                mode: RedirectMode::Truncate,
+            })));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Run a single command with stdout and stderr redirections.
+///
+/// This handles all combinations of:
+/// - No redirection
+/// - Stdout to file (truncate or append)
+/// - Stderr to file (truncate or append)
+/// - Stderr to stdout (2>&1)
+fn run_single_command<SI, SO, SE, FS>(
+    argv0: &str,
+    args: &[String],
+    env: &mut Environment<SI, SO, SE, FS>,
+    redirect_stdout: Option<&OutputRedirect>,
+    redirect_stderr: Option<&StderrRedirect>,
+) -> Result<ExitCode, Error>
+where
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
+    FS: Filesystem + 'static,
+{
+    // Handle the 4 major cases based on redirections
+    match (redirect_stdout, redirect_stderr) {
+        // No redirections
+        (None, None) => {
+            let cmd_env = env.dup().with_args(args.to_vec());
+            let command = Command::new(argv0, cmd_env)?;
+            command.run()
+        }
+
+        // Only stdout redirection
+        (Some(stdout_redir), None) => {
+            let path = resolve_path(env.cwd.as_str(), &stdout_redir.target);
+            match stdout_redir.mode {
+                RedirectMode::Truncate => {
+                    let file_stdout = FileStdioOut::new(env.fs.dup(), path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: env.stderr.dup(),
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+                RedirectMode::Append => {
+                    let file_stdout = FileAppendStdioOut::new(env.fs.dup(), path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: env.stderr.dup(),
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+            }
+        }
+
+        // Only stderr redirection (to file)
+        (None, Some(StderrRedirect::File(stderr_redir))) => {
+            let path = resolve_path(env.cwd.as_str(), &stderr_redir.target);
+            match stderr_redir.mode {
+                RedirectMode::Truncate => {
+                    let file_stderr = FileStdioOut::new(env.fs.dup(), path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: env.stdout.dup(),
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+                RedirectMode::Append => {
+                    let file_stderr = FileAppendStdioOut::new(env.fs.dup(), path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: env.stdout.dup(),
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+            }
+        }
+
+        // Stderr to stdout (2>&1) without stdout redirection
+        // This effectively means stderr goes to the same place as stdout
+        (None, Some(StderrRedirect::ToStdout)) => {
+            // Use a pipe to merge stderr into stdout
+            let (reader, writer) = mkpipe();
+            let cmd_env = Environment {
+                stdin: env.stdin.dup(),
+                stdout: writer.clone(),
+                stderr: writer,
+                fs: env.fs.dup(),
+                env: env.env.clone(),
+                vars: env.vars.clone(),
+                args: args.to_vec(),
+                cwd: env.cwd.clone(),
+                exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+            };
+            let command = Command::new(argv0, cmd_env)?;
+            let result = command.run()?;
+            // Copy pipe output to stdout
+            while let Some(line) = reader.read_line()? {
+                env.stdout.write_line(&line)?;
+            }
+            Ok(result)
+        }
+
+        // Both stdout and stderr redirected to files
+        (Some(stdout_redir), Some(StderrRedirect::File(stderr_redir))) => {
+            let stdout_path = resolve_path(env.cwd.as_str(), &stdout_redir.target);
+            let stderr_path = resolve_path(env.cwd.as_str(), &stderr_redir.target);
+            match (stdout_redir.mode, stderr_redir.mode) {
+                (RedirectMode::Truncate, RedirectMode::Truncate) => {
+                    let file_stdout = FileStdioOut::new(env.fs.dup(), stdout_path);
+                    let file_stderr = FileStdioOut::new(env.fs.dup(), stderr_path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+                (RedirectMode::Truncate, RedirectMode::Append) => {
+                    let file_stdout = FileStdioOut::new(env.fs.dup(), stdout_path);
+                    let file_stderr = FileAppendStdioOut::new(env.fs.dup(), stderr_path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+                (RedirectMode::Append, RedirectMode::Truncate) => {
+                    let file_stdout = FileAppendStdioOut::new(env.fs.dup(), stdout_path);
+                    let file_stderr = FileStdioOut::new(env.fs.dup(), stderr_path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+                (RedirectMode::Append, RedirectMode::Append) => {
+                    let file_stdout = FileAppendStdioOut::new(env.fs.dup(), stdout_path);
+                    let file_stderr = FileAppendStdioOut::new(env.fs.dup(), stderr_path);
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+            }
+        }
+
+        // Stdout to file, stderr to stdout (2>&1)
+        // This means both stdout and stderr go to the same file
+        // Use .dup() to share the same buffer so both streams write to the same place
+        (Some(stdout_redir), Some(StderrRedirect::ToStdout)) => {
+            let path = resolve_path(env.cwd.as_str(), &stdout_redir.target);
+            match stdout_redir.mode {
+                RedirectMode::Truncate => {
+                    let file_stdout = FileStdioOut::new(env.fs.dup(), path);
+                    let file_stderr = file_stdout.dup();
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+                RedirectMode::Append => {
+                    let file_stdout = FileAppendStdioOut::new(env.fs.dup(), path);
+                    let file_stderr = file_stdout.dup();
+                    let cmd_env = Environment {
+                        stdin: env.stdin.dup(),
+                        stdout: file_stdout,
+                        stderr: file_stderr,
+                        fs: env.fs.dup(),
+                        env: env.env.clone(),
+                        vars: env.vars.clone(),
+                        args: args.to_vec(),
+                        cwd: env.cwd.clone(),
+                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                    };
+                    let command = Command::new(argv0, cmd_env)?;
+                    command.run()
+                }
+            }
+        }
     }
 }
 
@@ -419,9 +835,9 @@ fn run_command_chain<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     if pipelines.is_empty() {
@@ -459,9 +875,9 @@ fn run_pipeline<SI, SO, SE, FS>(
     env: &mut Environment<SI, SO, SE, FS>,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem + 'static,
 {
     if pipeline.commands.is_empty() {
@@ -491,28 +907,14 @@ where
 
         let argv0 = args[0].clone();
 
-        // Handle output redirection
-        if let Some(ref target) = pipeline.redirect_stdout {
-            let path = resolve_path(env.cwd.as_str(), target);
-            let file_stdout = FileStdout::new(env.fs.dup(), path);
-            let cmd_env = Environment {
-                stdin: env.stdin.dup(),
-                stdout: file_stdout,
-                stderr: env.stderr.dup(),
-                fs: env.fs.dup(),
-                env: env.env.clone(),
-                vars: env.vars.clone(),
-                args: args.clone(),
-                cwd: env.cwd.clone(),
-                exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
-            };
-            let command = Command::new(&argv0, cmd_env)?;
-            return command.run();
-        }
-
-        let cmd_env = env.dup().with_args(args.clone());
-        let command = Command::new(&argv0, cmd_env)?;
-        return command.run();
+        // Run single command with appropriate redirections
+        return run_single_command(
+            &argv0,
+            args,
+            env,
+            pipeline.redirect_stdout.as_ref(),
+            pipeline.redirect_stderr.as_ref(),
+        );
     }
 
     // Multiple commands - connect them with pipes
@@ -555,22 +957,42 @@ where
                 last_exit = command.run()?;
             } else {
                 // Last command: read from pipe, write to stdout (or file)
-                if let Some(ref target) = pipeline.redirect_stdout {
-                    let path = resolve_path(env.cwd.as_str(), target);
-                    let file_stdout = FileStdout::new(env.fs.dup(), path);
-                    let cmd_env = Environment {
-                        stdin: reader,
-                        stdout: file_stdout,
-                        stderr: env.stderr.dup(),
-                        fs: env.fs.dup(),
-                        env: env.env.clone(),
-                        vars: env.vars.clone(),
-                        args: args.clone(),
-                        cwd: env.cwd.clone(),
-                        exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                if let Some(ref redirect) = pipeline.redirect_stdout {
+                    let path = resolve_path(env.cwd.as_str(), &redirect.target);
+                    last_exit = match redirect.mode {
+                        RedirectMode::Truncate => {
+                            let file_stdout = FileStdioOut::new(env.fs.dup(), path);
+                            let cmd_env = Environment {
+                                stdin: reader,
+                                stdout: file_stdout,
+                                stderr: env.stderr.dup(),
+                                fs: env.fs.dup(),
+                                env: env.env.clone(),
+                                vars: env.vars.clone(),
+                                args: args.clone(),
+                                cwd: env.cwd.clone(),
+                                exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                            };
+                            let command = Command::new(&argv0, cmd_env)?;
+                            command.run()?
+                        }
+                        RedirectMode::Append => {
+                            let file_stdout = FileAppendStdioOut::new(env.fs.dup(), path);
+                            let cmd_env = Environment {
+                                stdin: reader,
+                                stdout: file_stdout,
+                                stderr: env.stderr.dup(),
+                                fs: env.fs.dup(),
+                                env: env.env.clone(),
+                                vars: env.vars.clone(),
+                                args: args.clone(),
+                                cwd: env.cwd.clone(),
+                                exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
+                            };
+                            let command = Command::new(&argv0, cmd_env)?;
+                            command.run()?
+                        }
                     };
-                    let command = Command::new(&argv0, cmd_env)?;
-                    last_exit = command.run()?;
                 } else {
                     let cmd_env = Environment {
                         stdin: reader,
@@ -1023,6 +1445,19 @@ mod tests {
     }
 
     #[test]
+    fn pipe_echo_quoted_to_cat() {
+        // Test case from log: echo "test" | cat
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(r#"echo "test" | cat"#.to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("test\n", stdout);
+    }
+
+    #[test]
     fn pipe_cat_file_to_wc() {
         let mut env = make_test_env(vec!["unused"]);
         env.fs.add_file("test.txt", "one\ntwo\nthree\n");
@@ -1175,6 +1610,205 @@ mod tests {
         assert_eq!(0, result.code());
         let contents = env.fs.read_to_string("/tmp/output.txt").unwrap();
         assert_eq!("hello\n", contents);
+    }
+
+    #[test]
+    fn redirect_no_space_before_filename() {
+        // Bug 1 reproduction: echo "test" > /tmp/test.txt with >file (no space)
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello >/output.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("hello\n", contents);
+    }
+
+    #[test]
+    fn append_redirect_with_space() {
+        // Bug 2 reproduction: echo "append" >> /tmp/test.txt
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/output.txt", "first\n");
+        let result = run("echo second >> /output.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("first\nsecond\n", contents);
+    }
+
+    #[test]
+    fn append_redirect_no_space() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/output.txt", "first\n");
+        let result = run("echo second >>/output.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("", stdout);
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("first\nsecond\n", contents);
+    }
+
+    #[test]
+    fn append_redirect_creates_file() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello >> /output.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("hello\n", contents);
+    }
+
+    #[test]
+    fn append_redirect_multiple_times() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("echo one >> /output.txt".to_string(), &mut env).unwrap();
+        let _ = run("echo two >> /output.txt".to_string(), &mut env).unwrap();
+        let _ = run("echo three >> /output.txt".to_string(), &mut env).unwrap();
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("one\ntwo\nthree\n", contents);
+    }
+
+    #[test]
+    fn append_redirect_in_pipeline() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/input.txt", "cherry\napple\nbanana\n");
+        env.fs.add_file("/output.txt", "header\n");
+        let result = run("cat /input.txt | sort >> /output.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        let contents = env.fs.read_to_string("/output.txt").unwrap();
+        assert_eq!("header\napple\nbanana\ncherry\n", contents);
+    }
+
+    #[test]
+    fn append_no_target_is_error() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("echo hello >>".to_string(), &mut env);
+        println!("result: {:?}", result);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // stderr redirection tests
+    // ========================================================================
+
+    #[test]
+    fn stderr_redirect_to_file() {
+        // Bug 3 reproduction: ls /nonexistent 2>/dev/null
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("cat /nonexistent 2>/error.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        // Command should fail, but stderr should be redirected to file
+        assert_eq!(1, result.code());
+        assert_eq!("", stderr);
+        let error_contents = env.fs.read_to_string("/error.txt").unwrap();
+        println!("error_contents: {:?}", error_contents);
+        assert!(error_contents.contains("nonexistent"));
+    }
+
+    #[test]
+    fn stderr_redirect_to_dev_null_style() {
+        // Use a writable file path as /dev/null equivalent
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("cat /nonexistent 2>/null.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert_eq!("", stderr);
+    }
+
+    #[test]
+    fn stderr_append_redirect() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/error.txt", "previous error\n");
+        let _ = run("cat /nonexistent 2>>/error.txt".to_string(), &mut env).unwrap();
+        let error_contents = env.fs.read_to_string("/error.txt").unwrap();
+        println!("error_contents: {:?}", error_contents);
+        assert!(error_contents.starts_with("previous error\n"));
+        assert!(error_contents.contains("nonexistent"));
+    }
+
+    #[test]
+    fn stderr_to_stdout_redirect() {
+        // Test 2>&1 without stdout redirection
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("cat /nonexistent 2>&1".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        // Stderr should be empty (redirected to stdout)
+        assert_eq!("", stderr);
+        // Stdout should contain the error
+        assert!(stdout.contains("nonexistent"));
+    }
+
+    #[test]
+    fn stderr_and_stdout_to_same_file() {
+        // Test > file 2>&1 (both to same file)
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/input.txt", "hello\n");
+        // First cat succeeds, second fails - both outputs go to file
+        let result = run(
+            "cat /input.txt /nonexistent >/output.txt 2>&1".to_string(),
+            &mut env,
+        )
+        .unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        assert_eq!("", stdout);
+        assert_eq!("", stderr);
+        let output = env.fs.read_to_string("/output.txt").unwrap();
+        println!("output: {:?}", output);
+        assert!(output.contains("hello"));
+        assert!(output.contains("nonexistent"));
+    }
+
+    #[test]
+    fn separate_stdout_and_stderr_files() {
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("/input.txt", "hello\n");
+        let result = run(
+            "cat /input.txt /nonexistent >/out.txt 2>/err.txt".to_string(),
+            &mut env,
+        )
+        .unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(1, result.code());
+        let out = env.fs.read_to_string("/out.txt").unwrap();
+        let err = env.fs.read_to_string("/err.txt").unwrap();
+        println!("out: {:?}", out);
+        println!("err: {:?}", err);
+        assert_eq!("hello\n", out);
+        assert!(err.contains("nonexistent"));
     }
 
     // ========================================================================
@@ -1737,5 +2371,62 @@ mod tests {
         assert_eq!(0, result.code());
         assert_eq!("first\n/home\n", stdout);
         assert_eq!("/home", env.cwd.as_str());
+    }
+
+    // ========================================================================
+    // shvar::split behavior tests (for understanding redirection parsing)
+    // ========================================================================
+
+    #[test]
+    fn shvar_split_redirect_with_space() {
+        let parts = shvar::split("echo hello > file.txt").unwrap();
+        println!("shvar::split(\"echo hello > file.txt\") = {:?}", parts);
+        assert_eq!(parts, vec!["echo", "hello", ">", "file.txt"]);
+    }
+
+    #[test]
+    fn shvar_split_redirect_no_space_after() {
+        let parts = shvar::split("echo hello >file.txt").unwrap();
+        println!("shvar::split(\"echo hello >file.txt\") = {:?}", parts);
+        // This shows whether > is parsed as part of the next token or separate
+        assert_eq!(parts, vec!["echo", "hello", ">file.txt"]);
+    }
+
+    #[test]
+    fn shvar_split_redirect_no_space_before() {
+        let parts = shvar::split("echo hello> file.txt").unwrap();
+        println!("shvar::split(\"echo hello> file.txt\") = {:?}", parts);
+        // This shows whether > is parsed as part of the previous token or separate
+        assert_eq!(parts, vec!["echo", "hello>", "file.txt"]);
+    }
+
+    #[test]
+    fn shvar_split_append_redirect() {
+        let parts = shvar::split("echo hello >> file.txt").unwrap();
+        println!("shvar::split(\"echo hello >> file.txt\") = {:?}", parts);
+        // This shows whether >> is recognized as a single token
+        assert_eq!(parts, vec!["echo", "hello", ">>", "file.txt"]);
+    }
+
+    #[test]
+    fn shvar_split_append_redirect_no_space() {
+        let parts = shvar::split("echo hello >>file.txt").unwrap();
+        println!("shvar::split(\"echo hello >>file.txt\") = {:?}", parts);
+        assert_eq!(parts, vec!["echo", "hello", ">>file.txt"]);
+    }
+
+    #[test]
+    fn shvar_split_stderr_redirect() {
+        let parts = shvar::split("ls 2>/dev/null").unwrap();
+        println!("shvar::split(\"ls 2>/dev/null\") = {:?}", parts);
+        // This shows how 2>/dev/null is parsed
+        assert_eq!(parts, vec!["ls", "2>/dev/null"]);
+    }
+
+    #[test]
+    fn shvar_split_stderr_to_stdout() {
+        let parts = shvar::split("ls 2>&1").unwrap();
+        println!("shvar::split(\"ls 2>&1\") = {:?}", parts);
+        assert_eq!(parts, vec!["ls", "2>&1"]);
     }
 }

@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Options for the comm command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,9 +29,9 @@ fn build_options() -> Options {
 /// The comm builtin: select or reject lines common to two files.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -89,9 +89,9 @@ fn read_file_or_stdin<SI, SO, SE, FS>(
     path: &str,
 ) -> Result<Option<String>, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     if path == "-" {
@@ -127,9 +127,9 @@ fn process_comm<SI, SO, SE, FS>(
     opts: &CommOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut lines1 = file1.lines().peekable();

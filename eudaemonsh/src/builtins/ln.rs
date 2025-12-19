@@ -3,7 +3,7 @@
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout, fs_error_message,
+    Environment, Error, ExitCode, FileType, Filesystem, StdioIn, StdioOut, fs_error_message,
 };
 
 fn build_options() -> Options {
@@ -39,9 +39,9 @@ struct LnConfig {
 /// The ln builtin: create links between files.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -158,9 +158,9 @@ fn linkit<SI, SO, SE, FS>(
     is_target_dir: bool,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // For hard links, source must exist
@@ -257,9 +257,9 @@ fn compute_target_path<SI, SO, SE, FS>(
     is_target_dir: bool,
 ) -> Result<String, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Check if we should append the source basename to target
@@ -309,9 +309,9 @@ where
 /// Check if two paths refer to the same directory entry by comparing device and inode.
 fn same_dirent<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>, path1: &str, path2: &str) -> bool
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     if path1 == path2 {
@@ -347,11 +347,11 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestEnvBuilder, TestFilesystem};
-    use crate::{StringStderr, StringStdin, StringStdout};
+    use crate::{StringStdioIn, StringStdioOut};
 
     fn make_env(
         args: Vec<&str>,
-    ) -> Environment<StringStdin, StringStdout, StringStderr, TestFilesystem> {
+    ) -> Environment<StringStdioIn, StringStdioOut, StringStdioOut, TestFilesystem> {
         TestEnvBuilder::new().args(args).build()
     }
 

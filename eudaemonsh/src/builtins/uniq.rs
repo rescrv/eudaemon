@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Separator type for the -D (all-repeated) option.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,9 +69,9 @@ fn build_options() -> Options {
 /// The uniq builtin: report or filter out repeated lines in a file.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -182,9 +182,9 @@ where
 
 fn read_stdin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<String, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut contents = String::new();

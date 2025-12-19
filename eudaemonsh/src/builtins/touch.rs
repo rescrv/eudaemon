@@ -1,8 +1,7 @@
 use getopts::Options;
 
 use crate::{
-    Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout, TimeSpec,
-    resolve_path,
+    Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut, TimeSpec, resolve_path,
 };
 
 /// Parse a time offset string of the form "[-][[hh]mm]SS" and return seconds.
@@ -375,9 +374,9 @@ fn build_options() -> Options {
 /// The touch builtin: change file access and modification times.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();

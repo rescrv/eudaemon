@@ -1,6 +1,6 @@
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Options for the wc command.
 #[derive(Clone, Copy, Debug, Default)]
@@ -66,9 +66,9 @@ fn build_options() -> Options {
 /// The wc builtin: count lines, words, and bytes.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -194,9 +194,9 @@ fn count_stdin<SI, SO, SE, FS>(
     opts: &WcOptions,
 ) -> Result<WcCounts, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut counts = WcCounts::default();
@@ -244,9 +244,9 @@ fn count_file<SI, SO, SE, FS>(
     opts: &WcOptions,
 ) -> Result<WcCounts, String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match env.fs.read_to_string(path) {
@@ -263,9 +263,9 @@ fn show_counts<SI, SO, SE, FS>(
     filename: Option<&str>,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut parts = Vec::new();

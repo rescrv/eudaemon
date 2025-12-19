@@ -7,7 +7,7 @@ use regex::Regex;
 use regex::RegexBuilder;
 
 use crate::{
-    Environment, Error, ExitCode, FileType, Filesystem, FsError, Stderr, Stdin, Stdout,
+    Environment, Error, ExitCode, FileType, Filesystem, FsError, StdioIn, StdioOut,
     fs_error_message, resolve_path,
 };
 
@@ -141,9 +141,9 @@ fn build_options() -> Options {
 /// The grep builtin: search files for patterns.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -451,9 +451,9 @@ fn grep_stdin<SI, SO, SE, FS>(
     print_filename: bool,
 ) -> Result<bool, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut lines = Vec::new();
@@ -479,9 +479,9 @@ fn grep_path<SI, SO, SE, FS>(
     print_filename: bool,
 ) -> Result<bool, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Check what type of file this is
@@ -541,9 +541,9 @@ fn grep_directory<SI, SO, SE, FS>(
     print_filename: bool,
 ) -> Result<bool, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let entries = match env.fs.read_dir(resolved_path) {
@@ -617,9 +617,9 @@ fn grep_file<SI, SO, SE, FS>(
     print_filename: bool,
 ) -> Result<bool, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let contents = match env.fs.read_to_string(resolved_path) {
@@ -685,9 +685,9 @@ fn grep_lines<SI, SO, SE, FS>(
     matcher: &Matcher,
 ) -> Result<bool, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut match_count = 0usize;
@@ -851,9 +851,9 @@ fn print_line<SI, SO, SE, FS>(
     separator: char,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut output = String::new();

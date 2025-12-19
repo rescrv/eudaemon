@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use getopts::Options;
 
 use crate::{
-    DirEntry, Environment, Error, ExitCode, FileType, Filesystem, Stderr, Stdin, Stdout,
+    DirEntry, Environment, Error, ExitCode, FileType, Filesystem, StdioIn, StdioOut,
     format_human_size_with_base, resolve_path,
 };
 
@@ -93,9 +93,9 @@ fn build_options() -> Options {
 /// If no file is specified, the current directory is used.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -230,9 +230,9 @@ fn calculate_du<SI, SO, SE, FS>(
     seen_inodes: &mut HashSet<(u64, u64)>,
 ) -> Result<u64, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let entry = env.fs.lstat(resolved_path)?;

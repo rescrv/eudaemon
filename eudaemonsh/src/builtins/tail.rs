@@ -2,7 +2,7 @@
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout, parse_size};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut, parse_size};
 
 /// The style of offset: from beginning or from end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,9 +137,9 @@ fn parse_offset(s: &str) -> Option<(u64, OffsetStyle)> {
 /// The tail builtin: display the last part of a file.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -282,9 +282,9 @@ fn tail_stdin<SI, SO, SE, FS>(
     opts: &TailOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut contents = String::new();
@@ -301,9 +301,9 @@ fn tail_file<SI, SO, SE, FS>(
     opts: &TailOptions,
 ) -> Result<(), i8>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match env.fs.read_to_string(path) {
@@ -321,9 +321,9 @@ fn tail_string<SI, SO, SE, FS>(
     opts: &TailOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match opts.unit {
@@ -339,9 +339,9 @@ fn tail_string_lines<SI, SO, SE, FS>(
     opts: &TailOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Collect lines, preserving whether they ended with newline
@@ -394,9 +394,9 @@ fn tail_string_bytes<SI, SO, SE, FS>(
     opts: &TailOptions,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let bytes = contents.as_bytes();

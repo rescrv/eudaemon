@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use getopts::Options;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// Modifiers that can be applied to a sort key or globally.
 #[derive(Clone, Copy, Debug, Default)]
@@ -291,9 +291,9 @@ fn merge_modifiers(a: &KeyModifiers, b: &KeyModifiers) -> KeyModifiers {
 /// The sort builtin: sort lines of text files.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -400,9 +400,9 @@ fn read_input<SI, SO, SE, FS>(
     zero_terminated: bool,
 ) -> Result<String, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let mut contents = String::new();
@@ -798,9 +798,9 @@ fn check_sorted<SI, SO, SE, FS>(
     opts: &SortOptions,
 ) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let terminator = if opts.zero_terminated { '\0' } else { '\n' };

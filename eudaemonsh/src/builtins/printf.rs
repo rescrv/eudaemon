@@ -1,4 +1,4 @@
-use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// The printf builtin: format and print data.
 ///
@@ -8,9 +8,9 @@ use crate::{Environment, Error, ExitCode, Filesystem, Stderr, Stdin, Stdout};
 /// The printf utility formats and prints its arguments under control of the format string.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Skip argv[0] ("printf") and handle "--"
@@ -267,9 +267,9 @@ fn process_format<SI, SO, SE, FS>(
     state: &mut PrintfState,
 ) -> Result<i8, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let (format, _) = process_escapes(format, true);
@@ -322,9 +322,9 @@ fn process_format_spec<SI, SO, SE, FS>(
     state: &mut PrintfState,
 ) -> Result<FormatResult, String>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Parse flags

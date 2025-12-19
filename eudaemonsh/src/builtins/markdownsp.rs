@@ -11,7 +11,7 @@ use lispdown::{Parser, Vm, register_markdown_builtins};
 use crate::FileType;
 use crate::Filesystem as EuFilesystem;
 
-use crate::{DirEntry, Environment, Error, ExitCode, FsError, Stderr, Stdin, Stdout, resolve_path};
+use crate::{DirEntry, Environment, Error, ExitCode, FsError, StdioIn, StdioOut, resolve_path};
 
 fn build_options() -> Options {
     let mut opts = Options::new();
@@ -21,7 +21,7 @@ fn build_options() -> Options {
     opts
 }
 
-fn print_usage<W: Stderr>(out: &W) -> Result<(), Error> {
+fn print_usage<W: StdioOut>(out: &W) -> Result<(), Error> {
     out.write_line("Usage: markdownsp [-d DIR] [-e EXPR]")?;
     out.write_line("")?;
     out.write_line("Options:")?;
@@ -54,9 +54,9 @@ fn print_usage<W: Stderr>(out: &W) -> Result<(), Error> {
 /// The markdownsp builtin: a lisp REPL for markdown documents.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: EuFilesystem + 'static,
 {
     let opts_def = build_options();
@@ -383,9 +383,9 @@ fn handle_command<SI, SO, SE, FS>(
     input: &str,
 ) -> Result<bool, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: EuFilesystem,
 {
     let parts: Vec<&str> = input.split_whitespace().collect();

@@ -1,7 +1,7 @@
 use getopts::Options;
 use regex::Regex;
 
-use crate::{Environment, Error, ExitCode, Filesystem, FsError, Stderr, Stdin, Stdout};
+use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};
 
 /// The type of line numbering to apply.
 #[derive(Clone, Debug, Default)]
@@ -196,9 +196,9 @@ fn parse_format(spec: &str) -> Result<NumberFormat, String> {
 /// The nl builtin: number lines of files.
 pub fn bin<SI, SO, SE, FS>(env: &Environment<SI, SO, SE, FS>) -> Result<ExitCode, Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     let opts_def = build_options();
@@ -360,9 +360,9 @@ fn nl_stdin<SI, SO, SE, FS>(
     state: &mut NlState,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     while let Some(line) = env.stdin.read_line()? {
@@ -379,9 +379,9 @@ fn nl_file<SI, SO, SE, FS>(
     state: &mut NlState,
 ) -> Result<(), i8>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     match env.fs.read_to_string(path) {
@@ -463,9 +463,9 @@ fn process_line<SI, SO, SE, FS>(
     state: &mut NlState,
 ) -> Result<(), Error>
 where
-    SI: Stdin,
-    SO: Stdout,
-    SE: Stderr,
+    SI: StdioIn,
+    SO: StdioOut,
+    SE: StdioOut,
     FS: Filesystem,
 {
     // Check for section delimiter
