@@ -143,7 +143,12 @@ where
 
     // Parse into commands separated by && and ||
     let commands = parse_command_chain(&args)?;
-    run_command_chain(&commands, env)
+    let result = run_command_chain(&commands, env)?;
+
+    // Update $? with the exit code of the last command
+    env.vars.insert("?".to_string(), result.code().to_string());
+
+    Ok(result)
 }
 
 /// Handle the `set` builtin: set shell variables.
@@ -2421,6 +2426,72 @@ mod tests {
         println!("shvar::split(\"ls 2>/dev/null\") = {:?}", parts);
         // This shows how 2>/dev/null is parsed
         assert_eq!(parts, vec!["ls", "2>/dev/null"]);
+    }
+
+    #[test]
+    fn ls_with_stderr_redirect() {
+        // Bug 3: ls /nonexistent 2>/dev/null
+        // The stderr redirect should suppress the error message
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("ls /nonexistent 2>/null.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        // ls should return non-zero for nonexistent file
+        assert!(result.code() != 0, "expected non-zero exit code");
+        // stderr should be empty (redirected to file)
+        assert_eq!("", stderr, "expected empty stderr (redirected)");
+        // Error message should be in the file
+        let error_contents = env.fs.read_to_string("/null.txt").unwrap();
+        println!("error_contents: {:?}", error_contents);
+        assert!(
+            error_contents.contains("nonexistent") || error_contents.contains("No such"),
+            "expected error message in redirected file"
+        );
+    }
+
+    // ========================================================================
+    // $? (exit status) tests
+    // ========================================================================
+
+    #[test]
+    fn exit_status_after_success() {
+        // Bug 1: $? should contain the exit status of the last command
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("true".to_string(), &mut env).unwrap();
+        let result = run("echo $?".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("0\n", stdout, "expected $? to be 0 after true");
+    }
+
+    #[test]
+    fn exit_status_after_failure() {
+        let mut env = make_test_env(vec!["unused"]);
+        let _ = run("false".to_string(), &mut env).unwrap();
+        let result = run("echo $?".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("1\n", stdout, "expected $? to be 1 after false");
+    }
+
+    #[test]
+    fn exit_status_updates_after_each_command() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("true\necho $?\nfalse\necho $?\ntrue\necho $?", &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("0\n1\n0\n", stdout);
     }
 
     #[test]
