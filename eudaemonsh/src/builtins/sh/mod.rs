@@ -19,21 +19,6 @@ fn shell_expand_options() -> ExpandOptions {
     }
 }
 
-/// Expand shell variables in the given input string.
-///
-/// Looks up variables in `vars` first (shell-local), then `env` (exported).
-/// Supports:
-/// - `$VARNAME` - bareword form
-/// - `${VARNAME}` - curly brace form with modifiers like `${VAR:-default}`
-fn expand(
-    input: &str,
-    vars: &HashMap<String, String>,
-    env: &HashMap<String, String>,
-) -> Result<String, shvar::Error> {
-    // Use tuple provider: vars takes precedence over env
-    shvar::expand_with_options(shell_expand_options(), &(vars, env), input)
-}
-
 /// The sh builtin: execute shell commands.
 ///
 /// Usage:
@@ -135,8 +120,44 @@ where
     SE: StdioOut,
     FS: Filesystem + 'static,
 {
-    let expanded = expand(&command, &env.vars, &env.env)?;
-    let args = shvar::split(&expanded)?;
+    // First, do a preliminary split to find leading variable assignments.
+    // These need to be available during expansion so that `VAR=value echo $VAR` works.
+    let preliminary_args = shvar::split(&command)?;
+    let mut prefix_vars: HashMap<String, String> = HashMap::new();
+    let mut command_start_idx = 0;
+    for arg in preliminary_args.iter() {
+        if let Some((name, value)) = parse_assignment(arg) {
+            prefix_vars.insert(name.to_string(), value.to_string());
+            command_start_idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Get the remaining args (the actual command)
+    let remaining_args = &preliminary_args[command_start_idx..];
+
+    // If all arguments were assignments, set them in shell environment and return
+    if remaining_args.is_empty() {
+        for (name, value) in prefix_vars {
+            let expanded_value =
+                shvar::expand_with_options(shell_expand_options(), &(&env.vars, &env.env), &value)?;
+            env.vars.insert(name, expanded_value);
+        }
+        return Ok(ExitCode::from(0));
+    }
+
+    // Expand each remaining arg with prefix_vars available
+    let mut args: Vec<String> = Vec::new();
+    for arg in remaining_args {
+        let expanded = shvar::expand_with_options(
+            shell_expand_options(),
+            &(&prefix_vars, &env.vars, &env.env),
+            arg,
+        )?;
+        args.push(expanded);
+    }
+
     if args.is_empty() || args[0].is_empty() {
         return Err(Error::EmptyCommand);
     }
@@ -227,6 +248,36 @@ where
         }
     }
     Ok(ExitCode::from(0))
+}
+
+/// Check if a string is a valid shell variable name.
+///
+/// A valid variable name starts with a letter or underscore, and contains only
+/// letters, digits, and underscores.
+fn is_valid_var_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Check if a string is a variable assignment (NAME=value).
+///
+/// Returns Some((name, value)) if it's a valid assignment, None otherwise.
+fn parse_assignment(s: &str) -> Option<(&str, &str)> {
+    if let Some(eq_pos) = s.find('=') {
+        let name = &s[..eq_pos];
+        let value = &s[eq_pos + 1..];
+        if is_valid_var_name(name) {
+            return Some((name, value));
+        }
+    }
+    None
 }
 
 /// Handle the `cd` builtin: change the current working directory.
@@ -588,12 +639,17 @@ fn extract_stderr_redirection(args: &mut Vec<String>) -> Result<Option<StderrRed
 /// - Stdout to file (truncate or append)
 /// - Stderr to file (truncate or append)
 /// - Stderr to stdout (2>&1)
+///
+/// The `prefix_assignments` parameter contains variable assignments that should be set
+/// in the command's environment (but not persist in the shell). This implements the
+/// POSIX behavior where `VAR=value cmd` sets VAR only for cmd's execution.
 fn run_single_command<SI, SO, SE, FS>(
     argv0: &str,
     args: &[String],
     env: &mut Environment<SI, SO, SE, FS>,
     redirect_stdout: Option<&OutputRedirect>,
     redirect_stderr: Option<&StderrRedirect>,
+    prefix_assignments: &[(String, String)],
 ) -> Result<ExitCode, Error>
 where
     SI: StdioIn,
@@ -601,11 +657,23 @@ where
     SE: StdioOut,
     FS: Filesystem + 'static,
 {
+    // Build vars map with prefix assignments applied
+    let vars_with_assignments = || {
+        let mut vars = env.vars.clone();
+        for (name, value) in prefix_assignments {
+            vars.insert(name.clone(), value.clone());
+        }
+        vars
+    };
+
     // Handle the 4 major cases based on redirections
     match (redirect_stdout, redirect_stderr) {
         // No redirections
         (None, None) => {
-            let cmd_env = env.dup().with_args(args.to_vec());
+            let cmd_env = env
+                .dup()
+                .with_args(args.to_vec())
+                .with_vars(vars_with_assignments());
             let command = Command::new(argv0, cmd_env)?;
             command.run()
         }
@@ -622,7 +690,7 @@ where
                         stderr: env.stderr.dup(),
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -638,7 +706,7 @@ where
                         stderr: env.stderr.dup(),
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -661,7 +729,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -677,7 +745,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -699,7 +767,7 @@ where
                 stderr: writer,
                 fs: env.fs.dup(),
                 env: env.env.clone(),
-                vars: env.vars.clone(),
+                vars: vars_with_assignments(),
                 args: args.to_vec(),
                 cwd: env.cwd.clone(),
                 exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -727,7 +795,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -744,7 +812,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -761,7 +829,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -778,7 +846,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -804,7 +872,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -821,7 +889,7 @@ where
                         stderr: file_stderr,
                         fs: env.fs.dup(),
                         env: env.env.clone(),
-                        vars: env.vars.clone(),
+                        vars: vars_with_assignments(),
                         args: args.to_vec(),
                         cwd: env.cwd.clone(),
                         exit_signaled: std::sync::Arc::clone(&env.exit_signaled),
@@ -896,29 +964,66 @@ where
             return Ok(ExitCode::from(0));
         }
 
-        // Handle shell builtins that modify state (these can't go in a pipeline with other commands)
-        if args[0] == "cd" {
-            return handle_cd(args, env);
+        // Check for leading variable assignments (VAR=value syntax)
+        // Collect them until we hit a non-assignment
+        let mut prefix_assignments: Vec<(String, String)> = Vec::new();
+        for arg in args.iter() {
+            if let Some((name, value)) = parse_assignment(arg) {
+                prefix_assignments.push((name.to_string(), value.to_string()));
+            } else {
+                break;
+            }
         }
-        if args[0] == "set" {
-            return handle_set(args, env);
-        }
-        if args[0] == "unset" {
-            return handle_unset(args, env);
-        }
-        if args[0] == "export" {
-            return handle_export(args, env);
+        let assignment_count = prefix_assignments.len();
+
+        // If all arguments are assignments (no command), set them in the shell environment
+        if assignment_count == args.len() {
+            for (name, value) in prefix_assignments {
+                env.vars.insert(name, value);
+            }
+            return Ok(ExitCode::from(0));
         }
 
-        let argv0 = args[0].clone();
+        // The actual command starts after the assignments
+        let cmd_args: Vec<String> = args[assignment_count..].to_vec();
+        let argv0 = cmd_args[0].clone();
+
+        // Handle shell builtins that modify state (these can't go in a pipeline with other commands)
+        // Note: For builtins, we apply the prefix assignments to the shell environment
+        // since builtins run in the same process
+        if argv0 == "cd" {
+            for (name, value) in &prefix_assignments {
+                env.vars.insert(name.clone(), value.clone());
+            }
+            return handle_cd(&cmd_args, env);
+        }
+        if argv0 == "set" {
+            for (name, value) in &prefix_assignments {
+                env.vars.insert(name.clone(), value.clone());
+            }
+            return handle_set(&cmd_args, env);
+        }
+        if argv0 == "unset" {
+            for (name, value) in &prefix_assignments {
+                env.vars.insert(name.clone(), value.clone());
+            }
+            return handle_unset(&cmd_args, env);
+        }
+        if argv0 == "export" {
+            for (name, value) in &prefix_assignments {
+                env.vars.insert(name.clone(), value.clone());
+            }
+            return handle_export(&cmd_args, env);
+        }
 
         // Run single command with appropriate redirections
         return run_single_command(
             &argv0,
-            args,
+            &cmd_args,
             env,
             pipeline.redirect_stdout.as_ref(),
             pipeline.redirect_stderr.as_ref(),
+            &prefix_assignments,
         );
     }
 
@@ -2029,6 +2134,101 @@ mod tests {
         println!("stdout: {:?}", stdout);
         assert_eq!(0, result.code());
         assert_eq!("from_shell\n", stdout);
+    }
+
+    // ========================================================================
+    // bare variable assignment tests (VAR=value syntax)
+    // ========================================================================
+
+    #[test]
+    fn bare_assignment_sets_variable() {
+        // Bug 2: FOO=bar should set variable without needing 'set' prefix
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("FOO=bar".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"bar".to_string()), env.vars.get("FOO"));
+    }
+
+    #[test]
+    fn bare_assignment_then_expand() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run_string("GREETING=hello\necho $GREETING", &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn bare_assignment_multiple_on_same_line() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("A=alpha B=beta".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"alpha".to_string()), env.vars.get("A"));
+        assert_eq!(Some(&"beta".to_string()), env.vars.get("B"));
+    }
+
+    #[test]
+    fn bare_assignment_with_equals_in_value() {
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("EQUATION=a=b".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!(Some(&"a=b".to_string()), env.vars.get("EQUATION"));
+    }
+
+    #[test]
+    fn bare_assignment_before_command() {
+        // In POSIX shell, VAR=value cmd sets VAR only for cmd's environment
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("test.txt", "hello\n");
+        let result = run("FOO=bar cat test.txt".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        // The command should succeed
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn bare_assignment_before_command_does_not_persist() {
+        // VAR=value cmd should NOT persist VAR in the shell environment
+        let mut env = make_test_env(vec!["unused"]);
+        env.fs.add_file("test.txt", "hello\n");
+        let _ = run("FOO=bar cat test.txt".to_string(), &mut env).unwrap();
+        // FOO should not be set in the shell environment
+        assert!(
+            !env.vars.contains_key("FOO"),
+            "FOO should not persist after VAR=value cmd"
+        );
+    }
+
+    #[test]
+    fn bare_assignment_before_command_is_visible_to_command() {
+        // VAR=value echo $VAR should print the value
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("MSG=hello echo $MSG".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello\n", stdout);
     }
 
     // ========================================================================

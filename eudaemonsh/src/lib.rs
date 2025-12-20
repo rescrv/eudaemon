@@ -160,6 +160,12 @@ where
         self.args = args;
         self
     }
+
+    /// Set the shell variables for the environment.
+    pub fn with_vars(mut self, vars: std::collections::HashMap<String, String>) -> Self {
+        self.vars = vars;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
