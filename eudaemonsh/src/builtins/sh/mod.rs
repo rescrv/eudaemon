@@ -120,25 +120,32 @@ where
     SE: StdioOut,
     FS: Filesystem + 'static,
 {
-    // First, do a preliminary split to find leading variable assignments.
-    // These need to be available during expansion so that `VAR=value echo $VAR` works.
-    let preliminary_args = shvar::split(&command)?;
+    // Parse prefix variable assignments one token at a time from the raw command string.
+    // This ensures that quotes are preserved until we know whether a token is an assignment.
+    // For example: NOPRINT=printed echo '$NOPRINT'
+    // - First token "NOPRINT=printed" is an assignment, add to prefix_vars
+    // - Remaining command is "echo '$NOPRINT'" which gets split and expanded normally
     let mut prefix_vars: HashMap<String, String> = HashMap::new();
-    let mut command_start_idx = 0;
-    for arg in preliminary_args.iter() {
-        if let Some((name, value)) = parse_assignment(arg) {
+    let mut remaining_command = command.as_str();
+
+    while !remaining_command.is_empty() {
+        let Some((first, remainder)) = shvar::split_once(remaining_command)? else {
+            break;
+        };
+        if let Some((name, value)) = parse_assignment(&first) {
             prefix_vars.insert(name.to_string(), value.to_string());
-            command_start_idx += 1;
+            remaining_command = remainder;
         } else {
             break;
         }
     }
 
-    // Get the remaining args (the actual command)
-    let remaining_args = &preliminary_args[command_start_idx..];
-
     // If all arguments were assignments, set them in shell environment and return
-    if remaining_args.is_empty() {
+    // But if there were no assignments at all (empty command), return an error
+    if remaining_command.is_empty() {
+        if prefix_vars.is_empty() {
+            return Err(Error::EmptyCommand);
+        }
         for (name, value) in prefix_vars {
             let expanded_value =
                 shvar::expand_with_options(shell_expand_options(), &(&env.vars, &env.env), &value)?;
@@ -147,16 +154,14 @@ where
         return Ok(ExitCode::from(0));
     }
 
-    // Expand each remaining arg with prefix_vars available
-    let mut args: Vec<String> = Vec::new();
-    for arg in remaining_args {
-        let expanded = shvar::expand_with_options(
-            shell_expand_options(),
-            &(&prefix_vars, &env.vars, &env.env),
-            arg,
-        )?;
-        args.push(expanded);
-    }
+    // Expand variables in the remaining command, then split
+    // expand_with_options respects quoting, so single-quoted strings won't have variables expanded
+    let expanded_command = shvar::expand_with_options(
+        shell_expand_options(),
+        &(&prefix_vars, &env.vars, &env.env),
+        remaining_command,
+    )?;
+    let args = shvar::split(&expanded_command)?;
 
     if args.is_empty() || args[0].is_empty() {
         return Err(Error::EmptyCommand);
@@ -2229,6 +2234,46 @@ mod tests {
         println!("stderr: {:?}", stderr);
         assert_eq!(0, result.code());
         assert_eq!("hello\n", stdout);
+    }
+
+    #[test]
+    fn multiple_prefix_assignments_before_command() {
+        // FOO=1 BAR=2 echo $FOO $BAR should print "1 2"
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run("FOO=1 BAR=2 echo $FOO $BAR".to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("1 2\n", stdout);
+    }
+
+    #[test]
+    fn prefix_assignment_with_spaces_in_value() {
+        // MSG="hello world" echo $MSG should print "hello world"
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(r#"MSG="hello world" echo $MSG"#.to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("hello world\n", stdout);
+    }
+
+    #[test]
+    fn prefix_assignment_single_quoted_arg_not_expanded() {
+        // NOPRINT=printed echo '$NOPRINT' should print "$NOPRINT" literally
+        // Single quotes prevent variable expansion
+        let mut env = make_test_env(vec!["unused"]);
+        let result = run(r#"NOPRINT=printed echo '$NOPRINT'"#.to_string(), &mut env).unwrap();
+        let stdout = env.stdout.into_string();
+        let stderr = env.stderr.into_string();
+        println!("stdout: {:?}", stdout);
+        println!("stderr: {:?}", stderr);
+        assert_eq!(0, result.code());
+        assert_eq!("$NOPRINT\n", stdout);
     }
 
     // ========================================================================
