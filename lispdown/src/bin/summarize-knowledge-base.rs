@@ -1,15 +1,30 @@
 //! Summarize markdown headings across a knowledge base.
 //!
-//! Usage: summarize-knowledge-base <dir> [dir...]
+//! Usage: summarize-knowledge-base [--max-tokens <n>] <dir> [dir...]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use arrrg::CommandLine;
+use arrrg_derive::CommandLine;
+use claudius::{Anthropic, KnownModel, MessageCountTokensParams, MessageParam, Model};
 use lispdown::{SError, SExpr, markdown_to_sexpr, unescape_string};
 
 struct Heading {
     level: usize,
     text: String,
+}
+
+#[derive(CommandLine, Debug, Default, Eq, PartialEq)]
+struct Args {
+    /// Maximum number of tokens to emit (default: unlimited).
+    #[arrrg(optional, "Maximum number of tokens to emit (default: unlimited)")]
+    max_tokens: Option<u32>,
+}
+
+struct FileSummary {
+    display: String,
+    headings: Vec<Heading>,
 }
 
 fn heading_level(tag: &str) -> Option<usize> {
@@ -86,17 +101,57 @@ fn display_path(path: &Path, cwd: &Path) -> String {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() {
-        eprintln!("Usage: summarize-knowledge-base <dir> [dir...]");
+fn render_summaries(summaries: &[FileSummary], max_level: usize) -> String {
+    let mut output = String::new();
+    for (index, summary) in summaries.iter().enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+        output.push_str("# ");
+        output.push_str(&summary.display);
+        output.push('\n');
+
+        if max_level == 0 {
+            continue;
+        }
+
+        for heading in &summary.headings {
+            if heading.level <= max_level {
+                let indent = "\t".repeat(heading.level.saturating_sub(1));
+                output.push_str(&indent);
+                output.push_str("- ");
+                output.push_str(&heading.text);
+                output.push('\n');
+            }
+        }
+    }
+    output
+}
+
+async fn count_output_tokens(client: &Anthropic, output: &str) -> Result<u32, claudius::Error> {
+    let message = MessageParam::user(output.to_string());
+    let params =
+        MessageCountTokensParams::new(vec![message], Model::Known(KnownModel::ClaudeOpus45));
+    client
+        .count_tokens(params)
+        .await
+        .map(|count| count.input_tokens)
+}
+
+#[tokio::main]
+async fn main() {
+    let (args, free) = Args::from_command_line_relaxed(
+        "summarize-knowledge-base: summarize markdown headings across a knowledge base",
+    );
+    if free.is_empty() {
+        eprintln!("Usage: summarize-knowledge-base [--max-tokens <n>] <dir> [dir...]");
         std::process::exit(1);
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut files = Vec::new();
 
-    for arg in &args {
+    for arg in &free {
         let path = PathBuf::from(arg);
         if !path.exists() {
             let error = SError::new("summarize-knowledge-base")
@@ -127,12 +182,8 @@ fn main() {
 
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (index, (display, path)) in files.iter().enumerate() {
-        if index > 0 {
-            println!();
-        }
-        println!("# {}", display);
-
+    let mut summaries = Vec::new();
+    for (display, path) in files.iter() {
         let content = match fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) => {
@@ -156,9 +207,44 @@ fn main() {
 
         let mut headings = Vec::new();
         collect_headings(&doc, &mut headings);
-        for heading in headings {
-            let indent = "\t".repeat(heading.level.saturating_sub(1));
-            println!("{}- {}", indent, heading.text);
+        summaries.push(FileSummary {
+            display: display.clone(),
+            headings,
+        });
+    }
+
+    let client = Anthropic::new(None).unwrap_or_else(|e| {
+        let error = SError::new("summarize-knowledge-base")
+            .with_code("token-client-error")
+            .with_message("Failed to initialize token counter")
+            .with_string_field("error", &e.to_string());
+        eprintln!("{}", error.detail());
+        std::process::exit(1);
+    });
+
+    let mut max_level = 6;
+    let mut output = render_summaries(&summaries, max_level);
+    if let Some(limit) = args.max_tokens {
+        loop {
+            let tokens = match count_output_tokens(&client, &output).await {
+                Ok(tokens) => tokens,
+                Err(e) => {
+                    let error = SError::new("summarize-knowledge-base")
+                        .with_code("token-count-error")
+                        .with_message("Failed to count tokens")
+                        .with_string_field("error", &e.to_string());
+                    eprintln!("{}", error.detail());
+                    std::process::exit(1);
+                }
+            };
+
+            if tokens <= limit || max_level == 0 {
+                break;
+            }
+
+            max_level -= 1;
+            output = render_summaries(&summaries, max_level);
         }
     }
+    print!("{}", output);
 }
