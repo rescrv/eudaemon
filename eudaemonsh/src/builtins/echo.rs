@@ -10,11 +10,19 @@ where
 {
     let mut args = env.args[1..].iter().map(|s| s.as_str()).peekable();
     let mut nflag = false;
+    let mut eflag = false;
 
-    // Check for -n flag (first argument only, no getopt)
-    if args.peek() == Some(&"-n") {
-        nflag = true;
-        args.next();
+    // Check for -n/-e flags (leading arguments only, no getopt)
+    while let Some(&arg) = args.peek() {
+        if arg == "-n" {
+            nflag = true;
+            args.next();
+        } else if arg == "-e" {
+            eflag = true;
+            args.next();
+        } else {
+            break;
+        }
     }
 
     let args: Vec<&str> = args.collect();
@@ -22,7 +30,15 @@ where
     for (i, arg) in args.iter().enumerate() {
         let is_last = i == args.len() - 1;
 
-        if is_last {
+        if eflag {
+            let (stop_output, suppress_newline) = write_escaped(&env.stdout, arg)?;
+            if suppress_newline {
+                nflag = true;
+            }
+            if stop_output {
+                break;
+            }
+        } else if is_last {
             // Check for trailing \c in the last argument
             if arg.len() >= 2 && arg.ends_with("\\c") {
                 // Write without the \c and suppress newline
@@ -33,6 +49,9 @@ where
             }
         } else {
             env.stdout.write_str(arg)?;
+        }
+
+        if !is_last {
             env.stdout.write_str(" ")?;
         }
     }
@@ -42,6 +61,34 @@ where
     }
 
     Ok(ExitCode::from(0))
+}
+
+fn write_escaped<SO: StdioOut>(stdout: &SO, arg: &str) -> Result<(bool, bool), Error> {
+    let mut chars = arg.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            stdout.write_str(&ch.to_string())?;
+            continue;
+        }
+
+        let Some(next) = chars.next() else {
+            stdout.write_str("\\")?;
+            break;
+        };
+        match next {
+            'n' => stdout.write_str("\n")?,
+            't' => stdout.write_str("\t")?,
+            'r' => stdout.write_str("\r")?,
+            '\\' => stdout.write_str("\\")?,
+            'c' => return Ok((true, true)),
+            _ => {
+                stdout.write_str("\\")?;
+                stdout.write_str(&next.to_string())?;
+            }
+        }
+    }
+
+    Ok((false, false))
 }
 
 #[cfg(test)]
@@ -188,5 +235,21 @@ mod tests {
         let result = bin(&env).unwrap();
         assert_eq!(0, result.code());
         assert_eq!("-hello\\tworld\n", env.stdout.into_string());
+    }
+
+    #[test]
+    fn eflag_interprets_tab() {
+        let env = make_test_env(vec!["echo", "-e", "hello\\tworld"]);
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!("hello\tworld\n", env.stdout.into_string());
+    }
+
+    #[test]
+    fn eflag_supports_newline() {
+        let env = make_test_env(vec!["echo", "-e", "hello\\nworld"]);
+        let result = bin(&env).unwrap();
+        assert_eq!(0, result.code());
+        assert_eq!("hello\nworld\n", env.stdout.into_string());
     }
 }

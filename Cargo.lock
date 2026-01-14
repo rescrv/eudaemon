@@ -66,6 +66,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
+name = "biometrics"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f7064e02662745f850952e2193fbb22ee2c9375b1e16b57978f46074f62473"
+dependencies = [
+ "sig_fig_histogram",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -165,6 +174,7 @@ dependencies = [
  "arrrg_derive",
  "async-trait",
  "base64",
+ "biometrics",
  "bytes",
  "ctrlc",
  "futures",
@@ -1521,6 +1531,12 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "shvar"
 version = "0.8.0"
+
+[[package]]
+name = "sig_fig_histogram"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2261fd0eac75e2887b4ccceb4a11aa9dbb99e27b5f9011f8f7029da16bbb3e43"
 
 [[package]]
 name = "signal-hook-registry"

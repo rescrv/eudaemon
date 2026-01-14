@@ -53,13 +53,13 @@ impl ShellState {
                 ("COLUMNS".to_string(), "120".to_string()),
                 ("HOME".to_string(), "/home/assistant".to_string()),
                 ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-                ("PWD".to_string(), "/".to_string()),
+                ("PWD".to_string(), "/home/assistant".to_string()),
                 ("SHELL".to_string(), "eudaemonsh".to_string()),
                 ("TMPDIR".to_string(), "/tmp".to_string()),
                 ("USER".to_string(), "assistant".to_string()),
             ]),
             vars: HashMap::new(),
-            cwd: Path::from("/"),
+            cwd: Path::from("/home/assistant"),
         }
     }
 }
@@ -112,14 +112,10 @@ impl FileSystem for EudaemonFileSystem {
         match view_range {
             Some((start, end)) => {
                 let lines: Vec<&str> = contents.lines().collect();
-                let start = start.saturating_sub(1) as usize; // Convert to 0-indexed
-                let end = end as usize;
-                let end = end.min(lines.len());
                 let selected: Vec<String> = lines
                     .iter()
                     .enumerate()
-                    .skip(start)
-                    .take(end - start)
+                    .filter(|(idx, _)| (start..end).contains(&(*idx as u32 + 1)))
                     .map(|(i, line)| format!("{:6}\t{}", i + 1, line))
                     .collect();
                 Ok(selected.join("\n"))
@@ -175,13 +171,19 @@ impl FileSystem for EudaemonFileSystem {
         insert_line: u32,
         new_str: &str,
     ) -> Result<String, std::io::Error> {
+        if insert_line == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "insert_line must be >= 1",
+            ));
+        }
         let contents = self
             .fs
             .read_to_string(path)
             .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
 
         let mut lines: Vec<&str> = contents.lines().collect();
-        let insert_idx = insert_line as usize;
+        let insert_idx = insert_line as usize - 1;
 
         // If inserting beyond the end, pad with empty lines
         while lines.len() < insert_idx {
@@ -265,6 +267,7 @@ impl EudaemonAgent {
             current_time_ms as fn() -> i64,
         )
         .expect("failed to create EudaemonFilesystem");
+        initialize_filesystem_layout(&fs);
 
         // Create the filesystem wrapper and a clone for shell commands
         let filesystem = EudaemonFileSystem::new(fs.dup());
@@ -275,6 +278,13 @@ impl EudaemonAgent {
             fs_for_shell,
             shell_state: Mutex::new(ShellState::new()),
         }
+    }
+}
+
+fn initialize_filesystem_layout(fs: &RealTimeFilesystem) {
+    for dir in ["/home/assistant", "/tmp", "/bin", "/usr/bin"] {
+        fs.mkdir_all(dir)
+            .unwrap_or_else(|e| panic!("failed to create {}: {:?}", dir, e));
     }
 }
 

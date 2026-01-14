@@ -296,6 +296,79 @@ where
     Ok(())
 }
 
+fn mode_string(file_type: FileType) -> String {
+    let mode: u32 = match file_type {
+        FileType::Directory => 0o755,
+        FileType::RegularFile => 0o644,
+        FileType::Symlink => 0o777,
+        FileType::Other => 0o000,
+    };
+
+    format_mode_string(file_type, mode)
+}
+
+fn format_mode_string(file_type: FileType, mode: u32) -> String {
+    let type_char = match file_type {
+        FileType::Directory => 'd',
+        FileType::RegularFile => '-',
+        FileType::Symlink => 'l',
+        FileType::Other => '?',
+    };
+
+    let user = format_permission_triple((mode >> 6) & 7);
+    let group = format_permission_triple((mode >> 3) & 7);
+    let other = format_permission_triple(mode & 7);
+
+    format!("{}{}{}{}", type_char, user, group, other)
+}
+
+fn format_permission_triple(perm: u32) -> String {
+    let r = if perm & 4 != 0 { 'r' } else { '-' };
+    let w = if perm & 2 != 0 { 'w' } else { '-' };
+    let x = if perm & 1 != 0 { 'x' } else { '-' };
+    format!("{}{}{}", r, w, x)
+}
+
+fn format_time(time_ms: i64) -> String {
+    let secs = time_ms / 1000;
+    chrono_lite_format(secs)
+}
+
+fn chrono_lite_format(secs: i64) -> String {
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    let (year, month, day) = days_to_ymd(days);
+
+    let month_names = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month_name = month_names.get(month as usize).unwrap_or(&"???");
+
+    format!(
+        "{} {:2} {:02}:{:02}:{:02} {}",
+        month_name, day, hours, minutes, seconds, year
+    )
+}
+
+fn days_to_ymd(days: i64) -> (i64, i64, i64) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as i64 - 1, d as i64)
+}
+
 /// Print a single entry.
 fn print_entry<SI, SO, SE, FS>(
     env: &Environment<SI, SO, SE, FS>,
@@ -312,22 +385,27 @@ where
     let mut output = String::new();
 
     if opts.long_format {
-        // File type character
-        let type_char = match entry.file_type {
-            FileType::Directory => 'd',
-            FileType::RegularFile => '-',
-            FileType::Symlink => 'l',
-            FileType::Other => '?',
-        };
+        let nlink = if entry.file_type == FileType::Directory { 2 } else { 1 };
+        let owner = "assistant";
+        let group = "assistant";
 
-        // Format size
         let size_str = if opts.human_readable {
             format_human_size(entry.size)
         } else {
             format!("{:8}", entry.size)
         };
 
-        output.push_str(&format!("{}  {} ", type_char, size_str));
+        let time_str = format_time(entry.mtime_ms);
+
+        output.push_str(&format!(
+            "{} {:>2} {:<8} {:<8} {} {} ",
+            mode_string(entry.file_type),
+            nlink,
+            owner,
+            group,
+            size_str,
+            time_str
+        ));
     }
 
     output.push_str(name);
