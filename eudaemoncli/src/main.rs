@@ -104,6 +104,10 @@ impl FileSystem for EudaemonFileSystem {
         path: &str,
         view_range: Option<(u32, u32)>,
     ) -> Result<String, std::io::Error> {
+        if self.fs.is_dir(path) {
+            return list_directory(&self.fs, path, 2);
+        }
+
         let contents = self
             .fs
             .read_to_string(path)
@@ -249,6 +253,49 @@ fn search_recursive<FS: Filesystem>(fs: &FS, dir: &str, query: &str, results: &m
             }
         }
     }
+}
+
+/// List directory contents up to a fixed depth.
+fn list_directory<FS: Filesystem>(
+    fs: &FS,
+    dir: &str,
+    max_depth: usize,
+) -> Result<String, std::io::Error> {
+    fn list_directory_inner<FS: Filesystem>(
+        fs: &FS,
+        dir: &str,
+        depth: usize,
+        max_depth: usize,
+        results: &mut Vec<String>,
+    ) -> Result<(), std::io::Error> {
+        let mut entries = fs
+            .read_dir(dir)
+            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (name, entry) in entries {
+            let path = if dir == "/" {
+                format!("/{}", name)
+            } else {
+                format!("{}/{}", dir, name)
+            };
+            let display = if entry.file_type == eudaemonsh::FileType::Directory {
+                format!("{}/", path)
+            } else {
+                path.clone()
+            };
+            results.push(display);
+
+            if entry.file_type == eudaemonsh::FileType::Directory && depth < max_depth {
+                list_directory_inner(fs, &path, depth + 1, max_depth, results)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut results = Vec::new();
+    list_directory_inner(fs, dir, 1, max_depth, &mut results)?;
+    Ok(results.join("\n"))
 }
 
 /// The Eudaemon agent that provides filesystem and shell access to Claude.
