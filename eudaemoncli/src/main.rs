@@ -238,6 +238,10 @@ impl FileSystem for EudaemonFileSystem {
 fn search_recursive<FS: Filesystem>(fs: &FS, dir: &str, query: &str, results: &mut Vec<String>) {
     if let Ok(entries) = fs.read_dir(dir) {
         for (name, entry) in entries {
+            if name == "." || name == ".." {
+                continue;
+            }
+
             let path = if dir == "/" {
                 format!("/{}", name)
             } else {
@@ -274,6 +278,10 @@ fn list_directory<FS: Filesystem>(
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (name, entry) in entries {
+            if name == "." || name == ".." {
+                continue;
+            }
+
             let path = if dir == "/" {
                 format!("/{}", name)
             } else {
