@@ -1,3 +1,5 @@
+//! The mkdir builtin: create directories.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};

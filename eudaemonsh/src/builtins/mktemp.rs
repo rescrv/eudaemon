@@ -1,3 +1,5 @@
+//! The mktemp builtin: create temporary files or directories.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};

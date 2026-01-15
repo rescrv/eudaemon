@@ -24,6 +24,7 @@ use claudius::ToolUseBlock;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 
+use eudaemonsh::BUILTIN_COMMANDS;
 use eudaemonsh::DeviceId;
 use eudaemonsh::Environment;
 use eudaemonsh::EudaemonFilesystem;
@@ -340,6 +341,16 @@ fn initialize_filesystem_layout(fs: &RealTimeFilesystem) {
     for dir in ["/home/assistant", "/tmp", "/bin", "/usr/bin"] {
         fs.mkdir_all(dir)
             .unwrap_or_else(|e| panic!("failed to create {}: {:?}", dir, e));
+    }
+
+    // Initialize builtin command files with their documentation
+    for (_name, path, contents) in BUILTIN_COMMANDS {
+        // Skip commands without a filesystem path (like "exit")
+        if !path.starts_with('/') {
+            continue;
+        }
+        fs.write_string(path, contents)
+            .unwrap_or_else(|e| panic!("failed to create {}: {:?}", path, e));
     }
 }
 

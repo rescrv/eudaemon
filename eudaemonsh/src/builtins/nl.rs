@@ -1,3 +1,5 @@
+//! The nl builtin: line numbering filter.
+
 use getopts::Options;
 use regex::Regex;
 

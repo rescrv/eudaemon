@@ -1,3 +1,5 @@
+//! The echo builtin: write arguments to standard output.
+
 use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// The echo builtin: write arguments to standard output.

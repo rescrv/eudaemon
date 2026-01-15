@@ -385,7 +385,11 @@ where
     let mut output = String::new();
 
     if opts.long_format {
-        let nlink = if entry.file_type == FileType::Directory { 2 } else { 1 };
+        let nlink = if entry.file_type == FileType::Directory {
+            2
+        } else {
+            1
+        };
         let owner = "assistant";
         let group = "assistant";
 

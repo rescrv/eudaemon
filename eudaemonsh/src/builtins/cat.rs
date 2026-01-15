@@ -1,3 +1,5 @@
+//! The cat builtin: concatenate and print files.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};

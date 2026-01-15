@@ -1,3 +1,5 @@
+//! The env builtin: set environment and execute command, or print environment.
+
 use std::collections::HashMap;
 
 use getopts::Options;

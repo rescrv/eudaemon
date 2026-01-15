@@ -1,3 +1,5 @@
+//! The wc builtin: word, line, character, and byte count.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};

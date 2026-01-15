@@ -1,62 +1,7 @@
 //! The which builtin: locate a command.
 
+use crate::builtins::BUILTIN_COMMANDS;
 use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
-
-/// Known command paths for builtins.
-const KNOWN_COMMANDS: &[(&str, &str)] = &[
-    ("base64", "/usr/bin/base64"),
-    ("basename", "/usr/bin/basename"),
-    ("cat", "/bin/cat"),
-    ("comm", "/usr/bin/comm"),
-    ("cp", "/bin/cp"),
-    ("cut", "/usr/bin/cut"),
-    ("date", "/bin/date"),
-    ("du", "/usr/bin/du"),
-    ("echo", "/bin/echo"),
-    ("env", "/usr/bin/env"),
-    ("exit", "exit"),
-    ("expand", "/usr/bin/expand"),
-    ("false", "/bin/false"),
-    ("fold", "/usr/bin/fold"),
-    ("grep", "/usr/bin/grep"),
-    ("egrep", "/usr/bin/egrep"),
-    ("fgrep", "/usr/bin/fgrep"),
-    ("head", "/usr/bin/head"),
-    ("ln", "/bin/ln"),
-    ("ls", "/bin/ls"),
-    ("mkdir", "/bin/mkdir"),
-    ("mktemp", "/usr/bin/mktemp"),
-    ("mv", "/bin/mv"),
-    ("nl", "/usr/bin/nl"),
-    ("paste", "/usr/bin/paste"),
-    ("printf", "/usr/bin/printf"),
-    ("pwd", "/bin/pwd"),
-    ("readlink", "/usr/bin/readlink"),
-    ("realpath", "/bin/realpath"),
-    ("rm", "/bin/rm"),
-    ("rmdir", "/bin/rmdir"),
-    ("seq", "/usr/bin/seq"),
-    ("sh", "/bin/sh"),
-    ("shuf", "/usr/bin/shuf"),
-    ("sort", "/usr/bin/sort"),
-    ("split", "/usr/bin/split"),
-    ("stat", "/usr/bin/stat"),
-    ("tail", "/usr/bin/tail"),
-    ("tee", "/usr/bin/tee"),
-    ("test", "/usr/bin/test"),
-    ("[", "/usr/bin/["),
-    ("touch", "/usr/bin/touch"),
-    ("tr", "/usr/bin/tr"),
-    ("true", "/bin/true"),
-    ("truncate", "/usr/bin/truncate"),
-    ("uname", "/usr/bin/uname"),
-    ("unexpand", "/usr/bin/unexpand"),
-    ("uniq", "/usr/bin/uniq"),
-    ("unlink", "/bin/unlink"),
-    ("wc", "/usr/bin/wc"),
-    ("which", "/usr/bin/which"),
-    ("yes", "/usr/bin/yes"),
-];
 
 /// The which builtin: locate a command.
 ///
@@ -118,7 +63,7 @@ where
         let mut found = false;
 
         // Check if it's a known builtin
-        for (name, path) in KNOWN_COMMANDS {
+        for (name, path, _) in BUILTIN_COMMANDS {
             if cmd == *name {
                 env.stdout.write_line(path)?;
                 found = true;
@@ -130,7 +75,7 @@ where
 
         // If it's already an absolute path, check if it's a known path
         if !found && cmd.starts_with('/') {
-            for (_, path) in KNOWN_COMMANDS {
+            for (_, path, _) in BUILTIN_COMMANDS {
                 if cmd == *path {
                     env.stdout.write_line(path)?;
                     found = true;

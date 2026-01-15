@@ -1,3 +1,5 @@
+//! The touch builtin: change file access and modification times.
+
 use getopts::Options;
 
 use crate::{

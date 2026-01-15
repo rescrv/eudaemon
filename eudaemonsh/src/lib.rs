@@ -10,6 +10,7 @@ use utf8path::Path;
 
 mod builtins;
 
+pub use builtins::BUILTIN_COMMANDS;
 pub use builtins::lookup_bin;
 pub use builtins::sh;
 pub use eudaemonfs::DeviceId;

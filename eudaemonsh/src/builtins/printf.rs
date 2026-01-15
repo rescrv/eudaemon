@@ -1,3 +1,5 @@
+//! The printf builtin: format and print data.
+
 use crate::{Environment, Error, ExitCode, Filesystem, StdioIn, StdioOut};
 
 /// The printf builtin: format and print data.

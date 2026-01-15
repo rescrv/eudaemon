@@ -1,3 +1,5 @@
+//! The rmdir builtin: remove empty directories.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};

@@ -1,3 +1,5 @@
+//! The truncate builtin: truncate or extend a file to a specified size.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};

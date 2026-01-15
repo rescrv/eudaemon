@@ -1,3 +1,5 @@
+//! The tee builtin: duplicate standard input.
+
 use getopts::Options;
 
 use crate::{Environment, Error, ExitCode, Filesystem, FsError, StdioIn, StdioOut};

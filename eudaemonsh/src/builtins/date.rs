@@ -1,3 +1,5 @@
+//! The date builtin: display or set date and time.
+
 use getopts::Options;
 
 use chrono::DateTime;

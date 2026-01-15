@@ -1,3 +1,5 @@
+//! The rm builtin: remove directory entries.
+
 use std::collections::VecDeque;
 
 use getopts::Options;
