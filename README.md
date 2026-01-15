@@ -237,3 +237,15 @@ reproducibility matters.
 Safety through isolation protects both the host system and the agent.  The host is protected because
 agent actions cannot escape the sandbox.  The agent is protected because its environment is
 well-defined and predictable, free from interference by other processes or system state changes.
+
+## State of the Project
+
+This project is rigorously tested and still likely to be full of bugs.  The shell, in particular, is
+spartan and lacking.  Agents like claude can make do if prompted to stay on guardrails, but often
+will discover ways stuff fails.
+
+I'd like to continue developing this.  If you're interested in contributing:
+
+```console
+./ralph
+```
