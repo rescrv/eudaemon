@@ -669,6 +669,37 @@ fn get_help_by_stem(stem: &str) -> Option<&'static str> {
     None
 }
 
+/// Returns a list of all available help topics organized by category.
+///
+/// Each category (builtins, json, filesystem, markdown) is returned as a separate
+/// entry in the result, with topics sorted alphabetically within each category.
+pub fn list_help_topics() -> Vec<(&'static str, Vec<String>)> {
+    fn extract_topics(docs: &'static [(&'static str, &'static str)]) -> Vec<String> {
+        let mut topics: Vec<String> = docs
+            .iter()
+            .filter_map(|(path, _)| {
+                let filename = path.strip_suffix(".md")?;
+                let name = filename.rsplit('/').next()?;
+                // Convert -p suffix back to ? for predicates
+                if let Some(base) = name.strip_suffix("-p") {
+                    Some(format!("{}?", base))
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .collect();
+        topics.sort();
+        topics
+    }
+
+    vec![
+        ("builtins", extract_topics(&BUILTINS_DOCS)),
+        ("json", extract_topics(&JSON_DOCS)),
+        ("filesystem", extract_topics(&FILESYSTEM_DOCS)),
+        ("markdown", extract_topics(&MARKDOWN_DOCS)),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

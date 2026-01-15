@@ -13,7 +13,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::docs::get_help;
+use crate::docs::{get_help, list_help_topics};
 use crate::error::{SError, SResult};
 use crate::expr::SExpr;
 use crate::markdown::{markdown_to_sexpr, sexpr_to_markdown};
@@ -1705,10 +1705,25 @@ fn str_concat(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
 }
 
 fn help(_vm: &Vm, args: &[SExpr]) -> SResult<SExpr> {
+    if args.is_empty() {
+        // When called with no arguments, list available help topics
+        let topics = list_help_topics();
+        let categories: Vec<SExpr> = topics
+            .into_iter()
+            .map(|(category, names)| {
+                let topic_atoms: Vec<SExpr> = names.into_iter().map(SExpr::Atom).collect();
+                SExpr::List(vec![
+                    SExpr::Atom(category.to_string()),
+                    SExpr::List(topic_atoms),
+                ])
+            })
+            .collect();
+        return Ok(SExpr::List(categories));
+    }
     if args.len() != 1 {
         return Err(SError::new("vm")
             .with_code("wrong-argument-count")
-            .with_message("help requires exactly one argument"));
+            .with_message("help requires zero or one argument"));
     }
     let name = match &args[0] {
         SExpr::Atom(s) => s.clone(),
@@ -4097,9 +4112,16 @@ mod tests {
     #[test]
     fn builtin_help_wrong_arg_count() {
         let vm = Vm::new();
-        let result = help(&vm, &[]);
+        // help with two or more args should error
+        let result = help(
+            &vm,
+            &[
+                SExpr::Atom("first".to_string()),
+                SExpr::Atom("second".to_string()),
+            ],
+        );
         assert!(result.is_err());
-        println!("DEBUG: help with no args returns error");
+        println!("DEBUG: help with two args returns error");
     }
 
     #[test]
@@ -5736,5 +5758,64 @@ mod tests {
         let result = vm.eval(&expr).unwrap();
         assert_eq!(result, SExpr::List(vec![SExpr::Atom("42".to_string())]));
         println!("DEBUG: lambda passes lambda as argument: {:?}", result);
+    }
+
+    // ========================================================================
+    // Help builtin tests
+    // ========================================================================
+
+    #[test]
+    fn help_no_args_returns_topic_list() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(help)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        // Result should be a list of categories
+        if let SExpr::List(categories) = result {
+            assert!(!categories.is_empty(), "help should return non-empty list");
+            // First category should be builtins
+            if let SExpr::List(first_cat) = &categories[0] {
+                assert_eq!(first_cat.len(), 2);
+                if let SExpr::Atom(name) = &first_cat[0] {
+                    assert_eq!(name, "builtins");
+                }
+            } else {
+                panic!("Category should be a list");
+            }
+            println!("DEBUG: help returns {} categories", categories.len());
+        } else {
+            panic!("help should return a list");
+        }
+    }
+
+    #[test]
+    fn help_with_arg_returns_documentation() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(help first)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        if let SExpr::Atom(text) = result {
+            assert!(text.contains("first"), "help should contain function name");
+            println!("DEBUG: help first returned documentation");
+        } else {
+            panic!("help with arg should return an atom");
+        }
+    }
+
+    #[test]
+    fn help_unknown_returns_message() {
+        let mut vm = setup_vm();
+        let mut parser = Parser::new("(help nonexistent-function)");
+        let expr = parser.parse().unwrap();
+        let result = vm.eval(&expr).unwrap();
+        if let SExpr::Atom(text) = result {
+            assert!(
+                text.contains("No help available"),
+                "should indicate no help available"
+            );
+            println!("DEBUG: help nonexistent-function: {}", text);
+        } else {
+            panic!("help with unknown function should return an atom");
+        }
     }
 }
