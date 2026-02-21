@@ -26,7 +26,7 @@ arrrg = "0.8.0"
 arrrg_derive = "0.8.0"
 async-trait = "0.1.89"
 chrono = "0.4"
-claudius = { version = "0.16.0", path = "../claudius" }
+claudius = { version = "0.18.0", path = "../claudius" }
 getopts = "0.2.24"
 guacamole = "0.14.0"
 markdown = "1.0.0"
