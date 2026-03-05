@@ -76,23 +76,23 @@ fn current_time_ms() -> i64 {
 /// Type alias for the EudaemonFilesystem with real time.
 type RealTimeFilesystem = EudaemonFilesystem<fn() -> i64>;
 
-/// A FileSystem implementation backed by EudaemonFilesystem.
-///
-/// This struct wraps the eudaemonsh filesystem and implements the claudius FileSystem
-/// trait to provide file operations for the TextEditor tool.
-struct EudaemonFileSystem {
-    fs: RealTimeFilesystem,
+/// Generic adapter implementing `claudius::FileSystem` for any eudaemon `Filesystem`.
+struct ClaudiusFilesystemAdapter<FS> {
+    fs: FS,
 }
 
-impl EudaemonFileSystem {
-    /// Creates a new EudaemonFileSystem wrapping the given filesystem.
-    fn new(fs: RealTimeFilesystem) -> Self {
+impl<FS> ClaudiusFilesystemAdapter<FS> {
+    /// Creates a new adapter wrapping the given filesystem.
+    fn new(fs: FS) -> Self {
         Self { fs }
     }
 }
 
 #[async_trait]
-impl FileSystem for EudaemonFileSystem {
+impl<FS> FileSystem for ClaudiusFilesystemAdapter<FS>
+where
+    FS: Filesystem + Send + Sync,
+{
     async fn search(&self, search: &str) -> Result<String, std::io::Error> {
         // Search for files matching the query by listing directories recursively
         let mut results = Vec::new();
@@ -309,7 +309,7 @@ fn list_directory<FS: Filesystem>(
 
 /// The Eudaemon agent that provides filesystem and shell access to Claude.
 struct EudaemonAgent {
-    filesystem: EudaemonFileSystem,
+    filesystem: ClaudiusFilesystemAdapter<RealTimeFilesystem>,
     fs_for_shell: RealTimeFilesystem,
     shell_state: Mutex<ShellState>,
 }
@@ -326,7 +326,7 @@ impl EudaemonAgent {
         initialize_filesystem_layout(&fs);
 
         // Create the filesystem wrapper and a clone for shell commands
-        let filesystem = EudaemonFileSystem::new(fs.dup());
+        let filesystem = ClaudiusFilesystemAdapter::new(fs.dup());
         let fs_for_shell = fs;
 
         Self {
@@ -645,4 +645,88 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eudaemonty::DirectoryFilesystem;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_lfs() -> RealTimeFilesystem {
+        EudaemonFilesystem::new_memory(
+            256 * 1024,
+            DeviceId::new(99),
+            current_time_ms as fn() -> i64,
+        )
+        .expect("failed to create test filesystem")
+    }
+
+    fn make_temp_dir() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "eudaemoncli-adapter-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+        dir
+    }
+
+    #[tokio::test]
+    async fn adapter_view_range_is_line_bounded() {
+        let fs = test_lfs();
+        fs.write_string("/notes.md", "a\nb\nc\nd").unwrap();
+        let adapter = ClaudiusFilesystemAdapter::new(fs);
+
+        let out = adapter.view("/notes.md", Some((2, 4))).await.unwrap();
+        assert!(out.contains("2\tb"));
+        assert!(out.contains("3\tc"));
+        assert!(!out.contains("1\ta"));
+        assert!(!out.contains("4\td"));
+    }
+
+    #[tokio::test]
+    async fn adapter_insert_handles_bounds() {
+        let fs = test_lfs();
+        fs.write_string("/doc.txt", "one").unwrap();
+        let adapter = ClaudiusFilesystemAdapter::new(fs.dup());
+
+        adapter.insert("/doc.txt", 3, "two").await.unwrap();
+        assert_eq!(fs.read_to_string("/doc.txt").unwrap(), "one\n\ntwo");
+
+        let err = adapter.insert("/doc.txt", 0, "bad").await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn adapter_create_makes_missing_parents() {
+        let fs = test_lfs();
+        let adapter = ClaudiusFilesystemAdapter::new(fs.dup());
+
+        adapter
+            .create("/nested/deep/file.txt", "payload")
+            .await
+            .unwrap();
+        assert_eq!(
+            fs.read_to_string("/nested/deep/file.txt").unwrap(),
+            "payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn adapter_wraps_non_eudaemon_filesystem() {
+        let root = make_temp_dir();
+        let fs = DirectoryFilesystem::new(&root).unwrap();
+        let adapter = ClaudiusFilesystemAdapter::new(fs);
+
+        adapter.create("dir/file.txt", "hello").await.unwrap();
+        let view = adapter.view("dir/file.txt", None).await.unwrap();
+        assert!(view.contains("1\thello"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

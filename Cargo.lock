@@ -218,7 +218,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
- "utf8path 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "utf8path",
 ]
 
 [[package]]
@@ -409,9 +409,10 @@ dependencies = [
  "async-trait",
  "claudius",
  "eudaemonsh",
+ "eudaemonty",
  "serde_json",
  "tokio",
- "utf8path 0.9.1",
+ "utf8path",
 ]
 
 [[package]]
@@ -426,7 +427,7 @@ dependencies = [
  "lispdown",
  "proptest",
  "rustyline 15.0.0",
- "utf8path 0.9.1",
+ "utf8path",
 ]
 
 [[package]]
@@ -442,14 +443,14 @@ dependencies = [
  "regex",
  "rustyline 15.0.0",
  "shvar",
- "utf8path 0.9.1",
+ "utf8path",
 ]
 
 [[package]]
 name = "eudaemonty"
 version = "0.1.0"
 dependencies = [
- "utf8path 0.9.1",
+ "utf8path",
 ]
 
 [[package]]
@@ -1016,7 +1017,7 @@ dependencies = [
  "sha3",
  "tokio",
  "toml",
- "utf8path 0.9.1",
+ "utf8path",
 ]
 
 [[package]]
@@ -2232,12 +2233,6 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "utf8path"
 version = "0.9.1"
-
-[[package]]
-name = "utf8path"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad5b5c443269ddcc79f700407f8d2fcda4b1610c76d7da4a9278d1bce6e6083"
 
 [[package]]
 name = "version_check"

@@ -26,8 +26,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub mod lisp;
-
 pub use eudaemonty::FileType;
 pub use eudaemonty::SyncMutFilesystem;
 pub use eudaemonty::TimeSpec;
@@ -4069,6 +4067,197 @@ fn convert_error(e: Error) -> TyError {
     TyError::Io(e.into())
 }
 
+/// Converts bytes to UTF-8 string with a consistent error mapping.
+fn decode_utf8(bytes: Vec<u8>) -> TyResult<String> {
+    String::from_utf8(bytes)
+        .map_err(|e| TyError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
+/// Seed value for mk*temp path generation.
+fn temp_seed() -> u64 {
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ (std::process::id() as u64)
+}
+
+/// Expands `X` placeholders in a mk*temp template.
+fn expand_temp_template(template: &str, mut state: u64) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    let mut path = String::new();
+    for c in template.chars() {
+        if c == 'X' {
+            path.push(CHARS[(state % 62) as usize] as char);
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        } else {
+            path.push(c);
+        }
+    }
+    path
+}
+
+/// Shared mk*temp retry loop used by both Lfs and LoggingFilesystem adapters.
+fn create_unique_temp_path<F>(
+    template: &str,
+    mut try_create: F,
+    error_msg: &str,
+) -> TyResult<String>
+where
+    F: FnMut(&str) -> TyResult<bool>,
+{
+    let mut state = temp_seed();
+
+    for attempt in 0..100u64 {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(attempt);
+        let candidate = expand_temp_template(template, state);
+        if try_create(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+
+    Err(TyError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        error_msg,
+    )))
+}
+
+/// Collect markdown files under `/`, returning root-relative paths.
+fn collect_markdown_files<F>(read_dir: &F) -> TyResult<Vec<String>>
+where
+    F: Fn(&str) -> TyResult<Vec<(String, StatInfo)>>,
+{
+    fn visit<F>(read_dir: &F, path: &str, results: &mut Vec<String>) -> TyResult<()>
+    where
+        F: Fn(&str) -> TyResult<Vec<(String, StatInfo)>>,
+    {
+        let entries = read_dir(path)?;
+        for (name, stat) in entries {
+            if name == "." || name == ".." {
+                continue;
+            }
+
+            let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
+            if stat.file_type == FileType::Directory {
+                visit(read_dir, &full_path, results)?;
+            } else if name.ends_with(".md") || name.ends_with(".MD") {
+                let rel_path = full_path.trim_start_matches('/');
+                results.push(rel_path.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(read_dir, "/", &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+/// Build a tree-style string from filesystem stat/read_dir/readlink operations.
+fn render_tree<FStat, FReadDir, FReadLink>(
+    stat: &FStat,
+    read_dir: &FReadDir,
+    readlink: &FReadLink,
+    path: &str,
+) -> TyResult<String>
+where
+    FStat: Fn(&str) -> std::result::Result<StatInfo, Error>,
+    FReadDir: Fn(&str) -> std::result::Result<Vec<(String, StatInfo)>, Error>,
+    FReadLink: Fn(&str) -> std::result::Result<String, Error>,
+{
+    fn build_tree<FStat, FReadDir, FReadLink>(
+        stat: &FStat,
+        read_dir: &FReadDir,
+        readlink: &FReadLink,
+        path: &str,
+        prefix: &str,
+        is_last: bool,
+    ) -> TyResult<String>
+    where
+        FStat: Fn(&str) -> std::result::Result<StatInfo, Error>,
+        FReadDir: Fn(&str) -> std::result::Result<Vec<(String, StatInfo)>, Error>,
+        FReadLink: Fn(&str) -> std::result::Result<String, Error>,
+    {
+        let info = stat(path).map_err(convert_error)?;
+        let name = if path == "/" {
+            "/".to_string()
+        } else {
+            std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string())
+        };
+
+        let mut result = String::new();
+        let connector = if path == "/" {
+            ""
+        } else if is_last {
+            "└── "
+        } else {
+            "├── "
+        };
+
+        match info.file_type {
+            FileType::Directory => {
+                result.push_str(&format!("{}{}{}/\n", prefix, connector, name));
+
+                let mut children: Vec<_> = read_dir(path)
+                    .map_err(convert_error)?
+                    .into_iter()
+                    .filter(|(n, _)| n != "." && n != "..")
+                    .collect();
+                children.sort_by(|a, b| a.0.cmp(&b.0));
+
+                let child_prefix = if path == "/" {
+                    String::new()
+                } else {
+                    format!("{}{}   ", prefix, if is_last { " " } else { "│" })
+                };
+
+                for (idx, (child_name, _)) in children.iter().enumerate() {
+                    let child_path = if path == "/" {
+                        format!("/{}", child_name)
+                    } else {
+                        format!("{}/{}", path, child_name)
+                    };
+                    result.push_str(&build_tree(
+                        stat,
+                        read_dir,
+                        readlink,
+                        &child_path,
+                        &child_prefix,
+                        idx + 1 == children.len(),
+                    )?);
+                }
+            }
+            FileType::RegularFile => {
+                result.push_str(&format!(
+                    "{}{}{} ({})\n",
+                    prefix, connector, name, info.size
+                ));
+            }
+            FileType::Symlink => {
+                let target = readlink(path).unwrap_or_else(|_| "?".to_string());
+                result.push_str(&format!("{}{}{} -> {}\n", prefix, connector, name, target));
+            }
+            FileType::Other => {
+                result.push_str(&format!("{}{}{} [other]\n", prefix, connector, name));
+            }
+        }
+
+        Ok(result)
+    }
+
+    build_tree(stat, read_dir, readlink, path, "", true)
+}
+
 impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for Lfs<D, T> {
     fn root(&self) -> Path<'_> {
         Path::new("/")
@@ -4076,12 +4265,7 @@ impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for Lfs<D, T> {
 
     fn read_to_string(&mut self, path: &str) -> TyResult<String> {
         let bytes = self.read_file(path).map_err(convert_error)?;
-        String::from_utf8(bytes).map_err(|e| {
-            TyError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))
-        })
+        decode_utf8(bytes)
     }
 
     fn exists(&self, path: &str) -> bool {
@@ -4194,122 +4378,57 @@ impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for Lfs<D, T> {
     }
 
     fn mkstemp(&mut self, template: &str) -> TyResult<String> {
-        use std::time::SystemTime;
-        use std::time::UNIX_EPOCH;
-
-        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-            ^ (std::process::id() as u64);
-
-        let mut state = seed;
-
-        for attempt in 0..100u64 {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(attempt);
-
-            let mut path = String::new();
-            let mut s = state;
-            for c in template.chars() {
-                if c == 'X' {
-                    path.push(chars[(s % 62) as usize] as char);
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                } else {
-                    path.push(c);
-                }
-            }
-
-            match Lfs::create_file(self, &path) {
-                Ok(true) => return Ok(path),
-                Ok(false) => continue,
-                Err(Error::AlreadyExists) => continue,
-                Err(e) => return Err(convert_error(e)),
-            }
-        }
-
-        Err(TyError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
+        create_unique_temp_path(
+            template,
+            |path| match Lfs::create_file(self, path) {
+                Ok(created) => Ok(created),
+                Err(Error::AlreadyExists) => Ok(false),
+                Err(e) => Err(convert_error(e)),
+            },
             "could not create unique temporary file",
-        )))
+        )
     }
 
     fn mkdtemp(&mut self, template: &str) -> TyResult<String> {
-        use std::time::SystemTime;
-        use std::time::UNIX_EPOCH;
-
-        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-            ^ (std::process::id() as u64);
-
-        let mut state = seed;
-
-        for attempt in 0..100u64 {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(attempt);
-
-            let mut path = String::new();
-            let mut s = state;
-            for c in template.chars() {
-                if c == 'X' {
-                    path.push(chars[(s % 62) as usize] as char);
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                } else {
-                    path.push(c);
-                }
-            }
-
-            match Lfs::mkdir(self, &path) {
-                Ok(()) => return Ok(path),
-                Err(Error::AlreadyExists) => continue,
-                Err(e) => return Err(convert_error(e)),
-            }
-        }
-
-        Err(TyError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
+        create_unique_temp_path(
+            template,
+            |path| match Lfs::mkdir(self, path) {
+                Ok(()) => Ok(true),
+                Err(Error::AlreadyExists) => Ok(false),
+                Err(e) => Err(convert_error(e)),
+            },
             "could not create unique temporary directory",
-        )))
+        )
     }
 
     fn list_markdown_files(&self) -> TyResult<Vec<String>> {
-        fn find_md_files<D: BlockDevice, T: Fn() -> i64>(
-            lfs: &Lfs<D, T>,
-            path: &str,
-            base: &str,
-            results: &mut Vec<String>,
-        ) -> TyResult<()> {
-            let entries = Lfs::read_dir(lfs, path).map_err(convert_error)?;
-            for (name, stat) in entries {
-                if name == "." || name == ".." {
-                    continue;
-                }
-                let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
-                if stat.file_type == FileType::Directory {
-                    find_md_files(lfs, &full_path, base, results)?;
-                } else if name.ends_with(".md") || name.ends_with(".MD") {
-                    let rel_path = full_path
-                        .strip_prefix(base)
-                        .unwrap_or(&full_path)
-                        .trim_start_matches('/');
-                    results.push(rel_path.to_string());
-                }
-            }
-            Ok(())
-        }
+        collect_markdown_files(&|path| Lfs::read_dir(self, path).map_err(convert_error))
+    }
 
-        let mut files = Vec::new();
-        find_md_files(self, "/", "/", &mut files)?;
-        files.sort();
-        Ok(files)
+    fn free_blocks(&self) -> Option<u64> {
+        Some(Lfs::free_blocks(self))
+    }
+
+    fn total_blocks(&self) -> Option<u64> {
+        Some(Lfs::total_log_blocks(self))
+    }
+
+    fn usage_percent(&self) -> Option<u64> {
+        Some(Lfs::usage_percent(self))
+    }
+
+    fn clean(&mut self) -> Option<TyResult<usize>> {
+        Some(Lfs::clean(self).map_err(convert_error))
+    }
+
+    fn tree(&self) -> Option<String> {
+        render_tree(
+            &|path| Lfs::stat(self, path),
+            &|path| Lfs::read_dir(self, path),
+            &|path| Lfs::readlink(self, path),
+            "/",
+        )
+        .ok()
     }
 }
 
@@ -4320,12 +4439,7 @@ impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for LoggingFilesystem<D, T> {
 
     fn read_to_string(&mut self, path: &str) -> TyResult<String> {
         let bytes = self.read_file(path).map_err(convert_error)?;
-        String::from_utf8(bytes).map_err(|e| {
-            TyError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e.to_string(),
-            ))
-        })
+        decode_utf8(bytes)
     }
 
     fn exists(&self, path: &str) -> bool {
@@ -4443,122 +4557,59 @@ impl<D: BlockDevice, T: Fn() -> i64> MutFilesystem for LoggingFilesystem<D, T> {
     }
 
     fn mkstemp(&mut self, template: &str) -> TyResult<String> {
-        use std::time::SystemTime;
-        use std::time::UNIX_EPOCH;
-
-        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-            ^ (std::process::id() as u64);
-
-        let mut state = seed;
-
-        for attempt in 0..100u64 {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(attempt);
-
-            let mut path = String::new();
-            let mut s = state;
-            for c in template.chars() {
-                if c == 'X' {
-                    path.push(chars[(s % 62) as usize] as char);
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                } else {
-                    path.push(c);
-                }
-            }
-
-            match LoggingFilesystem::create_file(self, &path) {
-                Ok(true) => return Ok(path),
-                Ok(false) => continue,
-                Err(Error::AlreadyExists) => continue,
-                Err(e) => return Err(convert_error(e)),
-            }
-        }
-
-        Err(TyError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
+        create_unique_temp_path(
+            template,
+            |path| match LoggingFilesystem::create_file(self, path) {
+                Ok(created) => Ok(created),
+                Err(Error::AlreadyExists) => Ok(false),
+                Err(e) => Err(convert_error(e)),
+            },
             "could not create unique temporary file",
-        )))
+        )
     }
 
     fn mkdtemp(&mut self, template: &str) -> TyResult<String> {
-        use std::time::SystemTime;
-        use std::time::UNIX_EPOCH;
-
-        let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-            ^ (std::process::id() as u64);
-
-        let mut state = seed;
-
-        for attempt in 0..100u64 {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(attempt);
-
-            let mut path = String::new();
-            let mut s = state;
-            for c in template.chars() {
-                if c == 'X' {
-                    path.push(chars[(s % 62) as usize] as char);
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                } else {
-                    path.push(c);
-                }
-            }
-
-            match LoggingFilesystem::mkdir(self, &path) {
-                Ok(()) => return Ok(path),
-                Err(Error::AlreadyExists) => continue,
-                Err(e) => return Err(convert_error(e)),
-            }
-        }
-
-        Err(TyError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
+        create_unique_temp_path(
+            template,
+            |path| match LoggingFilesystem::mkdir(self, path) {
+                Ok(()) => Ok(true),
+                Err(Error::AlreadyExists) => Ok(false),
+                Err(e) => Err(convert_error(e)),
+            },
             "could not create unique temporary directory",
-        )))
+        )
     }
 
     fn list_markdown_files(&self) -> TyResult<Vec<String>> {
-        fn find_md_files<D: BlockDevice, T: Fn() -> i64>(
-            lfs: &LoggingFilesystem<D, T>,
-            path: &str,
-            base: &str,
-            results: &mut Vec<String>,
-        ) -> TyResult<()> {
-            let entries = LoggingFilesystem::read_dir(lfs, path).map_err(convert_error)?;
-            for (name, stat) in entries {
-                if name == "." || name == ".." {
-                    continue;
-                }
-                let full_path = format!("{}/{}", path.trim_end_matches('/'), name);
-                if stat.file_type == FileType::Directory {
-                    find_md_files(lfs, &full_path, base, results)?;
-                } else if name.ends_with(".md") || name.ends_with(".MD") {
-                    let rel_path = full_path
-                        .strip_prefix(base)
-                        .unwrap_or(&full_path)
-                        .trim_start_matches('/');
-                    results.push(rel_path.to_string());
-                }
-            }
-            Ok(())
-        }
+        collect_markdown_files(&|path| {
+            LoggingFilesystem::read_dir(self, path).map_err(convert_error)
+        })
+    }
 
-        let mut files = Vec::new();
-        find_md_files(self, "/", "/", &mut files)?;
-        files.sort();
-        Ok(files)
+    fn free_blocks(&self) -> Option<u64> {
+        Some(LoggingFilesystem::free_blocks(self))
+    }
+
+    fn total_blocks(&self) -> Option<u64> {
+        Some(LoggingFilesystem::total_log_blocks(self))
+    }
+
+    fn usage_percent(&self) -> Option<u64> {
+        Some(LoggingFilesystem::usage_percent(self))
+    }
+
+    fn clean(&mut self) -> Option<TyResult<usize>> {
+        Some(LoggingFilesystem::clean(self).map_err(convert_error))
+    }
+
+    fn tree(&self) -> Option<String> {
+        render_tree(
+            &|path| LoggingFilesystem::stat(self, path),
+            &|path| LoggingFilesystem::read_dir(self, path),
+            &|path| LoggingFilesystem::readlink(self, path),
+            "/",
+        )
+        .ok()
     }
 }
 

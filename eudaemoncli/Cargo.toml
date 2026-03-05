@@ -12,3 +12,4 @@ claudius = { workspace = true }
 utf8path = { workspace = true }
 
 eudaemonsh = { workspace = true }
+eudaemonty = { workspace = true }
