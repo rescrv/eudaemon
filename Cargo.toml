@@ -26,7 +26,7 @@ arrrg = "0.8.0"
 arrrg_derive = "0.8.0"
 async-trait = "0.1.89"
 chrono = "0.4"
-claudius = { version = "0.18.0", path = "../claudius" }
+claudius = { version = "0.19.0" }
 getopts = "0.2.24"
 guacamole = "0.14.0"
 markdown = "1.0.0"
@@ -40,7 +40,7 @@ sha3 = "0.10"
 shvar = { path = "../blue/shvar" }
 tokio = { version = "1.48.0", features = ["full"] }
 toml = "0.8"
-utf8path = { version = "0.9.1", path = "../blue/utf8path" }
+utf8path = { version = "0.9.1" }
 
 eudaemonfs = { version = "0.1.0", path = "eudaemonfs" }
 eudaemonsh = { version = "0.1.0", path = "eudaemonsh" }

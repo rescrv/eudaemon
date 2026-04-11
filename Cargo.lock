@@ -198,7 +198,9 @@ dependencies = [
 
 [[package]]
 name = "claudius"
-version = "0.18.0"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25de366bc13b642ee53f471f3c31746c050f9699696effcad069de0593d4c320"
 dependencies = [
  "arrrg",
  "arrrg_derive",
@@ -2233,6 +2235,8 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "utf8path"
 version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cad5b5c443269ddcc79f700407f8d2fcda4b1610c76d7da4a9278d1bce6e6083"
 
 [[package]]
 name = "version_check"
