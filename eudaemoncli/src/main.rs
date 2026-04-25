@@ -1,380 +1,130 @@
 //! Eudaemon CLI: A command-line interface for running Claude agents on eudaemon images.
 //!
-//! This binary provides Claude with access to a eudaemon filesystem and shell via the
-//! TextEditor and Bash tool types from the claudius crate.
+//! This binary provides Claude with access to a rooted filesystem via the
+//! text editor tool and a dedicated lispdown tool.
 
 #![deny(missing_docs)]
 
+mod lispdown_tool;
+
+use std::io::{self, IsTerminal, Read};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use claudius::Agent;
-use claudius::Anthropic;
-use claudius::Budget;
-use claudius::ContentBlock;
-use claudius::Error;
-use claudius::FileSystem;
-use claudius::Message;
-use claudius::Model;
-use claudius::ToolBash20250124;
-use claudius::ToolTextEditor20250728;
-use claudius::ToolUseBlock;
-
-use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
-
-use eudaemonsh::BUILTIN_COMMANDS;
-use eudaemonsh::DeviceId;
-use eudaemonsh::Environment;
-use eudaemonsh::EudaemonFilesystem;
-use eudaemonsh::Filesystem;
-use eudaemonsh::MemoryLfsExt;
-use eudaemonsh::StringStdioIn;
-use eudaemonsh::StringStdioOut;
-use eudaemonsh::sh;
-
+use claudius::chat::{
+    ChatAgent, ChatCommand, ChatConfig, ChatSession, PlainTextRenderer, help_text, parse_command,
+};
+use claudius::{
+    Agent, Anthropic, CacheControlEphemeral, Error, FileSystem, KnownModel, Message, MessageParam,
+    Model, OperatorLine, Renderer, StopReason, StreamContext, SystemPrompt, TextBlock,
+    ThinkingConfig, ToolTextEditor20250728,
+};
+use lispdown_tool::LispdownTool;
+use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 use utf8path::Path;
 
-/// Persistent shell state that survives across bash invocations.
-struct ShellState {
-    /// Environment variables (exported, passed to child processes).
-    env: HashMap<String, String>,
-    /// Shell-local variables (not exported, not passed to child processes).
-    vars: HashMap<String, String>,
-    /// Current working directory.
-    cwd: Path<'static>,
+/// CLI usage string.
+const USAGE: &str = "Usage: eudaemoncli <filesystem-root> [prompt]";
+
+/// System prompt for knowledge-base manipulation with the available tools.
+const SYSTEM_PROMPT_TEXT: &str = r#"You are maintaining a markdown knowledge base rooted at /.
+
+You have access to the text editor tool and a dedicated lispdown tool. Use lispdown for
+structured markdown queries and transformations when it is a better fit than direct text edits.
+Inspect files before editing, keep paths inside the rooted knowledge base, explain substantive
+changes, and avoid touching unrelated files."#;
+
+/// Returns the default chat configuration for eudaemoncli.
+fn default_chat_config() -> ChatConfig {
+    ChatConfig::new()
+        .with_model(Model::Known(KnownModel::ClaudeHaiku45))
+        .with_system_prompt(SYSTEM_PROMPT_TEXT.to_string())
+        .with_max_tokens(32768)
 }
 
-impl ShellState {
-    /// Creates a new ShellState with default values.
-    fn new() -> Self {
-        Self {
-            env: HashMap::from_iter([
-                ("COLUMNS".to_string(), "120".to_string()),
-                ("HOME".to_string(), "/home/assistant".to_string()),
-                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
-                ("PWD".to_string(), "/home/assistant".to_string()),
-                ("SHELL".to_string(), "eudaemonsh".to_string()),
-                ("TMPDIR".to_string(), "/tmp".to_string()),
-                ("USER".to_string(), "assistant".to_string()),
-            ]),
-            vars: HashMap::new(),
-            cwd: Path::from("/home/assistant"),
-        }
-    }
-}
-
-/// Time source function returning current time in milliseconds since UNIX epoch.
-fn current_time_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// Type alias for the EudaemonFilesystem with real time.
-type RealTimeFilesystem = EudaemonFilesystem<fn() -> i64>;
-
-/// Generic adapter implementing `claudius::FileSystem` for any eudaemon `Filesystem`.
-struct ClaudiusFilesystemAdapter<FS> {
-    fs: FS,
-}
-
-impl<FS> ClaudiusFilesystemAdapter<FS> {
-    /// Creates a new adapter wrapping the given filesystem.
-    fn new(fs: FS) -> Self {
-        Self { fs }
-    }
-}
-
-#[async_trait]
-impl<FS> FileSystem for ClaudiusFilesystemAdapter<FS>
-where
-    FS: Filesystem + Send + Sync,
-{
-    async fn search(&self, search: &str) -> Result<String, std::io::Error> {
-        // Search for files matching the query by listing directories recursively
-        let mut results = Vec::new();
-        search_recursive(&self.fs, "/", search, &mut results);
-        Ok(results.join("\n"))
-    }
-
-    async fn view(
-        &self,
-        path: &str,
-        view_range: Option<(u32, u32)>,
-    ) -> Result<String, std::io::Error> {
-        if self.fs.is_dir(path) {
-            return list_directory(&self.fs, path, 2);
-        }
-
-        let contents = self
-            .fs
-            .read_to_string(path)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-
-        match view_range {
-            Some((start, end)) => {
-                let lines: Vec<&str> = contents.lines().collect();
-                let selected: Vec<String> = lines
-                    .iter()
-                    .enumerate()
-                    .filter(|(idx, _)| (start..end).contains(&(*idx as u32 + 1)))
-                    .map(|(i, line)| format!("{:6}\t{}", i + 1, line))
-                    .collect();
-                Ok(selected.join("\n"))
-            }
-            None => {
-                let numbered: Vec<String> = contents
-                    .lines()
-                    .enumerate()
-                    .map(|(i, line)| format!("{:6}\t{}", i + 1, line))
-                    .collect();
-                Ok(numbered.join("\n"))
-            }
-        }
-    }
-
-    async fn str_replace(
-        &self,
-        path: &str,
-        old_str: &str,
-        new_str: &str,
-    ) -> Result<String, std::io::Error> {
-        let contents = self
-            .fs
-            .read_to_string(path)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-
-        // Count occurrences
-        let count = contents.matches(old_str).count();
-        if count == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "oldString not found in content",
-            ));
-        }
-        if count > 1 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "oldString found multiple times and requires more code context to uniquely identify the intended match",
-            ));
-        }
-
-        let new_contents = contents.replacen(old_str, new_str, 1);
-        self.fs
-            .write_string(path, &new_contents)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-
-        Ok("success".to_string())
-    }
-
-    async fn insert(
-        &self,
-        path: &str,
-        insert_line: u32,
-        new_str: &str,
-    ) -> Result<String, std::io::Error> {
-        if insert_line == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "insert_line must be >= 1",
-            ));
-        }
-        let contents = self
-            .fs
-            .read_to_string(path)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-
-        let mut lines: Vec<&str> = contents.lines().collect();
-        let insert_idx = insert_line as usize - 1;
-
-        // If inserting beyond the end, pad with empty lines
-        while lines.len() < insert_idx {
-            lines.push("");
-        }
-
-        let new_lines: Vec<&str> = new_str.lines().collect();
-        for (i, line) in new_lines.iter().enumerate() {
-            lines.insert(insert_idx + i, line);
-        }
-
-        let new_contents = lines.join("\n");
-        self.fs
-            .write_string(path, &new_contents)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-
-        Ok("success".to_string())
-    }
-
-    async fn create(&self, path: &str, file_text: &str) -> Result<String, std::io::Error> {
-        // Check if file exists
-        if self.fs.exists(path) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("file already exists: {}", path),
-            ));
-        }
-
-        // Create parent directories if needed
-        let path_obj = Path::new(path);
-        let parent = path_obj.dirname();
-        let parent_str = parent.as_str();
-        if !parent_str.is_empty() && parent_str != "/" && !self.fs.exists(parent_str) {
-            self.fs
-                .mkdir_all(parent_str)
-                .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-        }
-
-        self.fs
-            .write_string(path, file_text)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-
-        Ok("success".to_string())
-    }
-}
-
-/// Recursively search for files matching the query.
-fn search_recursive<FS: Filesystem>(fs: &FS, dir: &str, query: &str, results: &mut Vec<String>) {
-    if let Ok(entries) = fs.read_dir(dir) {
-        for (name, entry) in entries {
-            if name == "." || name == ".." {
-                continue;
-            }
-
-            let path = if dir == "/" {
-                format!("/{}", name)
-            } else {
-                format!("{}/{}", dir, name)
-            };
-
-            if name.contains(query) || path.contains(query) {
-                results.push(path.clone());
-            }
-
-            if entry.file_type == eudaemonsh::FileType::Directory {
-                search_recursive(fs, &path, query, results);
-            }
-        }
-    }
-}
-
-/// List directory contents up to a fixed depth.
-fn list_directory<FS: Filesystem>(
-    fs: &FS,
-    dir: &str,
-    max_depth: usize,
-) -> Result<String, std::io::Error> {
-    fn list_directory_inner<FS: Filesystem>(
-        fs: &FS,
-        dir: &str,
-        depth: usize,
-        max_depth: usize,
-        results: &mut Vec<String>,
-    ) -> Result<(), std::io::Error> {
-        let mut entries = fs
-            .read_dir(dir)
-            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-        for (name, entry) in entries {
-            if name == "." || name == ".." {
-                continue;
-            }
-
-            let path = if dir == "/" {
-                format!("/{}", name)
-            } else {
-                format!("{}/{}", dir, name)
-            };
-            let display = if entry.file_type == eudaemonsh::FileType::Directory {
-                format!("{}/", path)
-            } else {
-                path.clone()
-            };
-            results.push(display);
-
-            if entry.file_type == eudaemonsh::FileType::Directory && depth < max_depth {
-                list_directory_inner(fs, &path, depth + 1, max_depth, results)?;
-            }
-        }
-        Ok(())
-    }
-
-    let mut results = Vec::new();
-    list_directory_inner(fs, dir, 1, max_depth, &mut results)?;
-    Ok(results.join("\n"))
-}
-
-/// The Eudaemon agent that provides filesystem and shell access to Claude.
+/// The Eudaemon agent that provides filesystem access to Claude.
 struct EudaemonAgent {
-    filesystem: ClaudiusFilesystemAdapter<RealTimeFilesystem>,
-    fs_for_shell: RealTimeFilesystem,
-    shell_state: Mutex<ShellState>,
+    filesystem: Path<'static>,
+    config: ChatConfig,
 }
 
 impl EudaemonAgent {
-    /// Creates a new EudaemonAgent with the given filesystem size in bytes.
-    fn new(fs_size_bytes: usize) -> Self {
-        let fs = EudaemonFilesystem::new_memory(
-            fs_size_bytes,
-            DeviceId::new(1),
-            current_time_ms as fn() -> i64,
-        )
-        .expect("failed to create EudaemonFilesystem");
-        initialize_filesystem_layout(&fs);
-
-        // Create the filesystem wrapper and a clone for shell commands
-        let filesystem = ClaudiusFilesystemAdapter::new(fs.dup());
-        let fs_for_shell = fs;
-
-        Self {
-            filesystem,
-            fs_for_shell,
-            shell_state: Mutex::new(ShellState::new()),
-        }
-    }
-}
-
-fn initialize_filesystem_layout(fs: &RealTimeFilesystem) {
-    for dir in ["/home/assistant", "/tmp", "/bin", "/usr/bin"] {
-        fs.mkdir_all(dir)
-            .unwrap_or_else(|e| panic!("failed to create {}: {:?}", dir, e));
+    /// Creates a new EudaemonAgent rooted at the provided filesystem path.
+    fn new(filesystem: Path<'static>) -> Self {
+        Self::with_config(filesystem, default_chat_config())
     }
 
-    // Initialize builtin command files with their documentation
-    for (_name, path, contents) in BUILTIN_COMMANDS {
-        // Skip commands without a filesystem path (like "exit")
-        if !path.starts_with('/') {
-            continue;
-        }
-        fs.write_string(path, contents)
-            .unwrap_or_else(|e| panic!("failed to create {}: {:?}", path, e));
+    /// Creates a new EudaemonAgent rooted at the provided filesystem path and chat config.
+    fn with_config(filesystem: Path<'static>, config: ChatConfig) -> Self {
+        Self { filesystem, config }
     }
 }
 
 #[async_trait]
 impl Agent for EudaemonAgent {
     async fn max_tokens(&self) -> u32 {
-        16384
+        self.config.max_tokens()
+    }
+
+    fn stream_label(&self) -> String {
+        "eudaemoncli".to_string()
     }
 
     async fn model(&self) -> Model {
-        Model::Known(claudius::KnownModel::ClaudeOpus45)
+        self.config.model()
+    }
+
+    async fn stop_sequences(&self) -> Option<Vec<String>> {
+        let sequences = self.config.stop_sequences();
+        if sequences.is_empty() {
+            None
+        } else {
+            Some(sequences.to_vec())
+        }
+    }
+
+    async fn system(&self) -> Option<SystemPrompt> {
+        let prompt = self.config.template.system.as_ref()?;
+
+        if self.config.caching_enabled {
+            let mut blocks = match prompt {
+                SystemPrompt::String(text) => vec![TextBlock::new(text.clone())],
+                SystemPrompt::Blocks(existing) => {
+                    existing.iter().map(|block| block.block.clone()).collect()
+                }
+            };
+            if let Some(last) = blocks.last_mut() {
+                last.cache_control = Some(CacheControlEphemeral::new());
+            }
+            Some(SystemPrompt::from_blocks(blocks))
+        } else {
+            Some(prompt.clone())
+        }
+    }
+
+    async fn temperature(&self) -> Option<f32> {
+        self.config.template.temperature
+    }
+
+    async fn thinking(&self) -> Option<ThinkingConfig> {
+        self.config.template.thinking
+    }
+
+    async fn top_k(&self) -> Option<u32> {
+        self.config.template.top_k
+    }
+
+    async fn top_p(&self) -> Option<f32> {
+        self.config.template.top_p
     }
 
     async fn tools(&self) -> Vec<Arc<dyn claudius::Tool<Self>>> {
         vec![
-            Arc::new(ToolTextEditor20250728 {
-                name: "str_replace_based_edit_tool".to_string(),
-                cache_control: None,
-                max_characters: None,
-            }),
-            Arc::new(ToolBash20250124 {
-                name: "bash".to_string(),
-                cache_control: None,
-            }),
+            Arc::new(ToolTextEditor20250728::new()) as _,
+            Arc::new(LispdownTool) as _,
         ]
     }
 
@@ -388,261 +138,521 @@ impl Agent for EudaemonAgent {
         Some(&self.filesystem)
     }
 
-    async fn hook_message(&self, resp: &Message) -> Result<(), Error> {
-        for block in &resp.content {
-            match block {
-                ContentBlock::Text(text_block) => {
-                    println!("{}", text_block.text);
-                }
-                ContentBlock::ToolUse(tool_use) => {
-                    println!(
-                        "[Tool: {} ({})]\n{}",
-                        tool_use.name,
-                        tool_use.id,
-                        serde_json::to_string_pretty(&tool_use.input).unwrap_or_default()
-                    );
-                }
-                ContentBlock::Thinking(thinking) => {
-                    println!("[Thinking: {}]", thinking.thinking);
-                }
-                _ => {}
-            }
-        }
+    async fn hook_message(&self, _resp: &Message) -> Result<(), Error> {
         Ok(())
     }
+}
 
-    async fn text_editor(&self, tool_use: ToolUseBlock) -> Result<String, std::io::Error> {
-        // Parse the tool input and dispatch to the appropriate filesystem method
-        let input = &tool_use.input;
+impl ChatAgent for EudaemonAgent {
+    fn config(&self) -> &ChatConfig {
+        &self.config
+    }
 
-        let command = input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing command field")
-            })?;
+    fn config_mut(&mut self) -> &mut ChatConfig {
+        &mut self.config
+    }
+}
 
-        match command {
-            "view" => {
-                let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing path field")
-                })?;
+/// An interactive terminal that matches claudius-chat's renderer-backed REPL model.
+struct ChatTerminal {
+    editor: DefaultEditor,
+    renderer: PlainTextRenderer,
+}
 
-                let view_range = if let Some(range) = input.get("view_range") {
-                    if let Some(arr) = range.as_array() {
-                        if arr.len() == 2 {
-                            let start = arr[0].as_u64().unwrap_or(1) as u32;
-                            let end = arr[1].as_u64().unwrap_or(u32::MAX as u64) as u32;
-                            Some((start, end))
-                        } else {
-                            None
+impl ChatTerminal {
+    /// Create a new terminal with line editing and streaming renderer output.
+    fn new(
+        use_color: bool,
+        interrupted: Arc<AtomicBool>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            editor: DefaultEditor::new()?,
+            renderer: PlainTextRenderer::with_color_and_interrupt(use_color, interrupted),
+        })
+    }
+
+    /// Read a line from the terminal and normalize it into a renderer operator line.
+    fn read_line(&mut self, prompt: &str) -> io::Result<OperatorLine> {
+        match self.editor.readline(prompt) {
+            Ok(line) => Ok(OperatorLine::Line(line)),
+            Err(ReadlineError::Interrupted) => Ok(OperatorLine::Interrupted),
+            Err(ReadlineError::Eof) => Ok(OperatorLine::Eof),
+            Err(err) => Err(io::Error::other(err.to_string())),
+        }
+    }
+
+    /// Add an entry to the line editor history.
+    fn add_history_entry(&mut self, line: &str) {
+        let _ = self.editor.add_history_entry(line);
+    }
+}
+
+impl Renderer for ChatTerminal {
+    fn start_agent(&mut self, context: &dyn StreamContext) {
+        self.renderer.start_agent(context);
+    }
+
+    fn finish_agent(&mut self, context: &dyn StreamContext, stop_reason: Option<&StopReason>) {
+        self.renderer.finish_agent(context, stop_reason);
+    }
+
+    fn print_text(&mut self, context: &dyn StreamContext, text: &str) {
+        self.renderer.print_text(context, text);
+    }
+
+    fn print_thinking(&mut self, context: &dyn StreamContext, text: &str) {
+        self.renderer.print_thinking(context, text);
+    }
+
+    fn print_error(&mut self, context: &dyn StreamContext, error: &str) {
+        self.renderer.print_error(context, error);
+    }
+
+    fn print_info(&mut self, context: &dyn StreamContext, info: &str) {
+        self.renderer.print_info(context, info);
+    }
+
+    fn start_tool_use(&mut self, context: &dyn StreamContext, name: &str, id: &str) {
+        self.renderer.start_tool_use(context, name, id);
+    }
+
+    fn print_tool_input(&mut self, context: &dyn StreamContext, partial_json: &str) {
+        self.renderer.print_tool_input(context, partial_json);
+    }
+
+    fn finish_tool_use(&mut self, context: &dyn StreamContext) {
+        self.renderer.finish_tool_use(context);
+    }
+
+    fn start_tool_result(
+        &mut self,
+        context: &dyn StreamContext,
+        tool_use_id: &str,
+        is_error: bool,
+    ) {
+        self.renderer
+            .start_tool_result(context, tool_use_id, is_error);
+    }
+
+    fn print_tool_result_text(&mut self, context: &dyn StreamContext, text: &str) {
+        self.renderer.print_tool_result_text(context, text);
+    }
+
+    fn finish_tool_result(&mut self, context: &dyn StreamContext) {
+        self.renderer.finish_tool_result(context);
+    }
+
+    fn finish_response(&mut self, context: &dyn StreamContext) {
+        self.renderer.finish_response(context);
+    }
+
+    fn print_interrupted(&mut self, context: &dyn StreamContext) {
+        self.renderer.print_interrupted(context);
+    }
+
+    fn should_interrupt(&self) -> bool {
+        self.renderer.should_interrupt()
+    }
+
+    fn read_operator_line(&mut self, prompt: &str) -> io::Result<Option<OperatorLine>> {
+        self.read_line(prompt).map(Some)
+    }
+}
+
+/// Determine the initial user prompt from command-line arguments or stdin.
+fn initial_prompt_from_inputs(
+    args: &[String],
+    stdin: &str,
+    stdin_is_terminal: bool,
+) -> Option<String> {
+    let prompt = if args.len() > 2 {
+        args[2..].join(" ")
+    } else if stdin_is_terminal {
+        String::new()
+    } else {
+        stdin.to_string()
+    };
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        None
+    } else {
+        Some(prompt.to_string())
+    }
+}
+
+/// Send a single user turn to the chat session.
+async fn send_turn<A: ChatAgent, R: Renderer>(
+    session: &mut ChatSession<A>,
+    renderer: &mut R,
+    prompt: &str,
+) {
+    if let Err(err) = session
+        .send_message(MessageParam::user(prompt), renderer)
+        .await
+    {
+        renderer.print_error(&(), &err.to_string());
+    }
+}
+
+/// Run the interactive multi-turn REPL using claudius's chat command model.
+async fn run_repl<A: ChatAgent>(
+    session: &mut ChatSession<A>,
+    terminal: &mut ChatTerminal,
+    interrupted: &AtomicBool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let context = ();
+
+    println!("eudaemoncli (model: {})", session.config().model());
+    println!("Type /help for commands, /quit to exit\n");
+
+    loop {
+        interrupted.store(false, Ordering::Relaxed);
+
+        match terminal.read_operator_line("You: ")? {
+            Some(OperatorLine::Line(line)) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                terminal.add_history_entry(line);
+
+                if let Some(cmd) = parse_command(line) {
+                    match cmd {
+                        ChatCommand::Quit => {
+                            println!("Goodbye!");
+                            break;
                         }
-                    } else {
-                        None
+                        ChatCommand::Clear => {
+                            session.clear();
+                            terminal.print_info(&context, "Conversation cleared.");
+                        }
+                        ChatCommand::Help => {
+                            for line in help_text().lines() {
+                                println!("    {}", line);
+                            }
+                        }
+                        ChatCommand::Model(model_name) => {
+                            let model = model_name
+                                .parse()
+                                .unwrap_or_else(|_| Model::Custom(model_name.clone()));
+                            session.template_mut().model = Some(model);
+                            terminal
+                                .print_info(&context, &format!("Model changed to: {}", model_name));
+                        }
+                        ChatCommand::System(prompt) => {
+                            session.template_mut().system = prompt.clone().map(SystemPrompt::from);
+                            match prompt {
+                                Some(prompt) => terminal.print_info(
+                                    &context,
+                                    &format!("System prompt set to: {}", prompt),
+                                ),
+                                None => terminal.print_info(&context, "System prompt cleared."),
+                            }
+                        }
+                        ChatCommand::MaxTokens(value) => {
+                            session.template_mut().max_tokens = Some(value);
+                            terminal.print_info(&context, &format!("max_tokens set to {value}"));
+                        }
+                        ChatCommand::Temperature(value) => {
+                            session.template_mut().temperature = Some(value);
+                            terminal
+                                .print_info(&context, &format!("temperature set to {:.2}", value));
+                        }
+                        ChatCommand::ClearTemperature => {
+                            session.template_mut().temperature = None;
+                            terminal.print_info(&context, "temperature reset to model default");
+                        }
+                        ChatCommand::TopP(value) => {
+                            session.template_mut().top_p = Some(value);
+                            terminal.print_info(&context, &format!("top_p set to {:.2}", value));
+                        }
+                        ChatCommand::ClearTopP => {
+                            session.template_mut().top_p = None;
+                            terminal.print_info(&context, "top_p reset to model default");
+                        }
+                        ChatCommand::TopK(value) => {
+                            session.template_mut().top_k = Some(value);
+                            terminal.print_info(&context, &format!("top_k set to {value}"));
+                        }
+                        ChatCommand::ClearTopK => {
+                            session.template_mut().top_k = None;
+                            terminal.print_info(&context, "top_k reset to model default");
+                        }
+                        ChatCommand::AddStopSequence(sequence) => {
+                            let stop_sequences = session
+                                .template_mut()
+                                .stop_sequences
+                                .get_or_insert_with(Vec::new);
+                            if !stop_sequences.iter().any(|s| s == &sequence) {
+                                stop_sequences.push(sequence.clone());
+                            }
+                            terminal
+                                .print_info(&context, &format!("Added stop sequence: {sequence}"));
+                        }
+                        ChatCommand::ClearStopSequences => {
+                            session.template_mut().stop_sequences = None;
+                            terminal.print_info(&context, "Stop sequences cleared.");
+                        }
+                        ChatCommand::ListStopSequences => {
+                            let sequences =
+                                session.template().stop_sequences.as_deref().unwrap_or(&[]);
+                            print_stop_sequences(sequences);
+                        }
+                        ChatCommand::Thinking(budget) => {
+                            session.template_mut().thinking = budget.map(ThinkingConfig::enabled);
+                            match budget {
+                                Some(tokens) => {
+                                    terminal.print_info(
+                                        &context,
+                                        &format!(
+                                            "Extended thinking enabled with {} token budget.",
+                                            tokens
+                                        ),
+                                    );
+                                }
+                                None => {
+                                    terminal.print_info(&context, "Extended thinking disabled.");
+                                }
+                            }
+                        }
+                        ChatCommand::Budget(_tokens) => {
+                            terminal.print_error(&context, "budget not supported");
+                        }
+                        ChatCommand::ClearBudget => {
+                            session.config_mut().session_budget = None;
+                            terminal.print_info(&context, "Session budget cleared.");
+                        }
+                        ChatCommand::Caching(enabled) => {
+                            session.config_mut().caching_enabled = enabled;
+                            if enabled {
+                                terminal.print_info(&context, "Prompt caching enabled.");
+                            } else {
+                                terminal.print_info(&context, "Prompt caching disabled.");
+                            }
+                        }
+                        ChatCommand::TranscriptPath(path) => {
+                            session.config_mut().transcript_path = Some(PathBuf::from(&path));
+                            terminal.print_info(
+                                &context,
+                                &format!("Transcript auto-save set to {}", path),
+                            );
+                        }
+                        ChatCommand::ClearTranscriptPath => {
+                            session.config_mut().transcript_path = None;
+                            terminal.print_info(&context, "Transcript auto-save disabled.");
+                        }
+                        ChatCommand::SaveTranscript(path) => {
+                            match session.save_transcript_to(&path) {
+                                Ok(_) => terminal
+                                    .print_info(&context, &format!("Transcript saved to {}", path)),
+                                Err(err) => terminal.print_error(
+                                    &context,
+                                    &format!("Failed to save transcript: {}", err),
+                                ),
+                            }
+                        }
+                        ChatCommand::LoadTranscript(path) => {
+                            match session.load_transcript_from(&path) {
+                                Ok(_) => terminal.print_info(
+                                    &context,
+                                    &format!("Transcript loaded from {}", path),
+                                ),
+                                Err(err) => terminal.print_error(
+                                    &context,
+                                    &format!("Failed to load transcript: {}", err),
+                                ),
+                            }
+                        }
+                        ChatCommand::Stats => {
+                            print_stats(session);
+                        }
+                        ChatCommand::ShowConfig => {
+                            print_config(session);
+                        }
+                        ChatCommand::Invalid(message) => {
+                            terminal.print_error(&context, &message);
+                        }
                     }
-                } else {
-                    None
-                };
+                    continue;
+                }
 
-                self.filesystem.view(path, view_range).await
+                println!("Claude:");
+                send_turn(session, terminal, line).await;
             }
-            "str_replace" => {
-                let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing path field")
-                })?;
-                let old_str = input
-                    .get("old_str")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "missing old_str field",
-                        )
-                    })?;
-                let new_str = input
-                    .get("new_str")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "missing new_str field",
-                        )
-                    })?;
-
-                self.filesystem.str_replace(path, old_str, new_str).await
+            Some(OperatorLine::Interrupted) => {
+                println!();
+                continue;
             }
-            "insert" => {
-                let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing path field")
-                })?;
-                let insert_line = input
-                    .get("insert_line")
-                    .and_then(|v| v.as_u64())
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "missing insert_line field",
-                        )
-                    })? as u32;
-                let new_str = input
-                    .get("new_str")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "missing new_str field",
-                        )
-                    })?;
-
-                self.filesystem.insert(path, insert_line, new_str).await
+            Some(OperatorLine::Eof) => {
+                println!("\nGoodbye!");
+                break;
             }
-            "create" => {
-                let path = input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing path field")
-                })?;
-                let file_text =
-                    input
-                        .get("file_text")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                "missing file_text field",
-                            )
-                        })?;
-
-                self.filesystem.create(path, file_text).await
-            }
-            other => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unknown command: {}", other),
-            )),
+            None => break,
         }
     }
 
-    async fn bash(&self, command: &str, restart: bool) -> Result<String, std::io::Error> {
-        // Reset shell state if restart is requested
-        if restart {
-            let mut state = self.shell_state.lock().unwrap();
-            *state = ShellState::new();
-        }
+    Ok(())
+}
 
-        // Create fresh stdin/stdout/stderr for this command
-        let stdin = StringStdioIn::new("");
-        let stdout = StringStdioOut::new();
-        let stderr = StringStdioOut::new();
-
-        // Create an environment using the persistent shell state
-        let mut env = {
-            let state = self.shell_state.lock().unwrap();
-            Environment {
-                stdin,
-                stdout: stdout.clone(),
-                stderr: stderr.clone(),
-                fs: self.fs_for_shell.dup(),
-                env: state.env.clone(),
-                vars: state.vars.clone(),
-                args: vec!["/bin/eudaemonsh".to_string()],
-                cwd: state.cwd.clone(),
-                exit_signaled: Arc::new(AtomicBool::new(false)),
-            }
-        };
-
-        // Run the command (use run_string to handle multi-line scripts with newlines)
-        let exit_code = sh::run_string(command, &mut env)
-            .map_err(|e| std::io::Error::other(format!("shell error: {:?}", e)))?;
-
-        // Persist the shell state for the next invocation
-        {
-            let mut state = self.shell_state.lock().unwrap();
-            state.env = env.env;
-            state.vars = env.vars;
-            state.cwd = env.cwd;
-        }
-
-        // Collect output
-        let stdout_str = stdout.into_string();
-        let stderr_str = stderr.into_string();
-
-        let mut result = String::new();
-        if !stdout_str.is_empty() {
-            result.push_str(&stdout_str);
-        }
-        if !stderr_str.is_empty() {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str("stderr:\n");
-            result.push_str(&stderr_str);
-        }
-        result.push_str(&format!("\nexit code: {}", exit_code.code()));
-
-        Ok(result)
+/// Print session statistics using claudius-chat formatting.
+fn print_stats<A: ChatAgent>(session: &ChatSession<A>) {
+    let stats = session.stats();
+    println!("    Session Statistics:");
+    println!("      Model: {}", stats.model);
+    println!("      Messages: {}", stats.message_count);
+    println!("      Max tokens: {}", stats.max_tokens);
+    println!("      Temperature: {}", describe_float(stats.temperature));
+    println!("      Top-p: {}", describe_float(stats.top_p));
+    println!("      Top-k: {}", describe_top_k(stats.top_k));
+    if let Some(prompt) = stats.system_prompt.as_deref() {
+        println!("      System prompt: {}", prompt);
+    } else {
+        println!("      System prompt: (none)");
     }
+    println!(
+        "      Thinking: {}",
+        match stats.thinking_budget {
+            Some(budget) => format!("enabled ({} tokens)", budget),
+            None => "disabled".to_string(),
+        }
+    );
+    print_stop_sequences(&stats.stop_sequences);
+    println!(
+        "      Total tokens: {} in / {} out ({} requests)",
+        stats.total_input_tokens, stats.total_output_tokens, stats.total_requests
+    );
+    if stats.caching_enabled {
+        println!(
+            "      Cache tokens: {} created / {} read",
+            stats.total_cache_creation_tokens, stats.total_cache_read_tokens
+        );
+    }
+    if let Some(input) = stats.last_turn_input_tokens {
+        let output = stats.last_turn_output_tokens.unwrap_or(0);
+        println!("      Last turn tokens: {input} in / {output} out");
+    }
+    if let Some(limit) = stats.session_budget_tokens {
+        let remaining = limit.saturating_sub(stats.budget_spent_tokens);
+        println!(
+            "      Budget: {}/{} tokens ({} remaining)",
+            stats.budget_spent_tokens, limit, remaining
+        );
+    } else {
+        println!("      Budget: (not set)");
+    }
+    match stats.transcript_path {
+        Some(ref path) => println!("      Transcript file: {}", path.display()),
+        None => println!("      Transcript file: (disabled)"),
+    }
+}
+
+/// Print current configuration using claudius-chat formatting.
+fn print_config<A: ChatAgent>(session: &ChatSession<A>) {
+    let stats = session.stats();
+    println!("    Current Configuration:");
+    println!("      Model: {}", stats.model);
+    println!("      Max tokens: {}", stats.max_tokens);
+    println!("      Temperature: {}", describe_float(stats.temperature));
+    println!("      Top-p: {}", describe_float(stats.top_p));
+    println!("      Top-k: {}", describe_top_k(stats.top_k));
+    println!(
+        "      Thinking: {}",
+        match stats.thinking_budget {
+            Some(budget) => format!("enabled ({} tokens)", budget),
+            None => "disabled".to_string(),
+        }
+    );
+    println!(
+        "      Caching: {}",
+        if stats.caching_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if let Some(prompt) = stats.system_prompt.as_deref() {
+        println!("      System prompt: {}", prompt);
+    } else {
+        println!("      System prompt: (none)");
+    }
+    print_stop_sequences(&stats.stop_sequences);
+    match stats.transcript_path {
+        Some(ref path) => println!("      Transcript file: {}", path.display()),
+        None => println!("      Transcript file: (disabled)"),
+    }
+}
+
+/// Print stop sequences using claudius-chat formatting.
+fn print_stop_sequences(stop_sequences: &[String]) {
+    if stop_sequences.is_empty() {
+        println!("      Stop sequences: (none)");
+    } else {
+        println!("      Stop sequences:");
+        for seq in stop_sequences {
+            println!("        - {}", seq);
+        }
+    }
+}
+
+/// Describe an optional float value for display.
+fn describe_float(value: Option<f32>) -> String {
+    value
+        .map(|value| format!("{value:.2}"))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+/// Describe an optional top-k value for display.
+fn describe_top_k(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "default".to_string())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create the Anthropic client
-    let client = Anthropic::new(None)?;
-
-    // Create the agent with 4MB filesystem (1024 blocks * 4KB)
-    let mut agent = EudaemonAgent::new(4 * 1024 * 1024);
-
-    // Create a budget
-    let budget = Arc::new(Budget::from_dollars_with_rates(
-        1.0,  // $10 budget
-        500,  // $5 per million
-        2500, // $25 per million
-        625,  // $6.25 per million
-        50,   // $.50 per million
-    ));
-
-    // Create initial messages from command line args or stdin
     let args: Vec<String> = std::env::args().collect();
-    let prompt = if args.len() > 1 {
-        args[1..].join(" ")
-    } else {
-        // Read from stdin
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        input.trim().to_string()
+    let Some(filesystem_root) = args.get(1).map(|arg| Path::from(arg.as_str()).into_owned()) else {
+        eprintln!("{}", USAGE);
+        std::process::exit(1);
     };
 
-    if prompt.is_empty() {
-        eprintln!("Usage: eudaemoncli <prompt>");
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    let mut stdin = String::new();
+    if args.len() <= 2 && !stdin_is_terminal {
+        std::io::stdin().read_to_string(&mut stdin)?;
+    }
+    let initial_prompt = initial_prompt_from_inputs(&args, &stdin, stdin_is_terminal);
+    if !stdin_is_terminal && initial_prompt.is_none() {
+        eprintln!("{}", USAGE);
         std::process::exit(1);
     }
 
-    let mut messages = vec![claudius::MessageParam {
-        role: claudius::MessageRole::User,
-        content: claudius::MessageParamContent::String(prompt),
-    }];
+    let client = Anthropic::new(None)?;
+    let agent = EudaemonAgent::new(filesystem_root);
+    let mut session = ChatSession::with_agent(client, agent);
 
-    // Run the conversation
-    let stop_reason = agent.take_turn(&client, &mut messages, &budget).await?;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupted_clone = interrupted.clone();
+    ctrlc::set_handler(move || {
+        interrupted_clone.store(true, Ordering::Relaxed);
+    })?;
 
-    // Print the final response
-    if let Some(last_msg) = messages.last()
-        && last_msg.role == claudius::MessageRole::Assistant
-    {
-        match &last_msg.content {
-            claudius::MessageParamContent::String(s) => println!("{}", s),
-            claudius::MessageParamContent::Array(blocks) => {
-                for block in blocks {
-                    if let claudius::ContentBlock::Text(text_block) = block {
-                        println!("{}", text_block.text);
-                    }
-                }
-            }
+    if stdin_is_terminal {
+        let mut terminal = ChatTerminal::new(session.config().use_color, interrupted.clone())?;
+        if let Some(prompt) = initial_prompt {
+            println!("Claude:");
+            interrupted.store(false, Ordering::Relaxed);
+            send_turn(&mut session, &mut terminal, &prompt).await;
+        }
+        run_repl(&mut session, &mut terminal, interrupted.as_ref()).await?;
+    } else {
+        let mut renderer =
+            PlainTextRenderer::with_color_and_interrupt(session.config().use_color, interrupted);
+        if let Some(prompt) = initial_prompt {
+            send_turn(&mut session, &mut renderer, &prompt).await;
         }
     }
-
-    println!("\n[Stop reason: {:?}]", stop_reason);
-    println!(
-        "[Remaining budget: ${:.4}]",
-        budget.remaining_micro_cents() as f64 / 100_000_000.0
-    );
 
     Ok(())
 }
@@ -650,83 +660,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eudaemonty::DirectoryFilesystem;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn test_lfs() -> RealTimeFilesystem {
-        EudaemonFilesystem::new_memory(
-            256 * 1024,
-            DeviceId::new(99),
-            current_time_ms as fn() -> i64,
-        )
-        .expect("failed to create test filesystem")
-    }
+    #[test]
+    fn initial_prompt_prefers_argv_tail() {
+        let args = vec![
+            "eudaemoncli".to_string(),
+            "kb".to_string(),
+            "summarize".to_string(),
+            "this".to_string(),
+        ];
 
-    fn make_temp_dir() -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "eudaemoncli-adapter-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-        dir
-    }
-
-    #[tokio::test]
-    async fn adapter_view_range_is_line_bounded() {
-        let fs = test_lfs();
-        fs.write_string("/notes.md", "a\nb\nc\nd").unwrap();
-        let adapter = ClaudiusFilesystemAdapter::new(fs);
-
-        let out = adapter.view("/notes.md", Some((2, 4))).await.unwrap();
-        assert!(out.contains("2\tb"));
-        assert!(out.contains("3\tc"));
-        assert!(!out.contains("1\ta"));
-        assert!(!out.contains("4\td"));
-    }
-
-    #[tokio::test]
-    async fn adapter_insert_handles_bounds() {
-        let fs = test_lfs();
-        fs.write_string("/doc.txt", "one").unwrap();
-        let adapter = ClaudiusFilesystemAdapter::new(fs.dup());
-
-        adapter.insert("/doc.txt", 3, "two").await.unwrap();
-        assert_eq!(fs.read_to_string("/doc.txt").unwrap(), "one\n\ntwo");
-
-        let err = adapter.insert("/doc.txt", 0, "bad").await.unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-    }
-
-    #[tokio::test]
-    async fn adapter_create_makes_missing_parents() {
-        let fs = test_lfs();
-        let adapter = ClaudiusFilesystemAdapter::new(fs.dup());
-
-        adapter
-            .create("/nested/deep/file.txt", "payload")
-            .await
-            .unwrap();
         assert_eq!(
-            fs.read_to_string("/nested/deep/file.txt").unwrap(),
-            "payload"
+            initial_prompt_from_inputs(&args, "ignored\n", true),
+            Some("summarize this".to_string())
         );
     }
 
+    #[test]
+    fn initial_prompt_uses_piped_stdin() {
+        let args = vec!["eudaemoncli".to_string(), "kb".to_string()];
+        assert_eq!(
+            initial_prompt_from_inputs(&args, "  inspect links\n", false),
+            Some("inspect links".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_mode_allows_empty_initial_prompt() {
+        let args = vec!["eudaemoncli".to_string(), "kb".to_string()];
+        assert_eq!(initial_prompt_from_inputs(&args, "", true), None);
+    }
+
+    #[test]
+    fn blank_piped_stdin_is_not_a_prompt() {
+        let args = vec!["eudaemoncli".to_string(), "kb".to_string()];
+        assert_eq!(initial_prompt_from_inputs(&args, "  \n", false), None);
+    }
+
+    #[test]
+    fn default_chat_config_matches_cli_defaults() {
+        let config = default_chat_config();
+
+        assert_eq!(config.model(), Model::Known(KnownModel::ClaudeOpus45));
+        assert_eq!(config.max_tokens(), 16384);
+        assert_eq!(config.system_prompt_text(), Some(SYSTEM_PROMPT_TEXT));
+    }
+
     #[tokio::test]
-    async fn adapter_wraps_non_eudaemon_filesystem() {
-        let root = make_temp_dir();
-        let fs = DirectoryFilesystem::new(&root).unwrap();
-        let adapter = ClaudiusFilesystemAdapter::new(fs);
+    async fn agent_exposes_text_editor_and_lispdown() {
+        let agent = EudaemonAgent::new(Path::from("/").into_owned());
+        let tools = agent.tools().await;
+        let tool_names: Vec<String> = tools.iter().map(|tool| tool.name()).collect();
 
-        adapter.create("dir/file.txt", "hello").await.unwrap();
-        let view = adapter.view("dir/file.txt", None).await.unwrap();
-        assert!(view.contains("1\thello"));
+        assert_eq!(tools.len(), 2);
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name == "str_replace_based_edit_tool")
+        );
+        assert!(tool_names.iter().any(|name| name == "lispdown"));
+    }
 
-        std::fs::remove_dir_all(root).unwrap();
+    #[tokio::test]
+    async fn bash_is_not_supported() {
+        let agent = EudaemonAgent::new(Path::from("/").into_owned());
+        let err = Agent::bash(&agent, "pwd", false).await.unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 }

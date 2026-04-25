@@ -198,9 +198,9 @@ dependencies = [
 
 [[package]]
 name = "claudius"
-version = "0.19.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25de366bc13b642ee53f471f3c31746c050f9699696effcad069de0593d4c320"
+checksum = "5e84ae81bb4a04d0eb17de0083129fc4e4095a67013183fb066d0f7ebffd30d5"
 dependencies = [
  "arrrg",
  "arrrg_derive",
@@ -211,6 +211,7 @@ dependencies = [
  "ctrlc",
  "futures",
  "getopts",
+ "libc",
  "reqwest",
  "rustyline 17.0.2",
  "serde",
@@ -410,8 +411,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "claudius",
- "eudaemonsh",
+ "ctrlc",
  "eudaemonty",
+ "lispdown",
+ "rustyline 15.0.0",
+ "serde",
  "serde_json",
  "tokio",
  "utf8path",

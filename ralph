@@ -1,3 +1,13 @@
 #!/bin/sh
 
-exec cargo run --bin eudaemoncli -- "You're in an empty chrooted filesystem with primitive shell intended to support knowledge base maintenance of markdown wikis.  There's standard UNIX commands.  The binaries that are executable reside outside the chroot.  Find and report bugs to improve our quality of life.  Make no more than 10 probes before writing your report.  For each bug, describe the bug in prose and give the commands to reproduce.  Output the report to stdout, not to the filesystem under test." | tee log
+set -e
+
+root="$(mktemp -d "${TMPDIR:-/tmp}/eudaemoncli-ralph.XXXXXX")"
+
+cleanup() {
+    rm -rf "$root"
+}
+
+trap cleanup EXIT INT TERM
+
+cargo run --bin eudaemoncli -- "$root" "You're in an empty rooted filesystem with primitive shell intended to support knowledge base maintenance of markdown wikis.  There's standard UNIX commands.  The binaries that are executable reside outside the root.  Find and report bugs to improve our quality of life.  Make no more than 10 probes before writing your report.  For each bug, describe the bug in prose and give the commands to reproduce.  Output the report to stdout, not to the filesystem under test." | tee log

@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 async-trait = { workspace = true }
+ctrlc = { version = "3.5", features = ["termination"] }
+rustyline = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
 claudius = { workspace = true }
-utf8path = { workspace = true }
-
-eudaemonsh = { workspace = true }
 eudaemonty = { workspace = true }
+lispdown = { workspace = true }
+utf8path = { workspace = true }
