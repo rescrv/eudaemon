@@ -701,8 +701,8 @@ mod tests {
     fn default_chat_config_matches_cli_defaults() {
         let config = default_chat_config();
 
-        assert_eq!(config.model(), Model::Known(KnownModel::ClaudeOpus45));
-        assert_eq!(config.max_tokens(), 16384);
+        assert_eq!(config.model(), Model::Known(KnownModel::ClaudeHaiku45));
+        assert_eq!(config.max_tokens(), 32768);
         assert_eq!(config.system_prompt_text(), Some(SYSTEM_PROMPT_TEXT));
     }
 

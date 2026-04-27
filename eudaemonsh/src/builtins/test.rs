@@ -254,20 +254,14 @@ where
 
         // Handle grammar ambiguity
         match tok.token_type() {
-            TokenType::Unop | TokenType::Bunop => {
-                if self.is_unop_operand() {
-                    return Token::Operand;
-                }
+            TokenType::Unop | TokenType::Bunop if self.is_unop_operand() => {
+                return Token::Operand;
             }
-            TokenType::Paren if tok == Token::LeftParen => {
-                if self.is_lparen_operand() {
-                    return Token::Operand;
-                }
+            TokenType::Paren if tok == Token::LeftParen && self.is_lparen_operand() => {
+                return Token::Operand;
             }
-            TokenType::Paren if tok == Token::RightParen => {
-                if self.is_rparen_operand() {
-                    return Token::Operand;
-                }
+            TokenType::Paren if tok == Token::RightParen && self.is_rparen_operand() => {
+                return Token::Operand;
             }
             _ => {}
         }

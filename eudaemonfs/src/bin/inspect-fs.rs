@@ -132,11 +132,10 @@ impl Superblock {
         } else {
             (self.log_end - self.head) + (self.tail - self.log_start)
         };
-        let usage_pct = if log_size > 0 {
-            (used * 100) / log_size
-        } else {
-            0
-        };
+        let usage_pct = used
+            .checked_mul(100)
+            .and_then(|used_pct| used_pct.checked_div(log_size))
+            .unwrap_or(0);
 
         SExpr::List(vec![
             SExpr::Atom("superblock".to_string()),

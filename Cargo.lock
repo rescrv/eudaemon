@@ -26,7 +26,17 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17afc961e8e12d18ed0afb51781b74853c6512da83144405ac34136a8d07e719"
 dependencies = [
- "arrrg_derive",
+ "arrrg_derive 0.8.0",
+ "getopts",
+]
+
+[[package]]
+name = "arrrg"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eda3694a24280f421624896fb2569652f70b913a3878a19fa71fb318b8b5b469"
+dependencies = [
+ "arrrg_derive 0.9.0",
  "getopts",
 ]
 
@@ -36,7 +46,19 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f21fd96446f29bb19923ace3aededea25f26beb4c69d59a24caddc6b8f536a7f"
 dependencies = [
- "derive_util",
+ "derive_util 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "arrrg_derive"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4585f9b46f3fcc3bf7d30760a7cc9ca854a5646b62d10ba8e53c045b1541451f"
+dependencies = [
+ "derive_util 0.6.0",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
@@ -202,8 +224,8 @@ version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e84ae81bb4a04d0eb17de0083129fc4e4095a67013183fb066d0f7ebffd30d5"
 dependencies = [
- "arrrg",
- "arrrg_derive",
+ "arrrg 0.8.0",
+ "arrrg_derive 0.8.0",
  "async-trait",
  "base64",
  "biometrics",
@@ -330,6 +352,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_util"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd3a9876c3067abf7869e80b7b69ed32ef2fa2fda5a7e5f91cb838447e2fd096"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -425,8 +458,8 @@ dependencies = [
 name = "eudaemonfs"
 version = "0.1.0"
 dependencies = [
- "arrrg",
- "arrrg_derive",
+ "arrrg 0.9.0",
+ "arrrg_derive 0.9.0",
  "eudaemonty",
  "getopts",
  "guacamole",
@@ -640,12 +673,12 @@ dependencies = [
 
 [[package]]
 name = "guacamole"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed7acc004c32e8e79b77bfcf5db6c5d94270715e3125ae4295ca6b853d01639d"
+checksum = "11d4dcbb9d9bc09b34f20f19d5553945e5a1b5bf85e482a16f3bfb4b256706c4"
 dependencies = [
- "arrrg",
- "arrrg_derive",
+ "arrrg 0.9.0",
+ "arrrg_derive 0.9.0",
  "getopts",
 ]
 
@@ -1010,8 +1043,8 @@ checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 name = "lispdown"
 version = "0.1.0"
 dependencies = [
- "arrrg",
- "arrrg_derive",
+ "arrrg 0.9.0",
+ "arrrg_derive 0.9.0",
  "async-trait",
  "claudius",
  "eudaemonty",
@@ -1779,7 +1812,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shvar"
-version = "0.8.0"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92d5418f3474aeaacebcd76b944c6aa903d23dc6040d7c1c4ae37d4f7ab1aea5"
 
 [[package]]
 name = "sig_fig_histogram"
